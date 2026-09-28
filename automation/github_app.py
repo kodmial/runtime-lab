@@ -1485,6 +1485,22 @@ def build_provider_and_client(
 
 def writeback_client_for(
     api: GitHubApiClient, *, base_ref: str = "main",
+    repository: str = "",
 ) -> AppWritebackClient:
-    """Build the #5-compatible write-back client for one API client."""
-    return AppWritebackClient(api, repository=api.repository, base_ref=base_ref)
+    """Build the #5-compatible write-back client for one API client.
+
+    ``repository`` optionally rebinds the client to an allow-listed
+    cross-repository target (issue #85, e.g. ``kodmial/opencode``);
+    otherwise the API client's configured repository is used.
+    """
+    target = (repository or "").strip() or api.repository
+    try:
+        try:
+            from automation.cross_repo import normalize_target_repo
+        except ImportError:
+            from cross_repo import normalize_target_repo  # type: ignore[no-redef]
+        if target:
+            target = normalize_target_repo(target)
+    except ImportError:
+        pass
+    return AppWritebackClient(api, repository=target, base_ref=base_ref)

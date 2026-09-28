@@ -151,7 +151,7 @@ class FakeGitHubTransport:
                 self.fail_next_with_401_paths.discard(key)
                 return 401, {"message": "Bad credentials"}
 
-        if path.startswith("/repos/owner/repo/issues/") and path.endswith(
+        if path.startswith("/repos/kodmial/runtime-lab/issues/") and path.endswith(
                 ("/dependencies/blocked_by", "/blocked_by")):
             if not self.native_available:
                 return 404, {"message": "Not Found"}
@@ -160,7 +160,7 @@ class FakeGitHubTransport:
             deps = self.blocked_by.get(number, [])
             return 200, [{"number": n} for n in deps]
 
-        if path.startswith("/repos/owner/repo/issues/") and "/labels" in path:
+        if path.startswith("/repos/kodmial/runtime-lab/issues/") and "/labels" in path:
             parts = path.split("/")
             number = int(parts[5])
             issue = self.issues.setdefault(
@@ -180,7 +180,7 @@ class FakeGitHubTransport:
                                    if item.get("name") != name]
                 return 204, ""
 
-        if path.startswith("/repos/owner/repo/issues/"):
+        if path.startswith("/repos/kodmial/runtime-lab/issues/"):
             number = int(path.split("/")[5])
             issue = self.issues.get(number)
             if issue is None:
@@ -192,9 +192,9 @@ class FakeGitHubTransport:
                          "state": issue.get("state", "open"),
                          "labels": [{"name": name} for name in labels]}
 
-        if path == "/repos/owner/repo/git/ref/heads/main" or path.startswith(
-                "/repos/owner/repo/git/ref/heads/"):
-            ref = path[len("/repos/owner/repo/git/ref/heads/"):]
+        if path == "/repos/kodmial/runtime-lab/git/ref/heads/main" or path.startswith(
+                "/repos/kodmial/runtime-lab/git/ref/heads/"):
+            ref = path[len("/repos/kodmial/runtime-lab/git/ref/heads/"):]
             ref = urllib.parse.unquote(ref)
             if ref == "main":
                 return 200, {"object": {"sha": self.base_sha}}
@@ -202,21 +202,21 @@ class FakeGitHubTransport:
                 return 200, {"object": {"sha": self.branches[ref]}}
             return 404, {"message": "Not Found"}
 
-        if path.startswith("/repos/owner/repo/commits/"):
+        if path.startswith("/repos/kodmial/runtime-lab/commits/"):
             return 200, {"sha": self.base_sha}
 
-        if path == "/repos/owner/repo/pulls" and query.startswith("state=open"):
+        if path == "/repos/kodmial/runtime-lab/pulls" and query.startswith("state=open"):
             return 200, [{"number": pr["number"],
                           "head": {"ref": pr["head_ref"]},
                           "state": "open"} for pr in self.prs
                          if pr.get("state") == "open"]
 
-        if path == "/repos/owner/repo/git/blobs" and method == "POST":
+        if path == "/repos/kodmial/runtime-lab/git/blobs" and method == "POST":
             sha = self._next_sha("blob")
             self.blobs[sha] = (body or {}).get("content", "")
             return 201, {"sha": sha}
 
-        if path.startswith("/repos/owner/repo/git/commits/") and method == "GET":
+        if path.startswith("/repos/kodmial/runtime-lab/git/commits/") and method == "GET":
             sha = path.rsplit("/", 1)[-1]
             commit = self.commits.get(sha)
             if commit is None:
@@ -224,7 +224,7 @@ class FakeGitHubTransport:
             return 200, {"sha": sha, "tree": {"sha": commit["tree"]},
                          "parents": [{"sha": p} for p in commit["parents"]]}
 
-        if path == "/repos/owner/repo/git/trees" and method == "POST":
+        if path == "/repos/kodmial/runtime-lab/git/trees" and method == "POST":
             sha = self._next_sha("tree")
             entries = (body or {}).get("tree", []) or []
             base_tree = (body or {}).get("base_tree", "")
@@ -239,24 +239,24 @@ class FakeGitHubTransport:
             self.trees[sha] = entries
             return 201, {"sha": sha}
 
-        if path == "/repos/owner/repo/git/commits" and method == "POST":
+        if path == "/repos/kodmial/runtime-lab/git/commits" and method == "POST":
             sha = self._next_sha("commit")
             self.commits[sha] = {"tree": (body or {}).get("tree", ""),
                                  "parents": (body or {}).get("parents", [])}
             return 201, {"sha": sha}
 
-        if path == "/repos/owner/repo/git/refs" and method == "POST":
+        if path == "/repos/kodmial/runtime-lab/git/refs" and method == "POST":
             ref = (body or {}).get("ref", "")
             branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
             self.branches[branch] = (body or {}).get("sha", "")
             return 201, {"ref": ref}
 
-        if path.startswith("/repos/owner/repo/git/refs/heads/") and method == "PATCH":
-            branch = urllib.parse.unquote(path[len("/repos/owner/repo/git/refs/heads/"):])
+        if path.startswith("/repos/kodmial/runtime-lab/git/refs/heads/") and method == "PATCH":
+            branch = urllib.parse.unquote(path[len("/repos/kodmial/runtime-lab/git/refs/heads/"):])
             self.branches[branch] = (body or {}).get("sha", "")
             return 200, {"ref": "refs/heads/%s" % branch}
 
-        if path == "/repos/owner/repo/pulls" and method == "POST":
+        if path == "/repos/kodmial/runtime-lab/pulls" and method == "POST":
             if self.force_422_on_pr_create:
                 return 422, {"message": "A pull request already exists"}
             self.pr_counter += 1
@@ -290,7 +290,7 @@ def _provider(transport=None, **overrides):
 def _client(transport, provider=None, **overrides):
     provider = provider or _provider(transport, **overrides)
     api = GitHubApiClient(provider, api_base="https://api.github.com",
-                          repository="owner/repo",
+                          repository="kodmial/runtime-lab",
                           request_fn=transport.request)
     return api, provider
 
@@ -469,7 +469,7 @@ def test_snapshot_provider_uses_live_reads_with_safe_defaults():
 def test_app_writeback_creates_branch_and_pr_from_render():
     transport = FakeGitHubTransport()
     api, _ = _client(transport)
-    client = AppWritebackClient(api, repository="owner/repo")
+    client = AppWritebackClient(api, repository="kodmial/runtime-lab")
     outcome = materialize_result(_result(), client=client,
                                  unique_suffix="run-1", issue_title="Fix it")
     assert outcome.action == "created"
@@ -485,7 +485,7 @@ def test_app_writeback_creates_branch_and_pr_from_render():
 def test_duplicate_pr_is_reused_not_duplicated():
     transport = FakeGitHubTransport()
     api, _ = _client(transport)
-    client = AppWritebackClient(api, repository="owner/repo")
+    client = AppWritebackClient(api, repository="kodmial/runtime-lab")
     first = materialize_result(
         _result(changes=[_change("a.txt", "added", b"v1")]),
         client=client, unique_suffix="run-1")
@@ -503,7 +503,7 @@ def test_duplicate_pr_is_reused_not_duplicated():
 def test_no_change_produces_no_branch_or_pr():
     transport = FakeGitHubTransport()
     api, _ = _client(transport)
-    client = AppWritebackClient(api, repository="owner/repo")
+    client = AppWritebackClient(api, repository="kodmial/runtime-lab")
     outcome = materialize_result(_result(changes=[]), client=client,
                                  unique_suffix="run-1")
     assert outcome.action == "no-changes"
@@ -516,7 +516,7 @@ def test_no_change_produces_no_branch_or_pr():
 def test_base_sha_mismatch_fails_safely_without_writes():
     transport = FakeGitHubTransport(base_sha="live-sha")
     api, _ = _client(transport)
-    client = AppWritebackClient(api, repository="owner/repo")
+    client = AppWritebackClient(api, repository="kodmial/runtime-lab")
     from result_materialize import MaterializeError
 
     with pytest.raises(MaterializeError, match="base SHA mismatch"):
@@ -595,7 +595,7 @@ def _controller_with_writeback(tmp_path, transport, runner, **overrides):
     api, _ = _client(transport)
 
     def factory(issue):
-        return AppWritebackClient(api, repository="owner/repo")
+        return AppWritebackClient(api, repository="kodmial/runtime-lab")
 
     return Controller(
         webhook_secret=SECRET,
@@ -700,7 +700,7 @@ def test_controller_duplicate_pr_reused_across_deliveries(tmp_path):
     api, _ = _client(transport)
 
     def factory(issue):
-        return AppWritebackClient(api, repository="owner/repo")
+        return AppWritebackClient(api, repository="kodmial/runtime-lab")
 
     first_runner = FakeRunnerWithChanges([_change("a.txt", "added", b"v1")])
     controller = Controller(

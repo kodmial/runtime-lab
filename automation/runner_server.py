@@ -789,8 +789,22 @@ class JobManager:
         repository_url = payload.get("repository_url", PUBLIC_REPO_URL)
         if repository_url is None:
             repository_url = PUBLIC_REPO_URL
-        if not isinstance(repository_url, str) or repository_url != PUBLIC_REPO_URL:
-            raise ValueError("repository_url must be %r in this phase" % PUBLIC_REPO_URL)
+        if not isinstance(repository_url, str):
+            raise ValueError("repository_url must be a string")
+        try:  # allow-listed cross-repo targets (issue #85), self by default
+            try:
+                from automation.cross_repo import normalize_clone_url as _normalize_url
+            except ImportError:
+                from cross_repo import normalize_clone_url as _normalize_url  # type: ignore[no-redef]
+            _normalize_url(repository_url)
+        except ImportError:
+            if repository_url != PUBLIC_REPO_URL:
+                raise ValueError("repository_url must be %r in this phase" % PUBLIC_REPO_URL)
+        except ValueError as exc:
+            raise ValueError(
+                "repository_url %r is not an allow-listed execution target (%s)"
+                % (repository_url, exc)
+            ) from None
         base_ref = payload.get("base_ref", DEFAULT_BASE_REF)
         if base_ref is None:
             base_ref = DEFAULT_BASE_REF
@@ -990,6 +1004,11 @@ class JobManager:
         metadata["runner_started_at"] = self.started_at
         if repository_url:
             metadata["repository_url"] = repository_url
+        # Cross-repo correlation passthrough (issue #85): never secrets.
+        for _key in ("target_repository", "source_repository"):
+            _value = payload.get(_key, "")
+            if isinstance(_value, str) and _value.strip():
+                metadata[_key] = _value.strip()
         if base_ref:
             metadata["base_ref"] = base_ref
         if base_sha:
@@ -1411,7 +1430,15 @@ class JobManager:
             return
 
         # -- enforce durable agent knowledge handoff --------------------------
-        if "Repository knowledge handoff (mandatory)" in task_text:
+        # Self-target only (issue #85): the handoff record lives in the
+        # tracking repo (kodmial/runtime-lab). A cross-repo checkout (e.g.
+        # kodmial/opencode) has no runtime-lab knowledge tree, so the
+        # in-checkout record gate is skipped there -- requiring it would
+        # force a runtime-lab record file into the target PR. Target-side
+        # evidence is recorded controller-side instead (see
+        # automation/cross_repo.py:build_execution_evidence).
+        _is_self_target = (repository_url or PUBLIC_REPO_URL) == PUBLIC_REPO_URL
+        if "Repository knowledge handoff (mandatory)" in task_text and _is_self_target:
             issue_number = int(record.metadata.get("issue_number") or 0)
             run_id = record.metadata.get("run_id", "")
             relative_record = experiment_record_path(issue_number, run_id)
