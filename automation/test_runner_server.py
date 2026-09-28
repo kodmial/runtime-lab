@@ -502,7 +502,7 @@ def test_frankfurt_submit_fails_without_starting_opencode(tmp_path):
 
 
 def test_runner_source_enforces_knowledge_handoff_before_success():
-    source = (REPO_ROOT / "automation" / "runner_server.py").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parent / "runner_server.py").read_text(encoding="utf-8")
     assert "Repository knowledge handoff (mandatory)" in source
     assert "validate_experiment_record_text" in source
     assert "knowledge handoff validation failed" in source
