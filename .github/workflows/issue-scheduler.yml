@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      WIP_LIMIT: ${{ vars.AUTOMATION_WIP_LIMIT || '4' }}
+      WIP_LIMIT: '6'
       LEASE_MINUTES: ${{ vars.AUTOMATION_LEASE_MINUTES || '90' }}
       MAX_DISPATCH_ATTEMPTS: ${{ vars.AUTOMATION_MAX_DISPATCH_ATTEMPTS || '4' }}
 
@@ -52,7 +52,7 @@ jobs:
               return value;
             }
 
-            const wipLimit = positiveInt('WIP_LIMIT', 4);
+            const wipLimit = positiveInt('WIP_LIMIT', 6);
             const leaseMinutes = positiveInt('LEASE_MINUTES', 90);
             const maxAttempts = positiveInt('MAX_DISPATCH_ATTEMPTS', 4);
             const leaseMs = leaseMinutes * 60 * 1000;
