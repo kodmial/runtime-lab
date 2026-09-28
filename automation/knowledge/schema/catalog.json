@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "catalogEntry": {
+      "additionalProperties": false,
+      "description": "One normalized, integrity-checked experiment record.",
+      "properties": {
+        "base_commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "issue": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "outcome": {
+          "enum": [
+            "failed",
+            "inconclusive",
+            "succeeded"
+          ],
+          "type": "string"
+        },
+        "path": {
+          "description": "Repo-relative POSIX path of the source record.",
+          "pattern": "^automation/knowledge/experiments/issue-[1-9][0-9]*-run-[A-Za-z0-9._-]+\\.md$",
+          "type": "string"
+        },
+        "record_id": {
+          "pattern": "^issue-[1-9][0-9]*-run-[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "run_id": {
+          "maxLength": 96,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "SHA-256 of the complete source record bytes, so consumers can detect stale content.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "supersedes": {
+          "items": {
+            "pattern": "^issue-[1-9][0-9]*-run-[A-Za-z0-9._-]+$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "title": {
+          "description": "First Markdown H1 of the record body (empty string when absent).",
+          "type": "string"
+        },
+        "topic": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "base_commit",
+        "issue",
+        "outcome",
+        "path",
+        "record_id",
+        "run_id",
+        "sha256",
+        "supersedes",
+        "title",
+        "topic"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Machine-readable contract for the derived Runtime Lab experiment catalog produced by automation/knowledge_catalog.py. The catalog is always derived from the immutable per-run records under automation/knowledge/experiments/ and is never a source of truth: it is written to stdout (or an explicitly supplied output path such as a temp/cache path) and must not be committed as a shared hot-file index.",
+  "properties": {
+    "$schema": {
+      "const": "automation/knowledge/schema/catalog.json",
+      "description": "Repo-relative pointer to this schema document.",
+      "type": "string"
+    },
+    "records": {
+      "description": "Normalized catalog entries in deterministic record_id order.",
+      "items": {
+        "$ref": "#/$defs/catalogEntry"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "const": "runtime-lab-catalog/v1",
+      "description": "Catalog version tag.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "$schema",
+    "records",
+    "schema"
+  ],
+  "title": "Runtime Lab experiment catalog",
+  "type": "object"
+}

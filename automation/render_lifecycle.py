@@ -82,23 +82,44 @@ EXPERIMENT_RECORD_REQUIRED_SECTIONS = (
 def validate_experiment_record_text(
     text: str, issue_number: int, run_id: object = ""
 ) -> bool:
-    """Fail closed unless an experiment record has the required identity/schema."""
+    """Fail closed unless an experiment record has the required identity/schema.
+
+    Records carry strict JSON front matter (a JSON object between the
+    leading ``---`` delimiters); the Markdown body keeps the required
+    human-narrative sections. Domain invariants are enforced through
+    :mod:`knowledge_catalog` so the hard gate and the derived catalog
+    agree on what a valid record is.
+    """
     if not isinstance(text, str) or not text.strip():
         raise ValueError("experiment record is empty")
     if not isinstance(issue_number, int) or issue_number <= 0:
         raise ValueError("issue_number must be a positive integer")
+    try:
+        from knowledge_catalog import (  # type: ignore[import-not-found]
+            check_required_sections,
+            parse_record_text,
+            validate_metadata_shapes,
+        )
+    except ImportError:  # pragma: no cover - depends on sys.path layout
+        from automation.knowledge_catalog import (  # type: ignore[import-not-found]
+            check_required_sections,
+            parse_record_text,
+            validate_metadata_shapes,
+        )
     expected_run = str(run_id or "unknown").strip() or "unknown"
-    required_identity = (
-        "schema: runtime-lab-experiment/v1",
-        "issue: %d" % issue_number,
-        "run_id: %s" % expected_run,
-    )
-    for marker in required_identity:
-        if marker not in text:
-            raise ValueError("experiment record identity/schema mismatch")
-    for heading in EXPERIMENT_RECORD_REQUIRED_SECTIONS:
-        if heading not in text:
-            raise ValueError("experiment record is missing required section: %s" % heading)
+    try:
+        metadata, body = parse_record_text(text)
+        validate_metadata_shapes(metadata)
+        check_required_sections(body)
+    except ValueError as exc:
+        # Normalize catalog errors to the historic hard-gate messages
+        # where they describe the same failure class.
+        message = str(exc)
+        if "missing required section" in message:
+            raise
+        raise ValueError("experiment record identity/schema mismatch: %s" % message)
+    if metadata.get("issue") != issue_number or metadata.get("run_id") != expected_run:
+        raise ValueError("experiment record identity/schema mismatch")
     return True
 
 
