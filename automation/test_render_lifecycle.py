@@ -760,6 +760,23 @@ def test_exact_workflow_artifact_requirement_rejects_partial_mentions():
     assert parse_exact_workflow_artifact_requirement(123, ["x"]) is None
 
 
+def test_exact_workflow_artifact_requirement_ignores_ordinary_smoke():
+    # Guard for repair issue #121 (run 36498921649): the fail-closed
+    # gate must fire for #110's exact-artifact conjunction but never
+    # for ordinary smoke work. A false positive here would refuse
+    # legitimate runs that the worker can execute with the pinned
+    # baseline binary.
+    assert parse_exact_workflow_artifact_requirement(
+        "P0: Fresh smoke check",
+        "Run the normal smoke workload on the ephemeral worker "
+        "and verify cleanup. No artifact pinning.",
+    ) is None
+    assert parse_exact_workflow_artifact_requirement(
+        "t",
+        "the opencode binary was rebuilt from main for this trial",
+    ) is None
+
+
 def test_exact_workflow_artifact_blocker_names_evidence_and_gap():
     requirement = parse_exact_workflow_artifact_requirement(
         "t", ISSUE_106_ARTIFACT_BODY)
