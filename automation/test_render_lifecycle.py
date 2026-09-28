@@ -681,6 +681,57 @@ def test_exact_workflow_artifact_requirement_parses_issue_106_contract():
     assert requirement["source_sha"] == "8ed6c749577d534c55ba9555ba4918ea8be95a97"
 
 
+ISSUE_110_ARTIFACT_BODY = """\
+## Exact immutable artifact under test
+Do **not rebuild OpenCode** and do not use an installer.
+
+- Repository: `kodmial/opencode`
+- PR: `#12`
+- Branch: `opencode/issue11-max-headless`
+- Source SHA: `8ed6c749577d534c55ba9555ba4918ea8be95a97`
+- Source workflow run: `36492639568` (`OpenCode Coding Artifact`)
+- Artifact name: `opencode-coding-linux-x64`
+- Artifact ID: `11001896223`
+- Artifact archive digest: `sha256:8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df`
+- Artifact payload: `opencode-coding-linux-x64`, `opencode-coding-linux-x64.sha256`, `build-metadata.txt`
+- Artifact retention expiry: `2026-10-28`
+
+## Artifact integrity — hard requirement
+1. Download exact artifact ID `11001896223` from source run `36492639568`.
+2. Verify `opencode-coding-linux-x64` against the bundled `.sha256` before launch.
+5. Never silently fall back to another OpenCode binary.
+"""
+
+
+def test_exact_workflow_artifact_requirement_parses_issue_110_contract():
+    # Regression for run 36497358708 (repair issue #119): source issue
+    # #110 pins the same exact PR #12 artifact as #106 but with
+    # distinct phrasing ("Source workflow run", "Artifact ID",
+    # "Artifact archive digest" plus a retention-expiry line). The
+    # pre-creation gate added for #106/#115 must also refuse #110 --
+    # run 36497358708 started one minute after the 34d412e envelope
+    # fix but before the f84a0cf gate landed, so it burned ~11 minutes
+    # and four restarts on the substituted baseline binary instead of
+    # failing closed in seconds.
+    requirement = parse_exact_workflow_artifact_requirement(
+        "P0: Fresh Render run — execute exact OpenCode PR #12 artifact "
+        "on Render Free with proven cgroup telemetry",
+        ISSUE_110_ARTIFACT_BODY,
+    )
+    assert requirement is not None
+    assert requirement["artifact_id"] == "11001896223"
+    assert requirement["artifact_name"] == "opencode-coding-linux-x64"
+    assert requirement["source_run_id"] == "36492639568"
+    assert requirement["archive_sha256"] == (
+        "8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df"
+    )
+    assert requirement["source_sha"] == "8ed6c749577d534c55ba9555ba4918ea8be95a97"
+    message = exact_workflow_artifact_blocker(requirement)
+    assert "11001896223" in message
+    assert "36492639568" in message
+    assert "infrastructure-blocked" in message
+
+
 def test_exact_workflow_artifact_requirement_rejects_partial_mentions():
     # Bodies that merely mention artifacts must never trip the gate:
     # only the full conjunction (numeric id + workflow run + sha256)
