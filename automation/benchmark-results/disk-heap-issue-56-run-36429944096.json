@@ -1,0 +1,2202 @@
+{
+  "base_commit": "9d6f2162454f209f8feec816f32ceeb08fb4513a",
+  "constraint": {
+    "disk": "ordinary ephemeral filesystem",
+    "ram_mb": 512,
+    "swap": "none"
+  },
+  "docker": {
+    "baseline+code": {
+      "cgroup": {
+        "cgroup_max_bytes": 536870912,
+        "cgroup_oom_kill": 1,
+        "cgroup_peak_bytes": 536870912,
+        "cgroup_swap_bytes": 0
+      },
+      "docker": {
+        "docker_exit": 0,
+        "output": "CG_MAX=536870912\nCG_PEAK=536870912\nCG_SWAP=0\nCG_OOMKILL=1\nlow 0\nhigh 0\nmax 96\noom 1\noom_kill 1\noom_group_kill 0\n"
+      },
+      "snap": {
+        "cgroup_after": {
+          "current": 26906624,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 96,
+            "oom": 1,
+            "oom_group_kill": 0,
+            "oom_kill": 1
+          },
+          "max": 536870912,
+          "peak": 536870912,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "cgroup_before": {
+          "current": 6991872,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 9314304,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "classification": "oom_kill_or_sigkill",
+        "cmd": [
+          "/usr/local/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "In the current directory there is calc.py with a failing test in test_calc.py. Fix calc.py so the tests pass, run the tests with python3 -m pytest test_calc.py -q, and report the result in one line. Do not touch any other files."
+        ],
+        "container_stdout": "{\n \"exit_code\": -9,\n \"classification\": \"oom_kill_or_sigkill\",\n \"wall_s\": 5.16,\n \"peak_tree_kb\": 551620,\n \"final_class_kb\": {\n  \"anon_kb\": 0,\n  \"file_kb\": 0,\n  \"heap_kb\": 0,\n  \"deleted_kb\": 0,\n  \"pool_kb\": 0\n },\n \"pool_paths\": []\n}\n",
+        "exit_code": -9,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 1,
+        "peak_tree_kb": 551620,
+        "pool_paths": [],
+        "samples": 6,
+        "series_tail": [
+          {
+            "anon_kb": 454032,
+            "deleted_kb": 0,
+            "file_kb": 97588,
+            "heap_kb": 36,
+            "pool_kb": 0,
+            "t_s": 3.1,
+            "tree_kb": 551620
+          },
+          {
+            "anon_kb": 452196,
+            "deleted_kb": 0,
+            "file_kb": 97588,
+            "heap_kb": 36,
+            "pool_kb": 0,
+            "t_s": 4.1,
+            "tree_kb": 549784
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 5.2,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n\u001b[0m\u2192 \u001b[0mRead /\n",
+        "stdout": "Fixing your failing test \u2014 one-line report coming up.\n",
+        "timed_out": false,
+        "top_anon_mappings": [
+          {
+            "path": "[anon:WKFastMalloc]",
+            "perms": "rw-p",
+            "rss_kb": 384288
+          },
+          {
+            "path": "",
+            "perms": "rw-p",
+            "rss_kb": 39448
+          },
+          {
+            "path": "[anon:JSGigacage]",
+            "perms": "rw-p",
+            "rss_kb": 12676
+          },
+          {
+            "path": "[anon:JSJITCode]",
+            "perms": "rwxp",
+            "rss_kb": 8416
+          },
+          {
+            "path": "[anon:JSStructureHeap]",
+            "perms": "rw-p",
+            "rss_kb": 6968
+          },
+          {
+            "path": "[stack]",
+            "perms": "rw-p",
+            "rss_kb": 232
+          },
+          {
+            "path": "",
+            "perms": "rwxp",
+            "rss_kb": 132
+          },
+          {
+            "path": "[heap]",
+            "perms": "rw-p",
+            "rss_kb": 36
+          }
+        ],
+        "wall_s": 5.16
+      }
+    },
+    "baseline+hi": {
+      "cgroup": {
+        "cgroup_max_bytes": 536870912,
+        "cgroup_oom_kill": 1,
+        "cgroup_peak_bytes": 536940544,
+        "cgroup_swap_bytes": 0
+      },
+      "docker": {
+        "docker_exit": 0,
+        "output": "CG_MAX=536870912\nCG_PEAK=536940544\nCG_SWAP=0\nCG_OOMKILL=1\nlow 0\nhigh 0\nmax 114\noom 1\noom_kill 1\noom_group_kill 0\n"
+      },
+      "snap": {
+        "cgroup_after": {
+          "current": 7380992,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 114,
+            "oom": 1,
+            "oom_group_kill": 0,
+            "oom_kill": 1
+          },
+          "max": 536870912,
+          "peak": 536940544,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "cgroup_before": {
+          "current": 7176192,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 7725056,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "classification": "oom_kill_or_sigkill",
+        "cmd": [
+          "/usr/local/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "container_stdout": "{\n \"exit_code\": -9,\n \"classification\": \"oom_kill_or_sigkill\",\n \"wall_s\": 2.17,\n \"peak_tree_kb\": 385956,\n \"final_class_kb\": {\n  \"anon_kb\": 0,\n  \"file_kb\": 0,\n  \"heap_kb\": 0,\n  \"deleted_kb\": 0,\n  \"pool_kb\": 0\n },\n \"pool_paths\": []\n}\n",
+        "exit_code": -9,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 1,
+        "peak_tree_kb": 385956,
+        "pool_paths": [],
+        "samples": 3,
+        "series_tail": [
+          {
+            "anon_kb": 16628,
+            "deleted_kb": 0,
+            "file_kb": 63824,
+            "heap_kb": 8,
+            "pool_kb": 0,
+            "t_s": 0.0,
+            "tree_kb": 80228
+          },
+          {
+            "anon_kb": 299980,
+            "deleted_kb": 0,
+            "file_kb": 87452,
+            "heap_kb": 20,
+            "pool_kb": 0,
+            "t_s": 1.1,
+            "tree_kb": 385956
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 2.2,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "",
+        "timed_out": false,
+        "top_anon_mappings": [
+          {
+            "path": "[anon:WKFastMalloc]",
+            "perms": "rw-p",
+            "rss_kb": 256132
+          },
+          {
+            "path": "",
+            "perms": "rw-p",
+            "rss_kb": 36792
+          },
+          {
+            "path": "[anon:JSStructureHeap]",
+            "perms": "rw-p",
+            "rss_kb": 6864
+          },
+          {
+            "path": "[anon:JSJITCode]",
+            "perms": "rwxp",
+            "rss_kb": 6000
+          },
+          {
+            "path": "[stack]",
+            "perms": "rw-p",
+            "rss_kb": 228
+          },
+          {
+            "path": "[anon:JSGigacage]",
+            "perms": "rw-p",
+            "rss_kb": 208
+          },
+          {
+            "path": "[heap]",
+            "perms": "rw-p",
+            "rss_kb": 20
+          }
+        ],
+        "wall_s": 2.17
+      }
+    },
+    "memtier+code": {
+      "cgroup": {
+        "cgroup_max_bytes": 536870912,
+        "cgroup_oom_kill": 1,
+        "cgroup_peak_bytes": 536870912,
+        "cgroup_swap_bytes": 0
+      },
+      "docker": {
+        "docker_exit": 0,
+        "output": "CG_MAX=536870912\nCG_PEAK=536870912\nCG_SWAP=0\nCG_OOMKILL=1\nlow 0\nhigh 0\nmax 509\noom 1\noom_kill 1\noom_group_kill 0\nbash: line 1:   315 Segmentation fault      (core dumped) env 'LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libmemtier.so.0' 'MEMKIND_MEM_TIERS=KIND:FS_DAX,PATH:/pool,RATIO:1;KIND:DRAM,RATIO:1;POLICY:STATIC_RATIO' python3 /snap/disk_heap_snap.py 220 /ws /ws/snap.json -- /usr/local/bin/opencode run --auto --model opencode/muse-spark-1.3-contributor-free 'In the current directory there is calc.py with a failing test in test_calc.py. Fix calc.py so the tests pass, run the tests with python3 -m pytest test_calc.py -q, and report the result in one line. Do not touch any other files.' > /ws/stdout.txt 2> /ws/stderr.txt\n"
+      },
+      "snap": {
+        "cgroup_after": {
+          "current": 59400192,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 509,
+            "oom": 1,
+            "oom_group_kill": 0,
+            "oom_kill": 1
+          },
+          "max": 536870912,
+          "peak": 536870912,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "cgroup_before": {
+          "current": 163057664,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 206127104,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "classification": "oom_kill_or_sigkill",
+        "cmd": [
+          "/usr/local/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "In the current directory there is calc.py with a failing test in test_calc.py. Fix calc.py so the tests pass, run the tests with python3 -m pytest test_calc.py -q, and report the result in one line. Do not touch any other files."
+        ],
+        "container_stdout": "{\n \"exit_code\": -9,\n \"classification\": \"oom_kill_or_sigkill\",\n \"wall_s\": 2.13,\n \"peak_tree_kb\": 532196,\n \"final_class_kb\": {\n  \"anon_kb\": 0,\n  \"file_kb\": 0,\n  \"heap_kb\": 0,\n  \"deleted_kb\": 0,\n  \"pool_kb\": 0\n },\n \"pool_paths\": [\n  \"/pool/memkind.MjZIVm\",\n  \"/usr/lib/x86_64-linux-gnu/libmemkind.so.0.0",
+        "exit_code": -9,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 1,
+        "peak_tree_kb": 532196,
+        "pool_paths": [
+          "/pool/memkind.MjZIVm",
+          "/usr/lib/x86_64-linux-gnu/libmemkind.so.0.0.1"
+        ],
+        "samples": 3,
+        "series_tail": [
+          {
+            "anon_kb": 51900,
+            "deleted_kb": 0,
+            "file_kb": 42524,
+            "heap_kb": 0,
+            "pool_kb": 724,
+            "t_s": 0.0,
+            "tree_kb": 93768
+          },
+          {
+            "anon_kb": 443536,
+            "deleted_kb": 0,
+            "file_kb": 90248,
+            "heap_kb": 0,
+            "pool_kb": 584,
+            "t_s": 1.1,
+            "tree_kb": 532196
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 2.1,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "",
+        "stdout": "",
+        "timed_out": false,
+        "top_anon_mappings": [
+          {
+            "path": "[anon:WKFastMalloc]",
+            "perms": "rw-p",
+            "rss_kb": 340236
+          },
+          {
+            "path": "",
+            "perms": "rw-p",
+            "rss_kb": 94808
+          },
+          {
+            "path": "[anon:JSStructureHeap]",
+            "perms": "rw-p",
+            "rss_kb": 6736
+          },
+          {
+            "path": "[anon:JSJITCode]",
+            "perms": "rwxp",
+            "rss_kb": 5332
+          },
+          {
+            "path": "[stack]",
+            "perms": "rw-p",
+            "rss_kb": 232
+          },
+          {
+            "path": "[anon:JSGigacage]",
+            "perms": "rw-p",
+            "rss_kb": 204
+          }
+        ],
+        "wall_s": 2.13
+      }
+    },
+    "memtier+hi": {
+      "cgroup": {
+        "cgroup_max_bytes": 536870912,
+        "cgroup_oom_kill": 0,
+        "cgroup_peak_bytes": 536870912,
+        "cgroup_swap_bytes": 0
+      },
+      "docker": {
+        "docker_exit": 0,
+        "output": "CG_MAX=536870912\nCG_PEAK=536870912\nCG_SWAP=0\nCG_OOMKILL=0\nlow 0\nhigh 0\nmax 638\noom 0\noom_kill 0\noom_group_kill 0\n"
+      },
+      "snap": {
+        "cgroup_after": {
+          "current": 59334656,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 638,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 536870912,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "cgroup_before": {
+          "current": 162787328,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 205926400,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "classification": "sigsegv_crash",
+        "cmd": [
+          "/usr/local/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "container_stdout": "{\n \"exit_code\": -11,\n \"classification\": \"sigsegv_crash\",\n \"wall_s\": 32.5,\n \"peak_tree_kb\": 592936,\n \"final_class_kb\": {\n  \"anon_kb\": 0,\n  \"file_kb\": 0,\n  \"heap_kb\": 0,\n  \"deleted_kb\": 0,\n  \"pool_kb\": 0\n },\n \"pool_paths\": [\n  \"/pool/memkind.aHJxe6\",\n  \"/usr/lib/x86_64-linux-gnu/libmemkind.so.0.0.1\"\n ",
+        "exit_code": -11,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 1,
+        "peak_tree_kb": 592936,
+        "pool_paths": [
+          "/pool/memkind.aHJxe6",
+          "/usr/lib/x86_64-linux-gnu/libmemkind.so.0.0.1"
+        ],
+        "samples": 26,
+        "series_tail": [
+          {
+            "anon_kb": 445316,
+            "deleted_kb": 0,
+            "file_kb": 146528,
+            "heap_kb": 0,
+            "pool_kb": 1000,
+            "t_s": 30.4,
+            "tree_kb": 591844
+          },
+          {
+            "anon_kb": 445316,
+            "deleted_kb": 0,
+            "file_kb": 145500,
+            "heap_kb": 0,
+            "pool_kb": 44,
+            "t_s": 31.5,
+            "tree_kb": 590816
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 32.5,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "",
+        "timed_out": false,
+        "top_anon_mappings": [
+          {
+            "path": "[anon:WKFastMalloc]",
+            "perms": "rw-p",
+            "rss_kb": 333820
+          },
+          {
+            "path": "",
+            "perms": "rw-p",
+            "rss_kb": 97012
+          },
+          {
+            "path": "[anon:JSJITCode]",
+            "perms": "rwxp",
+            "rss_kb": 7020
+          },
+          {
+            "path": "[anon:JSStructureHeap]",
+            "perms": "rw-p",
+            "rss_kb": 6896
+          },
+          {
+            "path": "[stack]",
+            "perms": "rw-p",
+            "rss_kb": 228
+          },
+          {
+            "path": "[anon:JSGigacage]",
+            "perms": "rw-p",
+            "rss_kb": 208
+          },
+          {
+            "path": "",
+            "perms": "rwxp",
+            "rss_kb": 132
+          }
+        ],
+        "wall_s": 32.5
+      }
+    },
+    "shim+code": {
+      "cgroup": {
+        "cgroup_max_bytes": 536870912,
+        "cgroup_oom_kill": 1,
+        "cgroup_peak_bytes": 536870912,
+        "cgroup_swap_bytes": 0
+      },
+      "docker": {
+        "docker_exit": 0,
+        "output": "CG_MAX=536870912\nCG_PEAK=536870912\nCG_SWAP=0\nCG_OOMKILL=1\nlow 0\nhigh 0\nmax 209\noom 1\noom_kill 1\noom_group_kill 0\n"
+      },
+      "snap": {
+        "cgroup_after": {
+          "current": 7282688,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 209,
+            "oom": 1,
+            "oom_group_kill": 0,
+            "oom_kill": 1
+          },
+          "max": 536870912,
+          "peak": 536870912,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "cgroup_before": {
+          "current": 7954432,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 7954432,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "classification": "oom_kill_or_sigkill",
+        "cmd": [
+          "/usr/local/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "In the current directory there is calc.py with a failing test in test_calc.py. Fix calc.py so the tests pass, run the tests with python3 -m pytest test_calc.py -q, and report the result in one line. Do not touch any other files."
+        ],
+        "container_stdout": "{\n \"exit_code\": -9,\n \"classification\": \"oom_kill_or_sigkill\",\n \"wall_s\": 3.09,\n \"peak_tree_kb\": 563408,\n \"final_class_kb\": {\n  \"anon_kb\": 0,\n  \"file_kb\": 0,\n  \"heap_kb\": 0,\n  \"deleted_kb\": 0,\n  \"pool_kb\": 0\n },\n \"pool_paths\": [\n  \"/pool/diskheap.KxTGnR\",\n  \"/snap/libdiskheap_shim.so\"\n ]\n}\n",
+        "exit_code": -9,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 1,
+        "peak_tree_kb": 563408,
+        "pool_paths": [
+          "/pool/diskheap.KxTGnR",
+          "/snap/libdiskheap_shim.so"
+        ],
+        "samples": 4,
+        "series_tail": [
+          {
+            "anon_kb": 339432,
+            "deleted_kb": 0,
+            "file_kb": 87820,
+            "heap_kb": 0,
+            "pool_kb": 80,
+            "t_s": 1.0,
+            "tree_kb": 430380
+          },
+          {
+            "anon_kb": 465744,
+            "deleted_kb": 0,
+            "file_kb": 97884,
+            "heap_kb": 0,
+            "pool_kb": 108,
+            "t_s": 2.1,
+            "tree_kb": 563408
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 3.1,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "",
+        "timed_out": false,
+        "top_anon_mappings": [
+          {
+            "path": "[anon:WKFastMalloc]",
+            "perms": "rw-p",
+            "rss_kb": 402444
+          },
+          {
+            "path": "",
+            "perms": "rw-p",
+            "rss_kb": 45412
+          },
+          {
+            "path": "[anon:JSJITCode]",
+            "perms": "rwxp",
+            "rss_kb": 8088
+          },
+          {
+            "path": "[anon:JSStructureHeap]",
+            "perms": "rw-p",
+            "rss_kb": 6960
+          },
+          {
+            "path": "[anon:JSGigacage]",
+            "perms": "rw-p",
+            "rss_kb": 2736
+          },
+          {
+            "path": "[stack]",
+            "perms": "rw-p",
+            "rss_kb": 228
+          },
+          {
+            "path": "",
+            "perms": "rwxp",
+            "rss_kb": 132
+          }
+        ],
+        "wall_s": 3.09
+      }
+    },
+    "shim+hi": {
+      "cgroup": {
+        "cgroup_max_bytes": 536870912,
+        "cgroup_oom_kill": 0,
+        "cgroup_peak_bytes": 482480128,
+        "cgroup_swap_bytes": 0
+      },
+      "docker": {
+        "docker_exit": 0,
+        "output": "CG_MAX=536870912\nCG_PEAK=482480128\nCG_SWAP=0\nCG_OOMKILL=0\nlow 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+      },
+      "snap": {
+        "cgroup_after": {
+          "current": 31641600,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 482480128,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "cgroup_before": {
+          "current": 10350592,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 10350592,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "classification": "successful_completion",
+        "cmd": [
+          "/usr/local/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "container_stdout": "{\n \"exit_code\": 0,\n \"classification\": \"successful_completion\",\n \"wall_s\": 4.79,\n \"peak_tree_kb\": 524200,\n \"final_class_kb\": {\n  \"anon_kb\": 0,\n  \"file_kb\": 0,\n  \"heap_kb\": 0,\n  \"deleted_kb\": 0,\n  \"pool_kb\": 0\n },\n \"pool_paths\": [\n  \"/pool/diskheap.SjafYr\",\n  \"/snap/libdiskheap_shim.so\"\n ]\n}\n",
+        "exit_code": 0,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 1,
+        "peak_tree_kb": 524200,
+        "pool_paths": [
+          "/pool/diskheap.SjafYr",
+          "/snap/libdiskheap_shim.so"
+        ],
+        "samples": 5,
+        "series_tail": [
+          {
+            "anon_kb": 422652,
+            "deleted_kb": 0,
+            "file_kb": 97792,
+            "heap_kb": 0,
+            "pool_kb": 112,
+            "t_s": 2.5,
+            "tree_kb": 521196
+          },
+          {
+            "anon_kb": 428812,
+            "deleted_kb": 0,
+            "file_kb": 97792,
+            "heap_kb": 0,
+            "pool_kb": 112,
+            "t_s": 3.8,
+            "tree_kb": 524200
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 4.8,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "Hi\n",
+        "timed_out": false,
+        "top_anon_mappings": [
+          {
+            "path": "[anon:WKFastMalloc]",
+            "perms": "rw-p",
+            "rss_kb": 299132
+          },
+          {
+            "path": "",
+            "perms": "rw-p",
+            "rss_kb": 29092
+          },
+          {
+            "path": "[anon:JSGigacage]",
+            "perms": "rw-p",
+            "rss_kb": 11456
+          },
+          {
+            "path": "",
+            "perms": "rwxp",
+            "rss_kb": 132
+          }
+        ],
+        "wall_s": 4.79
+      }
+    },
+    "smol+code": {
+      "cgroup": {
+        "cgroup_max_bytes": 536870912,
+        "cgroup_oom_kill": 1,
+        "cgroup_peak_bytes": 536870912,
+        "cgroup_swap_bytes": 0
+      },
+      "docker": {
+        "docker_exit": 0,
+        "output": "CG_MAX=536870912\nCG_PEAK=536870912\nCG_SWAP=0\nCG_OOMKILL=1\nlow 0\nhigh 0\nmax 186\noom 1\noom_kill 1\noom_group_kill 0\n"
+      },
+      "snap": {
+        "cgroup_after": {
+          "current": 7213056,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 186,
+            "oom": 1,
+            "oom_group_kill": 0,
+            "oom_kill": 1
+          },
+          "max": 536870912,
+          "peak": 536870912,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "cgroup_before": {
+          "current": 7008256,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 7532544,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "classification": "oom_kill_or_sigkill",
+        "cmd": [
+          "/usr/local/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "In the current directory there is calc.py with a failing test in test_calc.py. Fix calc.py so the tests pass, run the tests with python3 -m pytest test_calc.py -q, and report the result in one line. Do not touch any other files."
+        ],
+        "container_stdout": "{\n \"exit_code\": -9,\n \"classification\": \"oom_kill_or_sigkill\",\n \"wall_s\": 3.16,\n \"peak_tree_kb\": 527232,\n \"final_class_kb\": {\n  \"anon_kb\": 0,\n  \"file_kb\": 0,\n  \"heap_kb\": 0,\n  \"deleted_kb\": 0,\n  \"pool_kb\": 0\n },\n \"pool_paths\": []\n}\n",
+        "exit_code": -9,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 1,
+        "peak_tree_kb": 527232,
+        "pool_paths": [],
+        "samples": 4,
+        "series_tail": [
+          {
+            "anon_kb": 327672,
+            "deleted_kb": 0,
+            "file_kb": 87468,
+            "heap_kb": 20,
+            "pool_kb": 0,
+            "t_s": 1.0,
+            "tree_kb": 417036
+          },
+          {
+            "anon_kb": 429708,
+            "deleted_kb": 0,
+            "file_kb": 97540,
+            "heap_kb": 36,
+            "pool_kb": 0,
+            "t_s": 2.1,
+            "tree_kb": 527232
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 3.2,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "",
+        "timed_out": false,
+        "top_anon_mappings": [
+          {
+            "path": "[anon:WKFastMalloc]",
+            "perms": "rw-p",
+            "rss_kb": 365984
+          },
+          {
+            "path": "",
+            "perms": "rw-p",
+            "rss_kb": 44276
+          },
+          {
+            "path": "[anon:JSJITCode]",
+            "perms": "rwxp",
+            "rss_kb": 8080
+          },
+          {
+            "path": "[anon:JSStructureHeap]",
+            "perms": "rw-p",
+            "rss_kb": 6976
+          },
+          {
+            "path": "[anon:JSGigacage]",
+            "perms": "rw-p",
+            "rss_kb": 4100
+          },
+          {
+            "path": "[stack]",
+            "perms": "rw-p",
+            "rss_kb": 232
+          },
+          {
+            "path": "",
+            "perms": "rwxp",
+            "rss_kb": 132
+          },
+          {
+            "path": "[heap]",
+            "perms": "rw-p",
+            "rss_kb": 36
+          }
+        ],
+        "wall_s": 3.16
+      }
+    },
+    "smol+hi": {
+      "cgroup": {
+        "cgroup_max_bytes": 536870912,
+        "cgroup_oom_kill": 0,
+        "cgroup_peak_bytes": 536870912,
+        "cgroup_swap_bytes": 0
+      },
+      "docker": {
+        "docker_exit": 0,
+        "output": "CG_MAX=536870912\nCG_PEAK=536870912\nCG_SWAP=0\nCG_OOMKILL=0\nlow 0\nhigh 0\nmax 81\noom 0\noom_kill 0\noom_group_kill 0\n"
+      },
+      "snap": {
+        "cgroup_after": {
+          "current": 51994624,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 81,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 536870912,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "cgroup_before": {
+          "current": 7356416,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 7356416,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "classification": "successful_completion",
+        "cmd": [
+          "/usr/local/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "container_stdout": "{\n \"exit_code\": 0,\n \"classification\": \"successful_completion\",\n \"wall_s\": 5.34,\n \"peak_tree_kb\": 568504,\n \"final_class_kb\": {\n  \"anon_kb\": 0,\n  \"file_kb\": 0,\n  \"heap_kb\": 0,\n  \"deleted_kb\": 0,\n  \"pool_kb\": 0\n },\n \"pool_paths\": []\n}\n",
+        "exit_code": 0,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 1,
+        "peak_tree_kb": 568504,
+        "pool_paths": [],
+        "samples": 6,
+        "series_tail": [
+          {
+            "anon_kb": 470576,
+            "deleted_kb": 0,
+            "file_kb": 97596,
+            "heap_kb": 36,
+            "pool_kb": 0,
+            "t_s": 3.2,
+            "tree_kb": 568504
+          },
+          {
+            "anon_kb": 430220,
+            "deleted_kb": 0,
+            "file_kb": 97628,
+            "heap_kb": 36,
+            "pool_kb": 0,
+            "t_s": 4.3,
+            "tree_kb": 527836
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 5.3,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "Hi\n",
+        "timed_out": false,
+        "top_anon_mappings": [
+          {
+            "path": "[anon:WKFastMalloc]",
+            "perms": "rw-p",
+            "rss_kb": 348352
+          },
+          {
+            "path": "[anon:JSGigacage]",
+            "perms": "rw-p",
+            "rss_kb": 41668
+          },
+          {
+            "path": "",
+            "perms": "rw-p",
+            "rss_kb": 23396
+          },
+          {
+            "path": "[anon:JSJITCode]",
+            "perms": "rwxp",
+            "rss_kb": 9184
+          },
+          {
+            "path": "[anon:JSStructureHeap]",
+            "perms": "rw-p",
+            "rss_kb": 7184
+          },
+          {
+            "path": "[stack]",
+            "perms": "rw-p",
+            "rss_kb": 232
+          },
+          {
+            "path": "",
+            "perms": "rwxp",
+            "rss_kb": 132
+          },
+          {
+            "path": "[heap]",
+            "perms": "rw-p",
+            "rss_kb": 36
+          }
+        ],
+        "wall_s": 5.34
+      }
+    },
+    "vmmalloc+code": {
+      "cgroup": {
+        "cgroup_max_bytes": 536870912,
+        "cgroup_oom_kill": 1,
+        "cgroup_peak_bytes": 536870912,
+        "cgroup_swap_bytes": 0
+      },
+      "docker": {
+        "docker_exit": 0,
+        "output": "CG_MAX=536870912\nCG_PEAK=536870912\nCG_SWAP=0\nCG_OOMKILL=1\nlow 0\nhigh 0\nmax 232\noom 1\noom_kill 1\noom_group_kill 0\n"
+      },
+      "snap": {
+        "cgroup_after": {
+          "current": 11419648,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 232,
+            "oom": 1,
+            "oom_group_kill": 0,
+            "oom_kill": 1
+          },
+          "max": 536870912,
+          "peak": 536870912,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "cgroup_before": {
+          "current": 10428416,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 10428416,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "classification": "oom_kill_or_sigkill",
+        "cmd": [
+          "/usr/local/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "In the current directory there is calc.py with a failing test in test_calc.py. Fix calc.py so the tests pass, run the tests with python3 -m pytest test_calc.py -q, and report the result in one line. Do not touch any other files."
+        ],
+        "container_stdout": "{\n \"exit_code\": -9,\n \"classification\": \"oom_kill_or_sigkill\",\n \"wall_s\": 3.11,\n \"peak_tree_kb\": 531992,\n \"final_class_kb\": {\n  \"anon_kb\": 0,\n  \"file_kb\": 0,\n  \"heap_kb\": 0,\n  \"deleted_kb\": 0,\n  \"pool_kb\": 0\n },\n \"pool_paths\": [\n  \"/pool/#9438540\",\n  \"/snap/libvmmalloc.so.1\"\n ]\n}\n",
+        "exit_code": -9,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 1,
+        "peak_tree_kb": 531992,
+        "pool_paths": [
+          "/pool/#9438540",
+          "/snap/libvmmalloc.so.1"
+        ],
+        "samples": 4,
+        "series_tail": [
+          {
+            "anon_kb": 351028,
+            "deleted_kb": 0,
+            "file_kb": 88724,
+            "heap_kb": 0,
+            "pool_kb": 984,
+            "t_s": 1.0,
+            "tree_kb": 438968
+          },
+          {
+            "anon_kb": 433064,
+            "deleted_kb": 0,
+            "file_kb": 98928,
+            "heap_kb": 0,
+            "pool_kb": 1152,
+            "t_s": 2.1,
+            "tree_kb": 531992
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 3.1,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "",
+        "timed_out": false,
+        "top_anon_mappings": [
+          {
+            "path": "[anon:WKFastMalloc]",
+            "perms": "rw-p",
+            "rss_kb": 375408
+          },
+          {
+            "path": "",
+            "perms": "rw-p",
+            "rss_kb": 38688
+          },
+          {
+            "path": "[anon:JSJITCode]",
+            "perms": "rwxp",
+            "rss_kb": 8208
+          },
+          {
+            "path": "[anon:JSStructureHeap]",
+            "perms": "rw-p",
+            "rss_kb": 6960
+          },
+          {
+            "path": "[anon:JSGigacage]",
+            "perms": "rw-p",
+            "rss_kb": 3452
+          },
+          {
+            "path": "[stack]",
+            "perms": "rw-p",
+            "rss_kb": 228
+          },
+          {
+            "path": "",
+            "perms": "rwxp",
+            "rss_kb": 132
+          }
+        ],
+        "wall_s": 3.11
+      }
+    },
+    "vmmalloc+hi": {
+      "cgroup": {
+        "cgroup_max_bytes": 536870912,
+        "cgroup_oom_kill": 1,
+        "cgroup_peak_bytes": 536870912,
+        "cgroup_swap_bytes": 0
+      },
+      "docker": {
+        "docker_exit": 0,
+        "output": "CG_MAX=536870912\nCG_PEAK=536870912\nCG_SWAP=0\nCG_OOMKILL=1\nlow 0\nhigh 0\nmax 106\noom 1\noom_kill 1\noom_group_kill 0\n"
+      },
+      "snap": {
+        "cgroup_after": {
+          "current": 36433920,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 106,
+            "oom": 1,
+            "oom_group_kill": 0,
+            "oom_kill": 1
+          },
+          "max": 536870912,
+          "peak": 536870912,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "cgroup_before": {
+          "current": 10719232,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 10719232,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "classification": "oom_kill_or_sigkill",
+        "cmd": [
+          "/usr/local/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "container_stdout": "{\n \"exit_code\": -9,\n \"classification\": \"oom_kill_or_sigkill\",\n \"wall_s\": 3.13,\n \"peak_tree_kb\": 542100,\n \"final_class_kb\": {\n  \"anon_kb\": 0,\n  \"file_kb\": 0,\n  \"heap_kb\": 0,\n  \"deleted_kb\": 0,\n  \"pool_kb\": 0\n },\n \"pool_paths\": [\n  \"/pool/#9438540\",\n  \"/snap/libvmmalloc.so.1\"\n ]\n}\n",
+        "exit_code": -9,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 1,
+        "peak_tree_kb": 542100,
+        "pool_paths": [
+          "/pool/#9438540",
+          "/snap/libvmmalloc.so.1"
+        ],
+        "samples": 4,
+        "series_tail": [
+          {
+            "anon_kb": 354976,
+            "deleted_kb": 0,
+            "file_kb": 88532,
+            "heap_kb": 0,
+            "pool_kb": 988,
+            "t_s": 1.0,
+            "tree_kb": 442728
+          },
+          {
+            "anon_kb": 443380,
+            "deleted_kb": 0,
+            "file_kb": 98724,
+            "heap_kb": 0,
+            "pool_kb": 1156,
+            "t_s": 2.1,
+            "tree_kb": 542100
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 3.1,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "",
+        "timed_out": false,
+        "top_anon_mappings": [
+          {
+            "path": "[anon:WKFastMalloc]",
+            "perms": "rw-p",
+            "rss_kb": 389012
+          },
+          {
+            "path": "",
+            "perms": "rw-p",
+            "rss_kb": 34472
+          },
+          {
+            "path": "[anon:JSJITCode]",
+            "perms": "rwxp",
+            "rss_kb": 8176
+          },
+          {
+            "path": "[anon:JSStructureHeap]",
+            "perms": "rw-p",
+            "rss_kb": 6992
+          },
+          {
+            "path": "[anon:JSGigacage]",
+            "perms": "rw-p",
+            "rss_kb": 4440
+          },
+          {
+            "path": "[stack]",
+            "perms": "rw-p",
+            "rss_kb": 228
+          },
+          {
+            "path": "",
+            "perms": "rwxp",
+            "rss_kb": 132
+          }
+        ],
+        "wall_s": 3.13
+      }
+    },
+    "vmmalloc_smol+code": {
+      "cgroup": {
+        "cgroup_max_bytes": 536870912,
+        "cgroup_oom_kill": 1,
+        "cgroup_peak_bytes": 536870912,
+        "cgroup_swap_bytes": 0
+      },
+      "docker": {
+        "docker_exit": 0,
+        "output": "CG_MAX=536870912\nCG_PEAK=536870912\nCG_SWAP=0\nCG_OOMKILL=1\nlow 0\nhigh 0\nmax 190\noom 1\noom_kill 1\noom_group_kill 0\n"
+      },
+      "snap": {
+        "cgroup_after": {
+          "current": 18874368,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 190,
+            "oom": 1,
+            "oom_group_kill": 0,
+            "oom_kill": 1
+          },
+          "max": 536870912,
+          "peak": 536870912,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "cgroup_before": {
+          "current": 10858496,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 10858496,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "classification": "oom_kill_or_sigkill",
+        "cmd": [
+          "/usr/local/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "In the current directory there is calc.py with a failing test in test_calc.py. Fix calc.py so the tests pass, run the tests with python3 -m pytest test_calc.py -q, and report the result in one line. Do not touch any other files."
+        ],
+        "container_stdout": "{\n \"exit_code\": -9,\n \"classification\": \"oom_kill_or_sigkill\",\n \"wall_s\": 3.1,\n \"peak_tree_kb\": 550384,\n \"final_class_kb\": {\n  \"anon_kb\": 0,\n  \"file_kb\": 0,\n  \"heap_kb\": 0,\n  \"deleted_kb\": 0,\n  \"pool_kb\": 0\n },\n \"pool_paths\": [\n  \"/pool/#9438540\",\n  \"/snap/libvmmalloc.so.1\"\n ]\n}\n",
+        "exit_code": -9,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 1,
+        "peak_tree_kb": 550384,
+        "pool_paths": [
+          "/pool/#9438540",
+          "/snap/libvmmalloc.so.1"
+        ],
+        "samples": 4,
+        "series_tail": [
+          {
+            "anon_kb": 350636,
+            "deleted_kb": 0,
+            "file_kb": 88684,
+            "heap_kb": 0,
+            "pool_kb": 988,
+            "t_s": 1.0,
+            "tree_kb": 438352
+          },
+          {
+            "anon_kb": 451492,
+            "deleted_kb": 0,
+            "file_kb": 98892,
+            "heap_kb": 0,
+            "pool_kb": 1156,
+            "t_s": 2.1,
+            "tree_kb": 550384
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 3.1,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "",
+        "timed_out": false,
+        "top_anon_mappings": [
+          {
+            "path": "[anon:WKFastMalloc]",
+            "perms": "rw-p",
+            "rss_kb": 388188
+          },
+          {
+            "path": "",
+            "perms": "rw-p",
+            "rss_kb": 43448
+          },
+          {
+            "path": "[anon:JSJITCode]",
+            "perms": "rwxp",
+            "rss_kb": 8124
+          },
+          {
+            "path": "[anon:JSStructureHeap]",
+            "perms": "rw-p",
+            "rss_kb": 6976
+          },
+          {
+            "path": "[anon:JSGigacage]",
+            "perms": "rw-p",
+            "rss_kb": 4396
+          },
+          {
+            "path": "[stack]",
+            "perms": "rw-p",
+            "rss_kb": 232
+          },
+          {
+            "path": "",
+            "perms": "rwxp",
+            "rss_kb": 132
+          }
+        ],
+        "wall_s": 3.1
+      }
+    },
+    "vmmalloc_smol+hi": {
+      "cgroup": {
+        "cgroup_max_bytes": 536870912,
+        "cgroup_oom_kill": 0,
+        "cgroup_peak_bytes": 499339264,
+        "cgroup_swap_bytes": 0
+      },
+      "docker": {
+        "docker_exit": 0,
+        "output": "CG_MAX=536870912\nCG_PEAK=499339264\nCG_SWAP=0\nCG_OOMKILL=0\nlow 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+      },
+      "snap": {
+        "cgroup_after": {
+          "current": 55320576,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 499339264,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "cgroup_before": {
+          "current": 10444800,
+          "events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "max": 536870912,
+          "peak": 10444800,
+          "swap_current": 0,
+          "swap_max": 0
+        },
+        "classification": "successful_completion",
+        "cmd": [
+          "/usr/local/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "container_stdout": "{\n \"exit_code\": 0,\n \"classification\": \"successful_completion\",\n \"wall_s\": 5.01,\n \"peak_tree_kb\": 528064,\n \"final_class_kb\": {\n  \"anon_kb\": 0,\n  \"file_kb\": 0,\n  \"heap_kb\": 0,\n  \"deleted_kb\": 0,\n  \"pool_kb\": 0\n },\n \"pool_paths\": [\n  \"/pool/#9438540\",\n  \"/snap/libvmmalloc.so.1\"\n ]\n}\n",
+        "exit_code": 0,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 1,
+        "peak_tree_kb": 528064,
+        "pool_paths": [
+          "/pool/#9438540",
+          "/snap/libvmmalloc.so.1"
+        ],
+        "samples": 5,
+        "series_tail": [
+          {
+            "anon_kb": 430304,
+            "deleted_kb": 0,
+            "file_kb": 98620,
+            "heap_kb": 0,
+            "pool_kb": 1072,
+            "t_s": 2.4,
+            "tree_kb": 528064
+          },
+          {
+            "anon_kb": 412268,
+            "deleted_kb": 0,
+            "file_kb": 98620,
+            "heap_kb": 0,
+            "pool_kb": 1072,
+            "t_s": 4.0,
+            "tree_kb": 510548
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 5.0,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "Hi\n",
+        "timed_out": false,
+        "top_anon_mappings": [
+          {
+            "path": "[anon:WKFastMalloc]",
+            "perms": "rw-p",
+            "rss_kb": 359728
+          },
+          {
+            "path": "",
+            "perms": "rw-p",
+            "rss_kb": 25640
+          },
+          {
+            "path": "[anon:JSGigacage]",
+            "perms": "rw-p",
+            "rss_kb": 15476
+          },
+          {
+            "path": "[anon:JSJITCode]",
+            "perms": "rwxp",
+            "rss_kb": 8536
+          },
+          {
+            "path": "[anon:JSStructureHeap]",
+            "perms": "rw-p",
+            "rss_kb": 6976
+          },
+          {
+            "path": "[stack]",
+            "perms": "rw-p",
+            "rss_kb": 232
+          },
+          {
+            "path": "",
+            "perms": "rwxp",
+            "rss_kb": 132
+          }
+        ],
+        "wall_s": 5.01
+      }
+    }
+  },
+  "environment": {
+    "container_image": "diskheap-bench (ubuntu:24.04, glibc 2.39, python3 + procps)",
+    "host": "GitHub Actions ubuntu-24.04, glibc 2.39, docker 28.0.4, cgroup v2",
+    "libmemtier_container": "libmemkind0 1.14.0 (noble, apt)",
+    "libmemtier_host": "libmemkind 1.14.0 (noble)",
+    "libvmmalloc": "built from pmem/vmem master (src 35c313c3f), nondebug; no binary package exists on noble",
+    "model": "opencode/muse-spark-1.3-contributor-free"
+  },
+  "host": {
+    "baseline": {
+      "available": true,
+      "env_keys": [],
+      "pool_dir": "/tmp/diskheap-pool-a1ihb5_n",
+      "snap": {
+        "cgroup_after": {
+          "events": {}
+        },
+        "cgroup_before": {
+          "events": {}
+        },
+        "classification": "successful_completion",
+        "cmd": [
+          "/home/runner/.opencode/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "exit_code": 0,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 2,
+        "peak_tree_kb": 558012,
+        "pool_paths": [],
+        "samples": 6,
+        "series_tail": [
+          {
+            "anon_kb": 440940,
+            "deleted_kb": 0,
+            "file_kb": 99300,
+            "heap_kb": 44,
+            "pool_kb": 0,
+            "t_s": 3.2,
+            "tree_kb": 540240
+          },
+          {
+            "anon_kb": 440376,
+            "deleted_kb": 0,
+            "file_kb": 99300,
+            "heap_kb": 44,
+            "pool_kb": 0,
+            "t_s": 4.3,
+            "tree_kb": 539676
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 5.3,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "Hi\n",
+        "timed_out": false,
+        "top_anon_mappings": [],
+        "wall_s": 5.26
+      }
+    },
+    "memtier": {
+      "available": true,
+      "env_keys": [
+        "LD_PRELOAD",
+        "MEMKIND_MEM_TIERS"
+      ],
+      "pool_dir": "/tmp/diskheap-pool-r31hhy5t",
+      "snap": {
+        "cgroup_after": {
+          "events": {}
+        },
+        "cgroup_before": {
+          "events": {}
+        },
+        "classification": "sigsegv_crash",
+        "cmd": [
+          "/home/runner/.opencode/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "exit_code": -11,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 2,
+        "peak_tree_kb": 642104,
+        "pool_paths": [
+          "/tmp/diskheap-pool-r31hhy5t/memkind.FhdrLF",
+          "/usr/lib/x86_64-linux-gnu/libmemkind.so.0.0.1"
+        ],
+        "samples": 32,
+        "series_tail": [
+          {
+            "anon_kb": 486896,
+            "deleted_kb": 0,
+            "file_kb": 155208,
+            "heap_kb": 0,
+            "pool_kb": 8900,
+            "t_s": 29.7,
+            "tree_kb": 642104
+          },
+          {
+            "anon_kb": 486896,
+            "deleted_kb": 0,
+            "file_kb": 155208,
+            "heap_kb": 0,
+            "pool_kb": 8900,
+            "t_s": 30.7,
+            "tree_kb": 642104
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 31.7,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "",
+        "timed_out": false,
+        "top_anon_mappings": [],
+        "wall_s": 31.75
+      }
+    },
+    "shim": {
+      "available": true,
+      "env_keys": [
+        "DISKHEAP_DIR",
+        "DISKHEAP_SIZE_MB",
+        "LD_PRELOAD"
+      ],
+      "pool_dir": "/tmp/diskheap-pool-j5jaufv_",
+      "snap": {
+        "cgroup_after": {
+          "events": {}
+        },
+        "cgroup_before": {
+          "events": {}
+        },
+        "classification": "successful_completion",
+        "cmd": [
+          "/home/runner/.opencode/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "exit_code": 0,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 2,
+        "peak_tree_kb": 556620,
+        "pool_paths": [
+          "/tmp/diskheap-build-mc5184gw/libdiskheap_shim.so",
+          "/tmp/diskheap-pool-j5jaufv_/diskheap.EPnVMn"
+        ],
+        "samples": 6,
+        "series_tail": [
+          {
+            "anon_kb": 438528,
+            "deleted_kb": 0,
+            "file_kb": 100176,
+            "heap_kb": 0,
+            "pool_kb": 828,
+            "t_s": 3.2,
+            "tree_kb": 538704
+          },
+          {
+            "anon_kb": 438116,
+            "deleted_kb": 0,
+            "file_kb": 100176,
+            "heap_kb": 0,
+            "pool_kb": 828,
+            "t_s": 4.3,
+            "tree_kb": 538292
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 5.3,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "Hi\n",
+        "timed_out": false,
+        "top_anon_mappings": [],
+        "wall_s": 5.27
+      }
+    },
+    "shim_smol": {
+      "available": true,
+      "env_keys": [
+        "BUN_OPTIONS",
+        "DISKHEAP_DIR",
+        "DISKHEAP_SIZE_MB",
+        "LD_PRELOAD"
+      ],
+      "pool_dir": "/tmp/diskheap-pool-k2uwgp0y",
+      "snap": {
+        "cgroup_after": {
+          "events": {}
+        },
+        "cgroup_before": {
+          "events": {}
+        },
+        "classification": "successful_completion",
+        "cmd": [
+          "/home/runner/.opencode/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "exit_code": 0,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 2,
+        "peak_tree_kb": 560436,
+        "pool_paths": [
+          "/tmp/diskheap-build-mc5184gw/libdiskheap_shim.so",
+          "/tmp/diskheap-pool-k2uwgp0y/diskheap.rvjTZN"
+        ],
+        "samples": 5,
+        "series_tail": [
+          {
+            "anon_kb": 457368,
+            "deleted_kb": 0,
+            "file_kb": 99956,
+            "heap_kb": 0,
+            "pool_kb": 784,
+            "t_s": 2.1,
+            "tree_kb": 560436
+          },
+          {
+            "anon_kb": 443648,
+            "deleted_kb": 0,
+            "file_kb": 100084,
+            "heap_kb": 0,
+            "pool_kb": 784,
+            "t_s": 3.2,
+            "tree_kb": 543740
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 4.2,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "Hi\n",
+        "timed_out": false,
+        "top_anon_mappings": [],
+        "wall_s": 4.19
+      }
+    },
+    "smol": {
+      "available": true,
+      "env_keys": [
+        "BUN_OPTIONS"
+      ],
+      "pool_dir": "/tmp/diskheap-pool-pjlj9pmb",
+      "snap": {
+        "cgroup_after": {
+          "events": {}
+        },
+        "cgroup_before": {
+          "events": {}
+        },
+        "classification": "successful_completion",
+        "cmd": [
+          "/home/runner/.opencode/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "exit_code": 0,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 2,
+        "peak_tree_kb": 552100,
+        "pool_paths": [],
+        "samples": 5,
+        "series_tail": [
+          {
+            "anon_kb": 452500,
+            "deleted_kb": 0,
+            "file_kb": 99352,
+            "heap_kb": 44,
+            "pool_kb": 0,
+            "t_s": 2.1,
+            "tree_kb": 552100
+          },
+          {
+            "anon_kb": 439524,
+            "deleted_kb": 0,
+            "file_kb": 99416,
+            "heap_kb": 44,
+            "pool_kb": 0,
+            "t_s": 3.2,
+            "tree_kb": 538936
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 4.2,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "Hi\n",
+        "timed_out": false,
+        "top_anon_mappings": [],
+        "wall_s": 4.25
+      }
+    },
+    "vmmalloc": {
+      "available": true,
+      "env_keys": [
+        "LD_PRELOAD",
+        "VMMALLOC_POOL_DIR",
+        "VMMALLOC_POOL_SIZE"
+      ],
+      "pool_dir": "/tmp/diskheap-pool-rjqpnlz7",
+      "snap": {
+        "cgroup_after": {
+          "events": {}
+        },
+        "cgroup_before": {
+          "events": {}
+        },
+        "classification": "successful_completion",
+        "cmd": [
+          "/home/runner/.opencode/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "exit_code": 0,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 2,
+        "peak_tree_kb": 562816,
+        "pool_paths": [
+          "/tmp/diskheap-pool-rjqpnlz7/#2401624",
+          "/tmp/vmemsrc/vmem-master/src/nondebug/libvmmalloc.so.1.0.0"
+        ],
+        "samples": 6,
+        "series_tail": [
+          {
+            "anon_kb": 438940,
+            "deleted_kb": 0,
+            "file_kb": 102056,
+            "heap_kb": 0,
+            "pool_kb": 2736,
+            "t_s": 3.2,
+            "tree_kb": 540996
+          },
+          {
+            "anon_kb": 440572,
+            "deleted_kb": 0,
+            "file_kb": 102056,
+            "heap_kb": 0,
+            "pool_kb": 2736,
+            "t_s": 4.3,
+            "tree_kb": 542400
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 5.3,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "Hi\n",
+        "timed_out": false,
+        "top_anon_mappings": [],
+        "wall_s": 5.26
+      }
+    },
+    "vmmalloc_smol": {
+      "available": true,
+      "env_keys": [
+        "BUN_OPTIONS",
+        "LD_PRELOAD",
+        "VMMALLOC_POOL_DIR",
+        "VMMALLOC_POOL_SIZE"
+      ],
+      "pool_dir": "/tmp/diskheap-pool-g5ciyq32",
+      "snap": {
+        "cgroup_after": {
+          "events": {}
+        },
+        "cgroup_before": {
+          "events": {}
+        },
+        "classification": "successful_completion",
+        "cmd": [
+          "/home/runner/.opencode/bin/opencode",
+          "run",
+          "--auto",
+          "--model",
+          "opencode/muse-spark-1.3-contributor-free",
+          "say hi in one word"
+        ],
+        "exit_code": 0,
+        "final_class_kb": {
+          "anon_kb": 0,
+          "deleted_kb": 0,
+          "file_kb": 0,
+          "heap_kb": 0,
+          "pool_kb": 0
+        },
+        "max_family_size": 2,
+        "peak_tree_kb": 566780,
+        "pool_paths": [
+          "/tmp/diskheap-pool-g5ciyq32/#2401627",
+          "/tmp/vmemsrc/vmem-master/src/nondebug/libvmmalloc.so.1.0.0"
+        ],
+        "samples": 5,
+        "series_tail": [
+          {
+            "anon_kb": 461708,
+            "deleted_kb": 0,
+            "file_kb": 101800,
+            "heap_kb": 0,
+            "pool_kb": 2692,
+            "t_s": 2.1,
+            "tree_kb": 566780
+          },
+          {
+            "anon_kb": 446112,
+            "deleted_kb": 0,
+            "file_kb": 101992,
+            "heap_kb": 0,
+            "pool_kb": 2692,
+            "t_s": 3.2,
+            "tree_kb": 548104
+          },
+          {
+            "anon_kb": 0,
+            "deleted_kb": 0,
+            "file_kb": 0,
+            "heap_kb": 0,
+            "pool_kb": 0,
+            "t_s": 4.2,
+            "tree_kb": 0
+          }
+        ],
+        "stderr": "\u001b[0m\n> build \u00b7 muse-spark-1.3-contributor-free\n\u001b[0m\n",
+        "stdout": "Hi\n",
+        "timed_out": false,
+        "top_anon_mappings": [],
+        "wall_s": 4.18
+      }
+    }
+  },
+  "issue": 56,
+  "opencode_bin": "/home/runner/.opencode/bin/opencode",
+  "pinned_opencode_version": "1.18.33",
+  "reproduce": {
+    "docker": "docker build -f automation/disk_heap_bench.Dockerfile -t diskheap-bench <context> && python3 automation/disk_heap_benchmark.py --include-network --docker --tasks hi,code --vmmalloc-so <path-to>/libvmmalloc.so.1 ...",
+    "host": "python3 automation/disk_heap_benchmark.py --include-network --run-id <id> --vmmalloc-so <path-to>/libvmmalloc.so.1 --output <json> --report <md>"
+  },
+  "run_id": "36429944096",
+  "schema": "runtime-lab-disk-heap-benchmark/v1",
+  "verdicts": {
+    "memtier": "incompatible with the Bun-compiled OpenCode binary: transparent LD_PRELOAD works on trivial binaries and moves malloc traffic to FS_DAX file tiers, but the real agent segfaults deterministically (3/3 hi-task runs, exit -11 after a ~32 s stall; code-task runs OOM first). Not useful, not wired into production.",
+    "overall": "No candidate converts the 512 MB no-swap workload from unreliable/OOM to repeatable success. ~440 MB of the ~600 MB peak sits in [anon:WKFastMalloc], [anon:JSGigacage], [anon:JSJITCode], [anon:JSStructureHeap] and plain anonymous mmap segments that bypass libc malloc by design, so no LD_PRELOAD malloc interposer can move them. No production wrapper is implemented; Render Free remains unsuitable for real agent runs per issue #9 criteria.",
+    "shim": "partially works: the minimal custom MAP_SHARED shim is correct (stress-tested) and transparent, but moves only ~0.1-0.8 MB of ~600 MB, proving ~0% of the footprint travels through libc malloc-family paths after startup. Benchmark probe only; never ship it.",
+    "smol": "minor help only: BUN_OPTIONS=--smol cuts ~40 MB (~7%) off peak, still OOMs at 512 MB without swap. Keep as a harmless default, not a fix.",
+    "userfaultfd": "unsuitable: unprivileged userfaultfd returns EPERM on this kernel config and no maintained transparent wrapper exists for an unmodified Bun/JSC binary. No pager was built.",
+    "vmmalloc": "partially works: loads on ordinary disk with glibc 2.39, interposes malloc and serves it from a MAP_SHARED pool file, but moves only ~1-3 MB of ~600 MB (0.2-0.5%). Peak unchanged; 512 MB no-swap runs still OOM. Not useful, not wired into production."
+  }
+}
