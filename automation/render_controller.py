@@ -1197,7 +1197,7 @@ def execute_issue_attempt(
         if last_error is not None:
             raise RuntimeError("runner health check failed: %s" % last_error)
 
-        task_text = resolve_task_text(issue_number, execution_mode, title=title, body=body)
+        task_text = resolve_task_text(issue_number, execution_mode, title=title, body=body, run_id=label_run)
         metadata = ExecutionMetadata(
             issue_number=issue_number,
             attempt=1,
