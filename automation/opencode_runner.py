@@ -499,6 +499,117 @@ def truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     return text[:limit] + "...[truncated]"
 
 
+def truncate_head_tail(
+    text: str,
+    limit: int = MAX_OUTPUT_CHARS,
+    head_chars: int | None = None,
+    tail_chars: int | None = None,
+) -> str:
+    """Bound ``text`` to ~``limit`` chars as head + marker + tail.
+
+    Unlike :func:`truncate` (head-only), this preserves the trailing
+    error lines where failures actually surface, plus an explicit
+    ``...[truncated N chars]...`` marker recording exactly how much was
+    omitted. Short inputs are returned unchanged.
+    """
+    if not isinstance(text, str):
+        return ""
+    resolved = max(1, int(limit))
+    if len(text) <= resolved:
+        return text
+    if head_chars is None:
+        head_chars = (resolved * 5) // 8
+    if tail_chars is None:
+        tail_chars = max(1, resolved - int(head_chars))
+    head_chars = max(0, int(head_chars))
+    tail_chars = max(0, int(tail_chars))
+    if head_chars + tail_chars >= len(text):
+        return text
+    omitted = len(text) - head_chars - tail_chars
+    marker = "...[truncated %d chars: head %d + tail %d]..." % (
+        omitted,
+        head_chars,
+        tail_chars,
+    )
+    head = text[:head_chars] if head_chars else ""
+    tail = text[len(text) - tail_chars:] if tail_chars else ""
+    return head + marker + tail
+
+
+# ---------------------------------------------------------------------------
+# Fresh OpenCode session per issue (issue #80).
+# ---------------------------------------------------------------------------
+
+# Flags that would reuse a previous session/history instead of starting a
+# fresh one-shot execution. Our command builder never emits them; this list
+# lets the runner fail closed if one ever slips in (stale task state across
+# GitHub issues must never be reused).
+SESSION_REUSE_FLAGS = frozenset(
+    {"--continue", "--session", "--fork", "--attach", "-s", "--username"}
+)
+
+# Per-job session-database directory name inside the isolated workspace.
+# OpenCode persists session history in sqlite (see the #77 inventory:
+# session/processor + Database + storage); pointing OPENCODE_DB at a
+# per-job path guarantees each issue execution starts with empty history
+# even when the worker process serves several jobs in a row.
+SESSION_DB_DIRNAME = ".runtime-lab-opencode-db"
+SESSION_DB_FILENAME = "session.db"
+
+
+def assert_fresh_session_command(cmd: list[str] | tuple[str, ...]) -> None:
+    """Fail closed when an OpenCode command would reuse session history.
+
+    Only the exact ``opencode run`` shape built by
+    :func:`build_opencode_command` is accepted; any session-reuse flag
+    (``--continue``/``--session``/``--fork``/``--attach``) raises
+    ``ValueError`` instead of running with stale cross-issue state.
+    """
+    parts = list(cmd)
+    if len(parts) < 2 or parts[1] != "run":
+        return
+    reused = sorted(
+        part for part in parts[2:] if part in SESSION_REUSE_FLAGS
+    )
+    if reused:
+        raise ValueError(
+            "refusing to reuse OpenCode session history in a one-shot job "
+            "(forbidden flags: %s)" % ", ".join(reused)
+        )
+
+
+def fresh_session_db_path(workspace: str) -> str:
+    """Return the per-job isolated session-database path for ``workspace``."""
+    if not isinstance(workspace, str) or not workspace.strip():
+        raise ValueError("workspace must be a non-empty string")
+    return os.path.join(
+        workspace, SESSION_DB_DIRNAME, SESSION_DB_FILENAME
+    )
+
+
+def fresh_session_env(workspace: str) -> dict[str, str]:
+    """Return per-job child-env overrides that force a fresh session.
+
+    - ``OPENCODE_DB`` points at an isolated per-job sqlite path so no
+      session history is ever reused across GitHub issues.
+    - ``OPENCODE_DISABLE_SHARE=1`` disables the share-sync uploader for
+      one-shot jobs (module-level kill switch confirmed in the #77
+      inventory; upload side-channel only, no provider semantics change).
+    - ``OPENCODE_CONFIG_CONTENT``/``GIT_TERMINAL_PROMPT`` re-assert the
+      read-only git confinement defaults.
+
+    Callers merge this over the scrubbed worker env; keys already set in
+    the parent environment are intentionally overridden so isolation is
+    deterministic.
+    """
+    return {
+        "OPENCODE_DB": fresh_session_db_path(workspace),
+        "OPENCODE_DISABLE_SHARE": "1",
+        "OPENCODE_CONFIG_CONTENT": OPENCODE_CONFIG_CONTENT,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Deterministic change detection (additions, edits, deletions).
 # ---------------------------------------------------------------------------
@@ -679,4 +790,7 @@ def default_opencode_env_overrides() -> dict[str, str]:
     return {
         "OPENCODE_CONFIG_CONTENT": OPENCODE_CONFIG_CONTENT,
         "GIT_TERMINAL_PROMPT": "0",
+        # One-shot jobs never upload share state (module-level kill switch
+        # in the fork; upload side-channel only, issue #80).
+        "OPENCODE_DISABLE_SHARE": "1",
     }
