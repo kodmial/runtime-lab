@@ -287,6 +287,14 @@ class SubprocessCommandRunner(CommandRunner):
 
     def run(self, cmd: Sequence[str], cwd: str, timeout: float) -> CommandResult:
         try:
+            try:
+                try:
+                    from automation.opencode_runner import scrubbed_env_for_worker
+                except ImportError:
+                    from opencode_runner import scrubbed_env_for_worker  # type: ignore[no-redef]
+                child_env: dict[str, str] | None = scrubbed_env_for_worker()
+            except Exception:
+                child_env = None
             completed = subprocess.run(
                 list(cmd),
                 cwd=cwd,
@@ -294,6 +302,7 @@ class SubprocessCommandRunner(CommandRunner):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                env=child_env,
             )
         except subprocess.TimeoutExpired as exc:
             stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")

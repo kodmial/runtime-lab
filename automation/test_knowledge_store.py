@@ -525,3 +525,280 @@ def test_existing_public_records_migrate_cleanly():
         remote = local_record_file_to_remote_path("runtime-lab", name)
         assert remote == "projects/runtime-lab/experiments/%s.md" % metadata["record_id"]
         verify_migrated_record_identity(text, content)
+
+
+# -- issue #39 review repairs ------------------------------------------------
+
+
+def test_list_experiments_fails_closed_without_listing_support():
+    from automation.knowledge_store import GitHubKnowledgeStore
+
+    class OpaqueBackend:
+        def get_ref(self, branch):
+            return None
+
+        def get_content(self, path, ref=None):
+            return None
+
+        def commit_files(self, parent, files, message):
+            return "sha"
+
+        def cas_update_ref(self, branch, new_sha, expected):
+            pass
+
+    client = GitHubKnowledgeStore(OpaqueBackend())
+    with pytest.raises(store.KnowledgeStoreError):
+        client.list_experiments("runtime-lab")
+
+
+def test_put_experiment_immutable_race_fails_closed_on_retry():
+    from automation.knowledge_store import GitHubKnowledgeStore
+
+    backend = DictGitHubBackend()
+    client = GitHubKnowledgeStore(backend)
+    first = _record_text(issue=37, run_id="race39", title="First")
+    second = _record_text(issue=37, run_id="race39", title="Second")
+    assert first != second
+    # A concurrent writer wins between our pre-check and our CAS commit:
+    # the retry must fail closed, not overwrite the winner.
+    real_cas = backend.cas_update_ref
+    state = {"tripped": False}
+
+    def interleaving_cas(branch, new_sha, expected):
+        if not state["tripped"]:
+            state["tripped"] = True
+            backend.files["projects/runtime-lab/experiments/issue-37-run-race39.md"] = second
+            backend.head = "commit-winner"
+            raise store.GitHubBackendConflict("moved concurrently")
+        return real_cas(branch, new_sha, expected)
+
+    backend.cas_update_ref = interleaving_cas  # type: ignore[method-assign]
+    with pytest.raises(ImmutableOverwriteError):
+        client.put_experiment("runtime-lab", "issue-37-run-race39", first)
+    assert backend.files["projects/runtime-lab/experiments/issue-37-run-race39.md"] == second
+
+
+def test_put_topic_version_rechecked_on_stale_head_retry():
+    from automation.knowledge_store import GitHubKnowledgeStore
+
+    backend = DictGitHubBackend()
+    client = GitHubKnowledgeStore(backend)
+    v0 = client.put_topic("runtime-lab", "agent-execution", "line-a\n")
+    stale = v0
+    client.put_topic("runtime-lab", "agent-execution", "line-a\nline-b\n",
+                     expected_sha256=stale)
+    # Concurrent update wins, then our CAS hits a stale head and retries:
+    # the retry must re-check the version and fail closed.
+    real_cas = backend.cas_update_ref
+    state = {"tripped": False}
+
+    def flaky_cas(branch, new_sha, expected):
+        if not state["tripped"]:
+            state["tripped"] = True
+            client.put_topic("runtime-lab", "agent-execution",
+                             "line-a\nline-b\nline-c\n")
+            raise store.GitHubBackendConflict("moved concurrently")
+        return real_cas(branch, new_sha, expected)
+
+    backend.cas_update_ref = flaky_cas  # type: ignore[method-assign]
+    with pytest.raises(KnowledgeConflictError):
+        client.put_topic("runtime-lab", "agent-execution", "line-a\nline-stale\n",
+                         expected_sha256=stale)
+
+
+def test_github_api_backend_speaks_rest_without_mocks():
+    import base64
+    from automation.knowledge_store import GitHubApiKnowledgeBackend
+
+    state = {"ref": None, "blobs": {}, "trees": {}, "commits": {}, "contents": {}}
+
+    class ApiError(RuntimeError):
+        def __init__(self, message, status=None):
+            super().__init__(message)
+            self.status = status
+
+    def api(method, path, body=None):
+        if method == "GET" and path.startswith("/repos/kodmial/agent-knowledge/git/ref/heads/"):
+            if state["ref"] is None:
+                raise ApiError("not found", status=404)
+            return {"object": {"sha": state["ref"]}}
+        if method == "GET" and "/git/commits/" in path:
+            sha = path.rsplit("/", 1)[-1]
+            commit = state["commits"].get(sha)
+            if commit is None:
+                raise ApiError("not found", status=404)
+            return commit
+        if method == "POST" and path.endswith("/git/blobs"):
+            sha = "blob-%d" % (len(state["blobs"]) + 1)
+            state["blobs"][sha] = body
+            return {"sha": sha}
+        if method == "POST" and path.endswith("/git/trees"):
+            sha = "tree-%d" % (len(state["trees"]) + 1)
+            state["trees"][sha] = body
+            return {"sha": sha}
+        if method == "POST" and path.endswith("/git/commits"):
+            sha = "commit-%d" % (len(state["commits"]) + 1)
+            tree_sha = body["tree"]
+            state["commits"][sha] = {"sha": sha, "tree": {"sha": tree_sha},
+                                     "parents": body.get("parents", [])}
+            # Materialize files for content reads.
+            tree = state["trees"][tree_sha]
+            for entry in tree.get("tree", []):
+                blob_body = state["blobs"][entry["sha"]]
+                raw = base64.b64decode(blob_body["content"]).decode("utf-8")
+                state["contents"][entry["path"]] = raw
+            return {"sha": sha}
+        if method == "GET" and "/contents/" in path:
+            encoded_path = path.split("/contents/", 1)[1].split("?ref=", 1)[0]
+            import urllib.parse as parse
+            clean = parse.unquote(encoded_path)
+            if clean not in state["contents"]:
+                raise ApiError("not found", status=404)
+            raw = state["contents"][clean]
+            return {"type": "file", "encoding": "base64",
+                    "content": base64.b64encode(raw.encode()).decode()}
+        if method == "GET" and path.startswith("/repos/kodmial/agent-knowledge/git/trees/"):
+            head = path.rsplit("/", 1)[-1].split("?", 1)[0]
+            if head not in state["commits"]:
+                raise ApiError("not found", status=404)
+            return {"tree": [{"path": p, "type": "blob"} for p in state["contents"]]}
+        if method == "POST" and path.endswith("/git/refs"):
+            state["ref"] = body["sha"]
+            return {}
+        if method == "PATCH" and "/git/refs/heads/" in path:
+            if body.get("force") is not False:
+                raise ApiError("force push forbidden", status=422)
+            state["ref"] = body["sha"]
+            return {}
+        raise AssertionError("unexpected call %s %s" % (method, path))
+
+    backend = GitHubApiKnowledgeBackend(api)
+    assert backend.get_ref("main") is None
+    store_client = GitHubKnowledgeStore(backend)
+    text = _record_text(issue=37, run_id="api39")
+    store_client.put_experiment("runtime-lab", "issue-37-run-api39", text)
+    assert backend.get_ref("main") is not None
+    assert store_client.get_experiment("runtime-lab", "issue-37-run-api39") == text
+    assert [e["record_id"] for e in store_client.list_experiments("runtime-lab")] == [
+        "issue-37-run-api39"]
+    # CAS conflict when the ref moved underneath us.
+    with pytest.raises(store.KnowledgeConflictError):
+        backend.cas_update_ref("main", "commit-x", "stale-sha")
+
+
+def test_worker_env_scrub_removes_storage_credentials():
+    from automation.knowledge_store import (
+        assert_worker_env_has_no_storage_credentials,
+        scrubbed_worker_env,
+    )
+
+    dirty = {"PATH": "/usr/bin", "TAP_PAT": "s", "GH_TOKEN": "s",
+             "GITHUB_TOKEN": "s", "GITHUB_APP_PRIVATE_KEY": "s",
+             "OPENCODE_MODEL": "m"}
+    cleaned = scrubbed_worker_env(dirty)
+    assert cleaned["PATH"] == "/usr/bin"
+    assert cleaned["OPENCODE_MODEL"] == "m"
+    for name in ("TAP_PAT", "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_APP_PRIVATE_KEY"):
+        assert name not in cleaned
+    assert_worker_env_has_no_storage_credentials(cleaned)
+    with pytest.raises(store.KnowledgeStoreError):
+        assert_worker_env_has_no_storage_credentials(dirty)
+
+
+def test_opencode_runner_scrubs_worker_subprocess_env():
+    from automation.opencode_runner import (
+        assert_worker_env_clean,
+        scrubbed_env_for_worker,
+    )
+
+    dirty = {"PATH": "/usr/bin", "GH_TOKEN": "secret", "TAP_PAT": "secret"}
+    cleaned = scrubbed_env_for_worker(dirty)
+    assert "GH_TOKEN" not in cleaned and "TAP_PAT" not in cleaned
+    assert_worker_env_clean(cleaned)
+    with pytest.raises(ValueError):
+        assert_worker_env_clean(dirty)
+
+
+def test_render_trusted_task_text_enriches_without_credentials():
+    from automation.knowledge_store import build_worker_context, render_trusted_task_text
+
+    context = build_worker_context(
+        issue=39, topic="agent-execution",
+        experiments=[{"record_id": "issue-37-run-r1", "issue": 37,
+                      "topic": "agent-execution", "outcome": "succeeded",
+                      "title": "T", "body": "relevant finding"}],
+        topic_notes={"agent-execution": "curated note"},
+    )
+    enriched = render_trusted_task_text("Do the thing", context)
+    assert "Do the thing" in enriched
+    assert "relevant finding" in enriched
+    assert "TAP_PAT" not in enriched
+    # Credential-bearing contexts fail closed.
+    with pytest.raises(store.KnowledgeStoreError):
+        render_trusted_task_text("Do the thing", {"leak": "ghs_abcDEF123"})
+    # Oversized contexts fail closed instead of silent truncation.
+    with pytest.raises(store.KnowledgeStoreError):
+        render_trusted_task_text("Do the thing", context, max_chars=10)
+    # None context is the knowledge-free baseline.
+    assert render_trusted_task_text("Do the thing", None) == "Do the thing"
+
+
+def test_controller_enriches_task_with_private_knowledge():
+    import time
+    from automation import render_controller as controller
+
+    seen: dict[str, object] = {}
+
+    class FakeRender:
+        def create_service(self, payload):
+            return {"service_id": "srv-1", "deploy_id": "", "plan": "free"}
+
+        def get_service(self, service_id):
+            return {"serviceDetails": {"plan": "free",
+                                       "url": "https://worker.example"}}
+
+        def service_url(self, service):
+            return "https://worker.example"
+
+        def delete_service(self, service_id):
+            return 204
+
+        def verify_gone(self, service_id):
+            return 404
+
+        def suspend_service(self, service_id):
+            return 202
+
+        def get_deploy(self, service_id, deploy_id):
+            raise AssertionError("no deploy expected")
+
+    class FakeRunner:
+        def wait_healthy(self, base_url):
+            return None
+
+        def submit_job(self, base_url, job_body):
+            seen["task_text"] = job_body["task_text"]
+            return "job-1"
+
+        def get_result(self, base_url, job_id):
+            return {"job_id": job_id, "status": "succeeded", "success": True,
+                    "summary": "ok", "error": "", "metadata": {}}
+
+    real_sleep = time.sleep
+    time.sleep = lambda seconds: None
+    try:
+        from automation.knowledge_store import build_worker_context
+        context = build_worker_context(
+            issue=39, experiments=[{"record_id": "issue-39-run-x", "issue": 39,
+                                    "topic": "agent-execution", "outcome": "succeeded",
+                                    "title": "T", "body": "private-finding-39"}])
+        result = controller.execute_issue_attempt(
+            delivery_id="d" * 16, issue_number=39, execution_mode="e2e",
+            title="T", body="B", owner_id="owner-1", run_id="ctrl-test39",
+            render_client=FakeRender(), runner_client=FakeRunner(),
+            health_attempts=1, knowledge_context=context)
+    finally:
+        time.sleep = real_sleep
+    assert result.ok is True
+    assert "private-finding-39" in str(seen.get("task_text", ""))
+    assert "TAP_PAT" not in str(seen.get("task_text", ""))

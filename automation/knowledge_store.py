@@ -381,9 +381,68 @@ def verify_knowledge_repository(info: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "full_name": full_name,
         "private": True,
-        "visibility": "private" if visibility in ("private", "") else visibility,
+        "visibility": "private",
         "default_branch": default_branch,
     }
+
+
+# ---------------------------------------------------------------------------
+# Storage-credential environment hygiene for worker subprocesses.
+#
+# The ephemeral worker must never inherit a credential that can read the
+# private repository. The Actions workflow keeps GH_TOKEN for its own gh
+# CLI steps, so the automation layer scrubs storage credentials from the
+# environment handed to worker subprocesses (opencode, git clone of the
+# public repo, installer). Trusted-layer code keeps its own process env
+# intact; only the child env is scrubbed.
+# ---------------------------------------------------------------------------
+
+# Exact environment names that carry private-store access. TAP_PAT lacks
+# the TOKEN marker so it is listed explicitly; App keys are included
+# because an installation-token-capable key must never reach the worker.
+STORAGE_CREDENTIAL_ENV_NAMES = (
+    "TAP_PAT",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_APP_ID",
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_APP_INSTALLATION_ID",
+)
+
+
+def scrubbed_worker_env(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a copy of the environment without storage credentials.
+
+    Removes every name in :data:`STORAGE_CREDENTIAL_ENV_NAMES`. All other
+    entries (PATH, model/provider config, confinement flags) are preserved
+    verbatim. Never logs or returns credential values.
+    """
+    source = environ if environ is not None else os.environ
+    try:
+        items = dict(source)
+    except Exception:
+        raise _fail("environment must be a mapping")
+    for name in STORAGE_CREDENTIAL_ENV_NAMES:
+        items.pop(name, None)
+    return {str(k): str(v) for k, v in items.items()}
+
+
+def assert_worker_env_has_no_storage_credentials(
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Fail closed when a worker child environment carries credentials."""
+    source = environ if environ is not None else os.environ
+    try:
+        present = [n for n in STORAGE_CREDENTIAL_ENV_NAMES if str(source.get(n, "") or "").strip()]
+    except Exception:
+        raise _fail("environment must be a mapping")
+    if present:
+        raise _fail(
+            "worker environment must never carry storage credentials "
+            "(present: %s)" % ", ".join(sorted(present))
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -820,6 +879,9 @@ class KnowledgeStore:
     def get_topic(self, project: str, topic: str) -> str | None:
         raise NotImplementedError
 
+    def topic_version(self, project: str, topic: str) -> str | None:
+        raise NotImplementedError
+
     def put_experiment(self, project: str, record_id: str, content: str) -> None:
         raise NotImplementedError
 
@@ -839,6 +901,26 @@ class KnowledgeStore:
 
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def merge_topic_contents(base: str, ours: str, theirs: str) -> str:
+    """Explicit three-way line merge for concurrent topic updates.
+
+    Keeps every unique line from both sides in deterministic order.
+    The ``base`` documents the common ancestor for reviewers; the union
+    always contains every line from both sides so nothing is silently
+    dropped. Callers persist the merged result with an expected-version
+    check instead of overwriting.
+    """
+    our_lines = (ours or "").splitlines()
+    their_lines = (theirs or "").splitlines()
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for line in our_lines + their_lines:
+        if line not in seen:
+            seen.add(line)
+            ordered.append(line)
+    return "\n".join(ordered) + ("\n" if ordered else "")
 
 
 class InMemoryKnowledgeStore(KnowledgeStore):
@@ -986,29 +1068,10 @@ class InMemoryKnowledgeStore(KnowledgeStore):
     def merge_topic_contents(self, base: str, ours: str, theirs: str) -> str:
         """Explicit three-way line merge for concurrent topic updates.
 
-        Keeps every unique line from both sides in deterministic order.
-        Raises :class:`KnowledgeConflictError` when an automatic merge
-        is unsafe (handled by failing closed is also acceptable to the
-        caller; this helper covers the mechanical line-union case).
+        Shared module-level union semantics; see
+        :func:`merge_topic_contents`.
         """
-        base_lines = (base or "").splitlines()
-        our_lines = (ours or "").splitlines()
-        their_lines = (theirs or "").splitlines()
-        # Lines both sides agree on stay in place; unique additions from
-        # either side are appended deterministically. Nothing is silently
-        # dropped: the union always contains every line from both sides.
-        ordered: list[str] = []
-        seen: set[str] = set()
-        for line in our_lines + their_lines:
-            if line not in seen:
-                seen.add(line)
-                ordered.append(line)
-        # Sanity: every input line survives.
-        for line in our_lines + their_lines:
-            assert line in seen
-        void = base_lines  # base documents intent; union is the merge.
-        _ = void
-        return "\n".join(ordered) + ("\n" if ordered else "")
+        return merge_topic_contents(base, ours, theirs)
 
     # -- schemas ----------------------------------------------------------
 
@@ -1069,18 +1132,19 @@ class DictGitHubBackend:
         _ = ref
         return self.files.get(path)
 
+    def list_files(self, prefix: str) -> list[str]:
+        """List stored paths under a prefix (deterministic order)."""
+        cleaned = (prefix or "").strip()
+        return sorted(p for p in self.files if p.startswith(cleaned))
+
     def commit_files(
         self, parent_sha: str | None, files: Mapping[str, str], message: str
     ) -> str:
         _ = message
         self._counter += 1
-        # Parent is recorded implicitly: linear history of file maps.
         for path, content in files.items():
             self.files[str(path)] = str(content)
-        new_sha = "commit-%04d-parent-%s" % (self._counter, parent_sha or "none")
-        void = parent_sha  # history linkage is conceptual in this fake.
-        _ = void
-        return new_sha
+        return "commit-%04d-parent-%s" % (self._counter, parent_sha or "none")
 
     def cas_update_ref(self, branch: str, new_sha: str, expected_old_sha: str | None) -> None:
         self.update_calls += 1
@@ -1168,17 +1232,30 @@ class GitHubKnowledgeStore(KnowledgeStore):
     def list_experiments(self, project: str) -> list[dict[str, Any]]:
         slug = validate_project_slug(project)
         catalog = _knowledge_catalog()
+        lister = getattr(self._backend, "list_files", None)
         backend_files = getattr(self._backend, "files", None)
-        if not isinstance(backend_files, dict):
-            return []
+        if callable(lister):
+            paths = list(lister("projects/%s/experiments/" % slug))
+        elif isinstance(backend_files, dict):
+            paths = sorted(backend_files)
+        else:
+            raise _fail(
+                "knowledge backend cannot list experiments "
+                "(no list_files/files support)"
+            )
         prefix = "projects/%s/experiments/" % slug
         entries: list[dict[str, Any]] = []
-        for path in sorted(backend_files):
+        for path in sorted(paths):
             if not path.startswith(prefix) or not path.endswith(".md"):
                 continue
             if path.endswith(".gitkeep"):
                 continue
-            content = backend_files[path]
+            if isinstance(backend_files, dict):
+                content = backend_files[path]
+            else:
+                content = self._read(path)
+            if content is None:
+                continue
             record_id = path[len(prefix): -len(".md")]
             try:
                 metadata, body = catalog.parse_record_text(content, path)
@@ -1242,20 +1319,26 @@ class GitHubKnowledgeStore(KnowledgeStore):
             raise KnowledgeValidationError(
                 redact_knowledge_error("record_id does not match storage path")
             )
-        existing = self._read(path)
-        if existing is not None and existing != content:
-            raise ImmutableOverwriteError(
-                redact_knowledge_error(
-                    "immutable experiment record %r already exists with different content" % rid
+
+        def _check_immutable() -> None:
+            existing = self._read(path)
+            if existing is not None and existing != content:
+                raise ImmutableOverwriteError(
+                    redact_knowledge_error(
+                        "immutable experiment record %r already exists with different content" % rid
+                    )
                 )
-            )
+
+        _check_immutable()
+        existing = self._read(path)
         if existing == content:
             return  # idempotent success.
 
         def _files() -> dict[str, str]:
-            # Re-read inside the retry loop would go here for real
-            # backends; the unique immutable path means a concurrent
-            # independent record is preserved, not overwritten.
+            # Re-check inside every CAS attempt so a concurrent winner for
+            # the same immutable path cannot be silently overwritten on
+            # stale-head retry: the retry fails closed instead.
+            _check_immutable()
             return {path: content}
 
         cas_commit_files_with_retry(
@@ -1277,27 +1360,291 @@ class GitHubKnowledgeStore(KnowledgeStore):
         path = topic_remote_path(project, topic)
         if not isinstance(content, str) or not content.strip():
             raise _fail("topic content must be non-empty")
-        if expected_sha256 is not None:
-            current = self._read(path)
-            current_version = _sha256_text(current) if current is not None else None
-            if current_version != expected_sha256:
-                raise KnowledgeConflictError(
-                    redact_knowledge_error(
-                        "topic %r changed concurrently; merge explicitly instead of overwriting"
-                        % topic
+
+        def _check_version() -> None:
+            if expected_sha256 is not None:
+                current = self._read(path)
+                current_version = _sha256_text(current) if current is not None else None
+                if current_version != expected_sha256:
+                    raise KnowledgeConflictError(
+                        redact_knowledge_error(
+                            "topic %r changed concurrently; merge explicitly instead of overwriting"
+                            % topic
+                        )
                     )
-                )
+
+        _check_version()
+
+        def _files() -> dict[str, str]:
+            # Re-check the expected version on every CAS attempt so a
+            # concurrent topic update between the pre-check and a
+            # stale-head retry cannot be silently lost.
+            _check_version()
+            return {path: content}
+
         cas_commit_files_with_retry(
             self._backend,
             branch=self._branch,
-            files={path: content},
             message="knowledge: update topic %s" % topic,
             max_attempts=self._max_attempts,
+            refresh_fn=_files,
         )
         return _sha256_text(content)
 
+    def topic_version(self, project: str, topic: str) -> str | None:
+        """Content SHA-256 of the current topic note, or None when absent."""
+        current = self._read(topic_remote_path(project, topic))
+        return _sha256_text(current) if current is not None else None
+
+    def merge_topic_contents(self, base: str, ours: str, theirs: str) -> str:
+        """Explicit line-union merge shared with the offline backend."""
+        return merge_topic_contents(base, ours, theirs)
+
     def get_schema(self, name: str) -> str | None:
         return self._read(schema_remote_path(name))
+
+
+class GitHubApiKnowledgeBackend:
+    """Production GitHub REST backend (no clone, no mocks).
+
+    Wraps an injected ``api(method, path, body=None)`` callable compatible
+    with :class:`automation.github_app.GitHubApiClient.api` (or the ``gh
+    api`` equivalent in scripts). Reads use the Contents API; writes use
+    the Git database API (blob/tree/commit) with a force=false ref update
+    so concurrent writers CAS-conflict instead of overwriting.
+
+    ``owner``/``repo`` default to the private knowledge repository. Only
+    the ``branch`` passed to each call is ever touched.
+    """
+
+    def __init__(
+        self,
+        api: Callable[..., Any],
+        *,
+        owner: str = KNOWLEDGE_REPO_OWNER,
+        repo: str = KNOWLEDGE_REPO_NAME,
+        branch: str = KNOWLEDGE_DEFAULT_BRANCH,
+    ) -> None:
+        if not callable(api):
+            raise ValueError("api must be callable")
+        if (owner or "").strip() != KNOWLEDGE_REPO_OWNER:
+            raise ValueError("knowledge repository owner must be %r" % KNOWLEDGE_REPO_OWNER)
+        if (repo or "").strip() != KNOWLEDGE_REPO_NAME:
+            raise ValueError("knowledge repository name must be %r" % KNOWLEDGE_REPO_NAME)
+        self._api = api
+        self._branch = (branch or KNOWLEDGE_DEFAULT_BRANCH).strip() or KNOWLEDGE_DEFAULT_BRANCH
+
+    def _repo_path(self, suffix: str) -> str:
+        return "/repos/%s/%s%s" % (KNOWLEDGE_REPO_OWNER, KNOWLEDGE_REPO_NAME, suffix)
+
+    def get_ref(self, branch: str) -> str | None:
+        """Return the current commit SHA of ``branch`` (None when absent)."""
+        if (branch or "").strip() != self._branch:
+            raise _fail("unknown branch %r" % (branch,))
+        try:
+            payload = self._api(
+                "GET", self._repo_path("/git/ref/heads/%s" % self._branch)
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return None
+            raise _fail("knowledge ref lookup failed: %s" % exc) from None
+        if not isinstance(payload, Mapping):
+            raise _fail("knowledge ref lookup returned invalid JSON")
+        obj = payload.get("object", {})
+        sha = obj.get("sha", "") if isinstance(obj, Mapping) else ""
+        return str(sha).strip() or None
+
+    def get_content(self, path: str, ref: str | None = None) -> str | None:
+        """Return decoded file text, or None when the path is absent."""
+        import base64 as _b64
+        import urllib.parse as _parse
+
+        cleaned = (path or "").strip().strip("/")
+        if not cleaned or ".." in cleaned.split("/"):
+            raise _fail("invalid knowledge path %r" % (path,))
+        at_ref = (ref or "").strip() or self._branch
+        quoted = _parse.quote(cleaned, safe="/")
+        try:
+            payload = self._api(
+                "GET",
+                self._repo_path("/contents/%s?ref=%s" % (quoted, _parse.quote(at_ref, safe=""))),
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return None
+            raise _fail("knowledge content lookup failed: %s" % exc) from None
+        if not isinstance(payload, Mapping) or payload.get("type") not in (None, "file"):
+            return None
+        encoding = str(payload.get("encoding", "") or "")
+        data = str(payload.get("content", "") or "")
+        if encoding != "base64" or not data:
+            return None
+        try:
+            return _b64.b64decode("".join(data.split())).decode("utf-8")
+        except Exception as exc:
+            raise _fail("knowledge content is not valid UTF-8: %s" % exc) from None
+
+    def list_files(self, prefix: str) -> list[str]:
+        """List file paths under ``prefix`` via the recursive tree API."""
+        cleaned = (prefix or "").strip().strip("/")
+        head = self.get_ref(self._branch)
+        if head is None:
+            return []
+        try:
+            payload = self._api(
+                "GET", self._repo_path("/git/trees/%s?recursive=1" % head)
+            )
+        except Exception as exc:
+            raise _fail("knowledge tree listing failed: %s" % exc) from None
+        if not isinstance(payload, Mapping) or not isinstance(payload.get("tree"), list):
+            raise _fail("knowledge tree listing returned invalid JSON")
+        out: list[str] = []
+        for entry in payload["tree"]:
+            if not isinstance(entry, Mapping):
+                continue
+            if entry.get("type") != "blob":
+                continue
+            p = str(entry.get("path", "") or "")
+            if p.startswith(cleaned):
+                out.append(p)
+        return sorted(out)
+
+    def commit_files(
+        self, parent_sha: str | None, files: Mapping[str, str], message: str
+    ) -> str:
+        """Create blobs/tree/commit on top of ``parent_sha`` (no ref move)."""
+        import base64 as _b64
+
+        if not message.strip():
+            raise _fail("commit message must not be empty")
+        if not files:
+            raise _fail("no files to commit")
+        try:
+            if parent_sha:
+                parent = self._api(
+                    "GET", self._repo_path("/git/commits/%s" % parent_sha)
+                )
+                if not isinstance(parent, Mapping):
+                    raise _fail("knowledge parent commit lookup failed")
+                tree = parent.get("tree", {})
+                base_tree = tree.get("sha", "") if isinstance(tree, Mapping) else ""
+            else:
+                base_tree = ""
+            entries: list[dict[str, Any]] = []
+            for path, content in files.items():
+                cleaned = (path or "").strip().strip("/")
+                if not cleaned or ".." in cleaned.split("/"):
+                    raise _fail("invalid knowledge path %r" % (path,))
+                blob = self._api(
+                    "POST",
+                    self._repo_path("/git/blobs"),
+                    {"content": _b64.b64encode(str(content).encode("utf-8")).decode("ascii"),
+                     "encoding": "base64"},
+                )
+                if not isinstance(blob, Mapping) or not blob.get("sha"):
+                    raise _fail("knowledge blob creation returned no SHA")
+                entries.append({"path": cleaned, "mode": "100644",
+                                "type": "blob", "sha": str(blob["sha"])})
+            body: dict[str, Any] = {"message": message, "tree": "", "parents": []}
+            tree_payload = self._api(
+                "POST", self._repo_path("/git/trees"),
+                {"base_tree": base_tree, "tree": entries} if base_tree
+                else {"tree": entries},
+            )
+            if not isinstance(tree_payload, Mapping) or not tree_payload.get("sha"):
+                raise _fail("knowledge tree creation returned no SHA")
+            body = {"message": message, "tree": str(tree_payload["sha"]),
+                    "parents": [parent_sha] if parent_sha else []}
+            commit = self._api("POST", self._repo_path("/git/commits"), body)
+            if not isinstance(commit, Mapping) or not commit.get("sha"):
+                raise _fail("knowledge commit creation returned no SHA")
+            return str(commit["sha"])
+        except KnowledgeStoreError:
+            raise
+        except Exception as exc:
+            status = getattr(exc, "status", None)
+            if status == 422:
+                raise GitHubBackendConflict(
+                    redact_knowledge_error("reference moved concurrently (non-fast-forward)")
+                ) from None
+            raise _fail("knowledge commit failed: %s" % exc) from None
+
+    def cas_update_ref(self, branch: str, new_sha: str, expected_old_sha: str | None) -> None:
+        """Move ``branch`` to ``new_sha`` only when it still equals expected."""
+        if (branch or "").strip() != self._branch:
+            raise _fail("unknown branch %r" % (branch,))
+        if not (new_sha or "").strip():
+            raise _fail("new ref SHA must not be empty")
+        current = self.get_ref(self._branch)
+        if current != expected_old_sha:
+            raise GitHubBackendConflict(
+                redact_knowledge_error("reference moved concurrently (non-fast-forward)")
+            )
+        if current == (new_sha or "").strip():
+            return
+        try:
+            if current is None:
+                self._api(
+                    "POST", self._repo_path("/git/refs"),
+                    {"ref": "refs/heads/%s" % self._branch, "sha": new_sha},
+                )
+            else:
+                self._api(
+                    "PATCH", self._repo_path("/git/refs/heads/%s" % self._branch),
+                    {"sha": new_sha, "force": False},
+                )
+        except Exception as exc:
+            raise GitHubBackendConflict(
+                redact_knowledge_error(
+                    "reference moved concurrently (non-fast-forward): %s" % exc)
+            ) from None
+
+
+# ---------------------------------------------------------------------------
+# Trusted-layer task enrichment: selected knowledge into the worker task.
+# ---------------------------------------------------------------------------
+
+# Bound so the enriched task stays JSON-safe for the runner payload and
+# inside process memory on the small worker.
+MAX_KNOWLEDGE_CONTEXT_CHARS = 6000
+
+
+def render_trusted_task_text(
+    base_task: str,
+    context: Mapping[str, Any] | None,
+    *,
+    max_chars: int = MAX_KNOWLEDGE_CONTEXT_CHARS,
+) -> str:
+    """Append selected private knowledge to a worker task (trusted layer).
+
+    ``context`` is a credential-free mapping as built by
+    :func:`build_worker_context` (or None for no enrichment). The result
+    is fail-closed: empty base tasks raise, credential-bearing contexts
+    raise, and oversized contexts raise instead of silent truncation.
+    """
+    if not isinstance(base_task, str) or not base_task.strip():
+        raise _fail("base task text must be non-empty")
+    if context is None:
+        return base_task.strip()
+    if not isinstance(context, Mapping):
+        raise _fail("knowledge context must be a mapping")
+    assert_worker_payload_has_no_credentials(context)
+    try:
+        rendered = json.dumps(context, sort_keys=True, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError) as exc:
+        raise _fail("knowledge context is not JSON-serializable: %s" % exc) from None
+    assert_worker_payload_has_no_credentials(rendered)
+    if len(rendered) > int(max_chars):
+        raise _fail(
+            "knowledge context too large (%d > %d chars); select fewer records"
+            % (len(rendered), int(max_chars))
+        )
+    return (
+        base_task.strip()
+        + "\n\nSelected private knowledge (read-only, trusted layer provided):\n"
+        + rendered
+    )
 
 
 # ---------------------------------------------------------------------------
