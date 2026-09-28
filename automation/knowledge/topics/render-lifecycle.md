@@ -35,3 +35,9 @@
 
 ## Open
 - Hard process termination can bypass in-process cleanup; stale-worker reconciliation is being developed separately.
+
+## Provider fleet (issue #64)
+
+- The persistent controller also serves the vendor-independent provider fleet control plane (`automation/provider_routes.py`): `GET /v1/provider-routes/{pool}` publishes active `base_url`/generation/readiness, `POST /v1/provider-routes/{pool}/rotate` rotates single-flight on client-observed 307 exhaustion. The controller carries only control/metadata traffic; prompts/completions never flow through it.
+- Rotation is per-pool single-flight with expected-generation preconditions: concurrent 307 reports for one generation cause at most one provisioning; latecomers observe the published next generation (stale expected generation is rejected with the current route). New nodes publish atomically only after readiness probes pass; failures restore the prior active record; exhausted nodes retire via delete-plus-verified-absence after publication.
+- Storm guards: bounded provision/readiness attempts per rotation plus a per-pool rotation window budget (429 with current route preserved). Free-tier payload/plan guards, bearer-token auth, pool allow-list, caller-URL rejection, SSRF-safe `https` publication, and fail-closed reads apply. Route state (pool, service id, base URL, generation, state, timestamps, rotation key) persists in a file store behind `RouteStoreBase` (Redis allowed later). Evidence: `../experiments/issue-64-run-36434412772.md`.
