@@ -503,8 +503,19 @@ echo "Submitted runner job $JOB_ID."
 # same budget with periodic /health re-probes plus a diagnostic final
 # error instead of a bare "last status 'empty'".
 #
+# Transport fail-fast discipline (regression for run 36430429432): that
+# run failed on the FIRST failed /health probe after only five
+# consecutive HTTP 502 polls, but a Free restart/OOM-replacement produces
+# exactly that transient signature (proxy 502s while the old process is
+# dead, /health failing while the replacement boots) and usually answers
+# again inside the unchanged budget. Transport errors therefore fail fast
+# only after JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES consecutive failed
+# /health probes; earlier failed probes keep polling within budget, and
+# any healthy probe (or any poll that reaches the worker) resets the
+# streak.
+#
 # Job-loss recovery (regression for run 36409152332, extended for run
-# 36417263684 and run 36422228148): that run polled a
+# 36417263684, run 36422228148 and run 36425019190): that run polled a
 # submitted job as pending for ~2 minutes before it turned into a
 # permanent unknown-job 404 with a healthy runner. Render may restart a
 # Free web service at any time (see RENDER_DOC_FREE_TIER in
@@ -516,17 +527,22 @@ echo "Submitted runner job $JOB_ID."
 # transient restarts into retries; run 36417263684 lost both the
 # original and the first resubmission to two consecutive proven
 # restarts, run 36422228148 lost the original plus both
-# resubmissions to three consecutive proven restarts, and run
+# resubmissions to three consecutive proven restarts, run
 # 36425019190 lost the original plus all three resubmissions to
-# four consecutive proven restarts, so the bound is
-# four resubmissions and a fifth consecutive loss still fails
-# fast. A submit-time /health snapshot (uptime_seconds) is compared with
+# four consecutive proven restarts, and run 36430429432 lost the
+# original plus all four resubmissions to a five-restart cluster
+# (four proven 404 losses plus a transport-error down-window that is
+# effectively a fifth restart, with live cgroup telemetry pinning the
+# driver to 512 MB memory pressure from the ~600 MB agent peak), so
+# the bound is five resubmissions and a sixth consecutive loss still
+# fails fast. A submit-time /health snapshot (uptime_seconds) is compared with
 # the loss-time reading via detect_worker_restart() so the diagnostic
 # states whether a restart was actually observed.
 FALLBACK_MODEL="opencode/space-bunny-free"
 TRIED_FALLBACK="no"
 POLL_UNKNOWN_COUNT=0
 POLL_EMPTY_COUNT=0
+POLL_UNHEALTHY_COUNT=0
 POLL_LAST_CODE="000"
 POLL_RESUBMITS=0
 POLL_UNKNOWN_THRESHOLD="$(python3 - <<'PY'
@@ -543,6 +559,13 @@ from render_lifecycle import JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY
 print(JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY)
 PY
 )"
+POLL_MAX_UNHEALTHY="$(python3 - <<'PY'
+import sys
+sys.path.insert(0, "automation")
+from render_lifecycle import JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES
+print(JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES)
+PY
+)"
 POLL_MAX_RESUBMITS="$(python3 - <<'PY'
 import sys
 sys.path.insert(0, "automation")
@@ -551,6 +574,8 @@ print(JOB_POLL_MAX_JOB_RESUBMITS)
 PY
 )"
 [[ "$POLL_MAX_RESUBMITS" =~ ^[0-9]+$ ]] || POLL_MAX_RESUBMITS=1
+[[ "$POLL_MAX_UNHEALTHY" =~ ^[0-9]+$ ]] || POLL_MAX_UNHEALTHY=1
+[[ "$POLL_HEALTH_EVERY" =~ ^[0-9]+$ ]] || POLL_HEALTH_EVERY=5
 # Submit-time runner health snapshot (best-effort restart-evidence
 # baseline; never fails the attempt when the body is unavailable).
 # Issue #41: capture the unique process instance id plus the wall-clock
@@ -610,6 +635,7 @@ PY
         JOB_PAYLOAD="$RETRY_PAYLOAD"
         POLL_UNKNOWN_COUNT=0
         POLL_EMPTY_COUNT=0
+        POLL_UNHEALTHY_COUNT=0
         continue
       fi
       printf '%s\n' "$RESULT_JSON" > "$RENDER_RESULT_FILE"
@@ -619,6 +645,7 @@ PY
     pending)
       POLL_UNKNOWN_COUNT=0
       POLL_EMPTY_COUNT=0
+      POLL_UNHEALTHY_COUNT=0
       if [[ "$i" -eq 140 ]]; then
         echo "::error::Runner job $JOB_ID did not finish in time (last status '${STATUS:-empty}')." >&2
         exit 1
@@ -628,6 +655,7 @@ PY
     unknown_job)
       POLL_UNKNOWN_COUNT=$((POLL_UNKNOWN_COUNT + 1))
       POLL_EMPTY_COUNT=0
+      POLL_UNHEALTHY_COUNT=0
       if [[ "$POLL_UNKNOWN_COUNT" -ge "$POLL_UNKNOWN_THRESHOLD" ]]; then
         CURRENT_HEALTH_JSON="$(curl -sS --max-time 10 "$SERVICE_URL/health" \
           -H "Accept: application/json" 2>/dev/null || true)"
@@ -650,7 +678,8 @@ print(format_restart_evidence(prior, current, prior_inst, current_inst, prior_wa
 PY
 )"
         # Same-worker resubmission (regression for run 36409152332,
-        # extended for runs 36417263684, 36422228148 and 36425019190): the
+        # extended for runs 36417263684, 36422228148, 36425019190 and
+        # 36430429432): the
         # payload is fully reproducible and the worker is healthy again,
         # so retry up to JOB_POLL_MAX_JOB_RESUBMITS times on the SAME
         # worker instead of failing the whole
@@ -672,6 +701,7 @@ PY
           POLL_RESUBMITS=$((POLL_RESUBMITS + 1))
           POLL_UNKNOWN_COUNT=0
           POLL_EMPTY_COUNT=0
+          POLL_UNHEALTHY_COUNT=0
           SUBMIT_UPTIME="$CURRENT_UPTIME"
           SUBMIT_INSTANCE="$CURRENT_INSTANCE"
           SUBMIT_WALL="$CURRENT_WALL"
@@ -691,10 +721,20 @@ PY
       POLL_UNKNOWN_COUNT=0
       if (( POLL_EMPTY_COUNT % POLL_HEALTH_EVERY == 0 )); then
         if curl -fsSL --max-time 10 "$SERVICE_URL/health" -o /dev/null 2>/dev/null; then
+          POLL_UNHEALTHY_COUNT=0
           echo "Job $JOB_ID poll hit $POLL_EMPTY_COUNT consecutive transport failures (last HTTP $POLL_LAST_CODE); runner still healthy, continuing within the poll budget." >&2
         else
-          echo "::error::Runner job $JOB_ID poll failed $POLL_EMPTY_COUNT consecutive times (last HTTP $POLL_LAST_CODE) and the runner health check is also failing; failing fast instead of waiting out the full poll budget." >&2
-          exit 1
+          # Sustained-unhealthiness gate (regression for run 36430429432):
+          # one failed probe is only a transient restart down-window, so
+          # keep polling within budget until
+          # JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES consecutive probes
+          # fail before calling the worker dead.
+          POLL_UNHEALTHY_COUNT=$((POLL_UNHEALTHY_COUNT + 1))
+          if [[ "$POLL_UNHEALTHY_COUNT" -ge "$POLL_MAX_UNHEALTHY" ]]; then
+            echo "::error::Runner job $JOB_ID poll failed $POLL_EMPTY_COUNT consecutive times (last HTTP $POLL_LAST_CODE) and the runner health check failed on $POLL_UNHEALTHY_COUNT consecutive probes; failing fast instead of waiting out the full poll budget." >&2
+            exit 1
+          fi
+          echo "Job $JOB_ID poll hit $POLL_EMPTY_COUNT consecutive transport failures (last HTTP $POLL_LAST_CODE) and the runner health check is failing (failed probe $POLL_UNHEALTHY_COUNT/$POLL_MAX_UNHEALTHY); continuing within the poll budget in case the worker is mid-restart." >&2
         fi
       fi
       if [[ "$i" -eq 140 ]]; then

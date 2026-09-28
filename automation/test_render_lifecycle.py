@@ -21,6 +21,7 @@ from render_lifecycle import (  # noqa: E402
     JOB_POLL_MAX_JOB_RESUBMITS,
     JOB_POLL_OUTCOMES,
     JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY,
+    JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES,
     JOB_POLL_UNKNOWN_JOB_THRESHOLD,
     LIFECYCLE_STEPS,
     CLEANUP_TRIGGER_EVENTS,
@@ -81,6 +82,7 @@ from render_lifecycle import (  # noqa: E402
     select_model,
     service_name_for_attempt,
     should_fail_fast_on_unknown_job,
+    should_fail_fast_on_transport,
     should_probe_runner_health,
     should_resubmit_after_job_loss,
     validate_worker_region,
@@ -404,7 +406,28 @@ def test_job_poll_fail_fast_thresholds():
     assert should_probe_runner_health(JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY + 1) is False
 
 
-def test_job_loss_resubmission_is_bounded_to_four_same_worker_retries():
+def test_job_poll_transport_fail_fast_requires_sustained_unhealthiness():
+    # Regression for run 36430429432: the attempt failed on the FIRST
+    # failed /health probe after only five consecutive HTTP 502 polls,
+    # but a Free restart/OOM-replacement produces exactly that transient
+    # signature while the replacement boots. Transport errors fail fast
+    # only after JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES consecutive
+    # failed probes (default 3 probes x 5 polls = 15 consecutive
+    # transport errors, ~5 minutes); fewer failed probes keep polling.
+    assert JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES >= 2
+    assert should_fail_fast_on_transport(0) is False
+    assert should_fail_fast_on_transport(1) is False
+    assert should_fail_fast_on_transport(
+        JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES - 1) is False
+    assert should_fail_fast_on_transport(
+        JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES) is True
+    assert should_fail_fast_on_transport(
+        JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES + 5) is True
+    assert should_fail_fast_on_transport("bogus") is False
+    assert should_fail_fast_on_transport(None) is False
+
+
+def test_job_loss_resubmission_is_bounded_to_five_same_worker_retries():
     # Regression for run 36409152332: a submitted job polled as pending
     # for ~2 minutes, then turned into a permanent unknown-job 404 while
     # the runner stayed healthy (documented anytime-restart of Free
@@ -419,15 +442,21 @@ def test_job_loss_resubmission_is_bounded_to_four_same_worker_retries():
     # resubmissions. Run 36425019190 then lost the original plus all
     # three resubmissions to four consecutive proven restarts
     # (instances cf0ce0e1fd5b -> 3b567ebafa1a -> 57c5fc5fe6d1 ->
-    # e0e82704a45d -> 9838a60f9feb), so the bound is four
-    # same-worker resubmissions; a fifth consecutive loss still fails fast.
-    assert JOB_POLL_MAX_JOB_RESUBMITS == 4
+    # e0e82704a45d -> 9838a60f9feb), so the bound became four
+    # same-worker resubmissions. Run 36430429432 then lost the original
+    # plus all four resubmissions to a five-restart cluster
+    # (instances 7b01eddc7d40 -> 9eba933f33fa -> d5aef13e888a ->
+    # 91c8fea12ee0 -> 9adf1bd5433a, with live cgroup telemetry pinning
+    # the driver to 512 MB memory pressure), so the bound is five
+    # same-worker resubmissions; a sixth consecutive loss still fails fast.
+    assert JOB_POLL_MAX_JOB_RESUBMITS == 5
     assert should_resubmit_after_job_loss(0) is True
     assert should_resubmit_after_job_loss(1) is True
     assert should_resubmit_after_job_loss(2) is True
     assert should_resubmit_after_job_loss(3) is True
-    assert should_resubmit_after_job_loss(4) is False
+    assert should_resubmit_after_job_loss(4) is True
     assert should_resubmit_after_job_loss(5) is False
+    assert should_resubmit_after_job_loss(6) is False
     assert should_resubmit_after_job_loss("bogus") is False
     assert should_resubmit_after_job_loss(None) is False
 
