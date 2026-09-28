@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to validate"
+        required: false
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: runtime-lab-ci-${{ inputs.pr_number || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Resolve target
+        id: target
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            let sha = context.sha;
+            let ref = context.ref;
+            let prNumber = '';
+
+            if (context.eventName === 'pull_request') {
+              sha = context.payload.pull_request.head.sha;
+              ref = context.payload.pull_request.head.ref;
+              prNumber = String(context.payload.pull_request.number);
+            } else if (context.eventName === 'workflow_dispatch' && '${{ inputs.pr_number }}') {
+              prNumber = '${{ inputs.pr_number }}';
+              const {data: pr} = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: Number(prNumber),
+              });
+              sha = pr.head.sha;
+              ref = pr.head.ref;
+            }
+
+            core.setOutput('sha', sha);
+            core.setOutput('ref', ref);
+            core.setOutput('pr_number', prNumber);
+
+      - name: Mark CI pending
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.TARGET_SHA,
+              state: 'pending',
+              context: 'runtime-lab/ci',
+              description: 'CI is running',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+
+      - name: Checkout target
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d # v5
+        with:
+          python-version: "3.12"
+
+      - name: Run project checks
+        id: checks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m compileall -q -x '(^|/)(\.git|\.venv|venv)(/|$)' .
+
+          python -m pip install --upgrade pip
+
+          if [[ -f requirements.txt ]]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          if [[ -f pyproject.toml ]]; then
+            python -m pip install -e .
+          fi
+
+          if find . -type f \( -name 'test_*.py' -o -name '*_test.py' \) -not -path './.git/*' | grep -q .; then
+            python -m pip install pytest
+            python -m pytest -q
+          else
+            echo "No Python tests yet; skipping pytest."
+          fi
+
+          if [[ -f Dockerfile ]]; then
+            docker build -t runtime-lab-ci .
+          fi
+
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(find . -type f -name '*.sh' -not -path './.git/*' -print0)
+
+      - name: Publish CI result and continue automation
+        if: always()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+          CHECK_OUTCOME: ${{ steps.checks.outcome }}
+        with:
+          script: |
+            const passed = process.env.CHECK_OUTCOME === 'success';
+            const state = passed ? 'success' : 'failure';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.TARGET_SHA,
+              state,
+              context: 'runtime-lab/ci',
+              description: passed ? 'CI passed' : 'CI failed',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+
+            if (process.env.PR_NUMBER) {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'opencode-repair.yml',
+                ref: 'main',
+                inputs: {
+                  pr_number: process.env.PR_NUMBER,
+                  head_sha: process.env.TARGET_SHA,
+                  conclusion: state,
+                  run_id: String(context.runId),
+                },
+              });
+            }
