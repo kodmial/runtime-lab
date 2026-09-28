@@ -1,4 +1,4 @@
-name: Restart issue 1 with updated Render requirements
+name: Force restart issue 1 with updated Render requirements
 
 on:
   push:
@@ -13,9 +13,9 @@ jobs:
   cancel:
     runs-on: ubuntu-latest
     steps:
-      - name: Cancel stale OpenCode run
+      - name: Force cancel stale OpenCode run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api --method POST repos/kodmial/runtime-lab/actions/runs/36371534344/cancel
+          gh api --method POST repos/kodmial/runtime-lab/actions/runs/36371534344/force-cancel
