@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 5
     env:
       WIP_LIMIT: ${{ vars.AUTOMATION_WIP_LIMIT || '2' }}
-      LEASE_MINUTES: ${{ vars.AUTOMATION_LEASE_MINUTES || '45' }}
+      LEASE_MINUTES: ${{ vars.AUTOMATION_LEASE_MINUTES || '90' }}
       MAX_DISPATCH_ATTEMPTS: ${{ vars.AUTOMATION_MAX_DISPATCH_ATTEMPTS || '2' }}
 
     steps:
@@ -34,7 +34,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const wipLimit = Number.parseInt(process.env.WIP_LIMIT || '2', 10);
-            const leaseMinutes = Number.parseInt(process.env.LEASE_MINUTES || '45', 10);
+            const leaseMinutes = Number.parseInt(process.env.LEASE_MINUTES || '90', 10);
             const maxAttempts = Number.parseInt(process.env.MAX_DISPATCH_ATTEMPTS || '2', 10);
             const leaseMs = leaseMinutes * 60 * 1000;
 
@@ -43,6 +43,9 @@ jobs:
             const inProgress = 'automation:in-progress';
             const paused = 'automation:paused';
             const marker = '<!-- runtime-lab-scheduler-dispatch -->';
+            const pauseMarker = '<!-- runtime-lab-scheduler-pause -->';
+            const renderSmoke = 'execution:render-smoke';
+            const renderE2E = 'execution:render-e2e';
 
             const labelSpecs = [
               ['priority:p0', 'B60205', 'P0 — critical work.'],
@@ -50,6 +53,8 @@ jobs:
               ['priority:p2', 'FBCA04', 'P2 — normal planned work.'],
               [inProgress, '1D76DB', 'Reserved or actively handled by automation.'],
               [paused, '6A737D', 'Automation stopped after repeated failed dispatches.'],
+              [renderSmoke, '5319E7', 'Execute this ready issue through the Render smoke controller.'],
+              [renderE2E, '0052CC', 'Execute this ready issue through the Render end-to-end controller.'],
             ];
             for (const [name, color, description] of labelSpecs) {
               try {
@@ -163,7 +168,7 @@ jobs:
                 await addLabel(issue.number, paused);
                 await github.rest.issues.createComment({
                   owner, repo, issue_number: issue.number,
-                  body: marker + '\nAutomation paused after ' + dispatches.length +
+                  body: pauseMarker + '\nAutomation paused after ' + dispatches.length +
                     ' dispatch attempts without an open PR. Remove `automation:paused` to retry.',
                 });
               } else {
@@ -269,7 +274,7 @@ jobs:
                 await addLabel(issue.number, paused);
                 await github.rest.issues.createComment({
                   owner, repo, issue_number: issue.number,
-                  body: marker + '\nAutomation paused before dispatch attempt ' + attempt +
+                  body: pauseMarker + '\nAutomation paused before dispatch attempt ' + attempt +
                     ': maximum of ' + maxAttempts + ' attempts already reached.',
                 });
                 continue;
@@ -281,11 +286,30 @@ jobs:
                   body: marker + '\nDispatch attempt ' + attempt + ' (' +
                     (priority || 'no explicit priority') + ').',
                 });
-                await github.rest.actions.createWorkflowDispatch({
-                  owner, repo, workflow_id: 'opencode.yml', ref: 'main',
-                  inputs: {mode: 'issue', issue_number: String(issue.number)},
-                });
-                core.notice('Dispatched issue #' + issue.number + ' to OpenCode.');
+                const issueLabels = labels.get(issue.number);
+                const renderMode = issueLabels.has(renderSmoke)
+                  ? 'smoke'
+                  : (issueLabels.has(renderE2E) ? 'e2e' : null);
+
+                if (renderMode) {
+                  await github.rest.actions.createWorkflowDispatch({
+                    owner, repo, workflow_id: 'render-executor.yml', ref: 'main',
+                    inputs: {
+                      mode: renderMode,
+                      issue_number: String(issue.number),
+                    },
+                  });
+                  core.notice(
+                    'Dispatched issue #' + issue.number +
+                    ' to Render executor (' + renderMode + ').'
+                  );
+                } else {
+                  await github.rest.actions.createWorkflowDispatch({
+                    owner, repo, workflow_id: 'opencode.yml', ref: 'main',
+                    inputs: {mode: 'issue', issue_number: String(issue.number)},
+                  });
+                  core.notice('Dispatched issue #' + issue.number + ' to OpenCode.');
+                }
               } catch (err) {
                 await removeLabel(issue.number, inProgress);
                 throw err;
