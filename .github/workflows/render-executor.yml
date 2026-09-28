@@ -131,7 +131,7 @@ jobs:
           
           ## Required investigation
           
-          - Inspect the failed run with `gh run view $GITHUB_RUN_ID --repo $GITHUB_REPOSITORY --log-failed`.
+          - Inspect the failed run using: gh run view $GITHUB_RUN_ID --repo $GITHUB_REPOSITORY --log-failed.
           - Identify the root cause from evidence; do not guess or mask the failure.
           - For external API behavior, verify the contract against current official vendor documentation.
           - Fix the reusable implementation, not only this single run.

@@ -1260,6 +1260,18 @@ def execute_issue_attempt(
             cleanup = cleanup_worker(render_client, service_id)
         if outcome is not None:
             outcome.delete_status, outcome.verify_status, outcome.cleanup_verified = cleanup
+            if not outcome.cleanup_verified:
+                outcome.ok = False
+                outcome.status = "cleanup_failed"
+                cleanup_reason = (
+                    "mandatory ephemeral worker deletion was not verified "
+                    "(delete=%s verify=%s)"
+                    % (outcome.delete_status, outcome.verify_status)
+                )
+                outcome.reason = (
+                    (outcome.reason + "; " + cleanup_reason)
+                    if outcome.reason else cleanup_reason
+                )
         # Attach cleanup proof to the in-flight result via the store update
         # performed by the caller (Controller.process_delivery).
 
@@ -1648,6 +1660,30 @@ class Controller:
                 render_client=self.render_client,
                 runner_client=self.runner_client,
             )
+            # Cleanup verification is a hard success gate. A successful
+            # OpenCode result must never be materialized into GitHub while
+            # its ephemeral Render worker may still exist.
+            if not result.cleanup_verified:
+                if delivery:
+                    self.store.update(
+                        delivery,
+                        status="failed",
+                        worker_service_id=result.worker_service_id,
+                        job_id=result.job_id,
+                        execution_mode=result.execution_mode,
+                        reason="mandatory worker cleanup was not verified: %s"
+                        % result.reason,
+                    )
+                _best_effort_release(self.github_api, issue)
+                return {"delivery_id": delivery, "processed": True,
+                        "dispatched": True, "ok": False,
+                        "worker_service_id": result.worker_service_id,
+                        "job_id": result.job_id,
+                        "cleanup_verified": False,
+                        "correlation": format_correlation(
+                            delivery_id=delivery, issue_number=issue,
+                            worker_service_id=result.worker_service_id,
+                            job_id=result.job_id)}
             # execute_issue_attempt guarantees deletion+verification in its
             # finally path, so the worker is already gone before any
             # GitHub write-back below runs. Write-back failures therefore

@@ -131,6 +131,19 @@ class FakeRenderClient:
         return 202
 
 
+class FailingCleanupRenderClient(FakeRenderClient):
+    """Render fake whose worker cannot be proven deleted."""
+
+    def delete_service(self, service_id):
+        with self._lock:
+            self.deletes.append(service_id)
+        return 500
+
+    def verify_gone(self, service_id):
+        with self._lock:
+            self.verifies.append(service_id)
+        return 200
+
 class FakeRunnerClient:
     """In-memory runner API; scripted terminal results per job."""
 
@@ -489,6 +502,34 @@ def test_cleanup_verified_even_when_job_fails(tmp_path):
     assert len(render.deletes) == 1  # unconditional cleanup
     assert 404 in [render.verify_gone(sid) for sid in render.deletes]
 
+
+def test_unverified_cleanup_fails_closed_and_blocks_writeback(tmp_path):
+    render = FailingCleanupRenderClient()
+    runner = FakeRunnerClient(results=["succeeded"])
+    writeback_calls = []
+
+    def forbidden_writeback(issue_number):
+        writeback_calls.append(issue_number)
+        raise AssertionError("write-back must not run before verified cleanup")
+
+    controller = _controller(
+        tmp_path, render_client=render, runner_client=runner,
+        writeback_factory=forbidden_writeback,
+    )
+    payload = _issues_payload(number=18, labels=["priority:p0"])
+    body = json.dumps(payload).encode()
+    controller.ingest(headers=_headers("del-cleanup-fail", "issues", body=body),
+                      body=body)
+    outcome = controller.process_delivery("del-cleanup-fail")
+
+    assert outcome["dispatched"] is True
+    assert outcome["ok"] is False
+    assert outcome["cleanup_verified"] is False
+    assert render.deletes
+    assert render.verifies
+    assert render.suspends  # emergency safety fallback was attempted
+    assert writeback_calls == []
+    assert controller.store.get("del-cleanup-fail")["status"] == "failed"
 
 def test_model_fallback_stays_on_same_worker(tmp_path):
     render = FakeRenderClient()

@@ -24,6 +24,11 @@ concurrency:
 
 jobs:
   test:
+    # OpenCode PRs are validated by the explicit workflow_dispatch issued
+    # after branch/PR creation. Skipping the duplicate pull_request job
+    # avoids two CI runs racing in the same concurrency group and producing
+    # misleading red/no-job runs. Human/non-OpenCode PRs still run normally.
+    if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'opencode/') == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
 

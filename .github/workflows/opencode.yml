@@ -154,6 +154,12 @@ jobs:
             exit 0
           fi
 
+          # Keep generated Python bytecode out of task commits even when
+          # an agent/test run created it before staging. .gitignore prevents
+          # new cache files; this also removes any tracked leftovers on old branches.
+          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
+          find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+
           git add -A
           git commit -m "fix: implement issue #${ISSUE_NUMBER}"
           TASK_COMMIT="$(git rev-parse HEAD)"
@@ -264,6 +270,12 @@ jobs:
             exit 1
           fi
 
+          # Keep generated Python bytecode out of task commits even when
+          # an agent/test run created it before staging. .gitignore prevents
+          # new cache files; this also removes any tracked leftovers on old branches.
+          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
+          find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+
           git add -A
           git commit -m "chore: resolve main conflict for PR #${PR_NUMBER}"
           git push origin "HEAD:$HEAD_REF"
@@ -324,6 +336,12 @@ jobs:
             git status --short -- .github/workflows
             exit 1
           fi
+
+          # Keep generated Python bytecode out of task commits even when
+          # an agent/test run created it before staging. .gitignore prevents
+          # new cache files; this also removes any tracked leftovers on old branches.
+          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
+          find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 
           git add -A
           git commit -m "fix: repair CI for PR #${PR_NUMBER}"

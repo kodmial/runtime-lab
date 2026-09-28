@@ -156,6 +156,17 @@ def test_scripts_use_mapped_key_and_rate_limit_handling():
         "suspension is only an emergency fallback", "")
 
 
+def test_render_executor_cleanup_is_unconditional_and_gates_success():
+    workflow = (REPO_ROOT / ".github" / "workflows" / "render-executor.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "- name: Delete ephemeral Render service" in workflow
+    assert "if: always()" in workflow
+    assert "bash automation/render-cleanup.sh" in workflow
+    assert 'CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}' in workflow
+    assert '"$CLEANUP_OUTCOME" != "success"' in workflow
+    assert "mandatory cleanup failed" in workflow.lower()
+
 def test_scripts_perform_no_github_writes():
     job = _read("render-job.sh")
     cleanup = _read("render-cleanup.sh")
