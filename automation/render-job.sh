@@ -410,11 +410,26 @@ echo "Submitted runner job $JOB_ID."
 # never become terminal), and transport failures are retried within the
 # same budget with periodic /health re-probes plus a diagnostic final
 # error instead of a bare "last status 'empty'".
+#
+# Job-loss recovery (regression for run 36409152332): that run polled a
+# submitted job as pending for ~2 minutes before it turned into a
+# permanent unknown-job 404 with a healthy runner. Render may restart a
+# Free web service at any time (see RENDER_DOC_FREE_TIER in
+# automation/render_lifecycle.py) and the runner keeps jobs only in
+# worker process memory, so a restart wipes the submitted job id while
+# /health answers 200 again on the fresh process. Because the submit
+# payload is fully reproducible, one bounded same-worker resubmission
+# (JOB_POLL_MAX_JOB_RESUBMITS, never a second Render service) converts a
+# transient restart into a retry; a second consecutive loss still fails
+# fast. A submit-time /health snapshot (uptime_seconds) is compared with
+# the loss-time reading via detect_worker_restart() so the diagnostic
+# states whether a restart was actually observed.
 FALLBACK_MODEL="opencode/space-bunny-free"
 TRIED_FALLBACK="no"
 POLL_UNKNOWN_COUNT=0
 POLL_EMPTY_COUNT=0
 POLL_LAST_CODE="000"
+POLL_RESUBMITS=0
 POLL_UNKNOWN_THRESHOLD="$(python3 - <<'PY'
 import sys
 sys.path.insert(0, "automation")
@@ -429,6 +444,19 @@ from render_lifecycle import JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY
 print(JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY)
 PY
 )"
+POLL_MAX_RESUBMITS="$(python3 - <<'PY'
+import sys
+sys.path.insert(0, "automation")
+from render_lifecycle import JOB_POLL_MAX_JOB_RESUBMITS
+print(JOB_POLL_MAX_JOB_RESUBMITS)
+PY
+)"
+[[ "$POLL_MAX_RESUBMITS" =~ ^[0-9]+$ ]] || POLL_MAX_RESUBMITS=1
+# Submit-time runner health snapshot (best-effort restart-evidence
+# baseline; never fails the attempt when the body is unavailable).
+SUBMIT_HEALTH_JSON="$(curl -sS --max-time 10 "$SERVICE_URL/health" \
+  -H "Accept: application/json" 2>/dev/null || true)"
+SUBMIT_UPTIME="$(jq -r '.uptime_seconds // empty' <<<"$SUBMIT_HEALTH_JSON" 2>/dev/null || true)"
 for ((i = 1; i <= 140; i++)); do
   POLL_BODY_FILE="$(mktemp)"
   POLL_LAST_CODE="$(curl -sS -o "$POLL_BODY_FILE" -w '%{http_code}' --max-time 30 \
@@ -470,6 +498,9 @@ PY
         JOB_ID="$(jq -r '.job_id // .jobId // empty' <<<"$SUBMIT_RESPONSE")"
         [[ -n "$JOB_ID" ]] || { echo "::error::Fallback submit returned no job id." >&2; exit 1; }
         echo "Submitted fallback runner job $JOB_ID."
+        # Later same-worker resubmissions must reuse the payload that is
+        # actually in flight (fallback model), not the primary payload.
+        JOB_PAYLOAD="$RETRY_PAYLOAD"
         POLL_UNKNOWN_COUNT=0
         POLL_EMPTY_COUNT=0
         continue
@@ -491,16 +522,57 @@ PY
       POLL_UNKNOWN_COUNT=$((POLL_UNKNOWN_COUNT + 1))
       POLL_EMPTY_COUNT=0
       if [[ "$POLL_UNKNOWN_COUNT" -ge "$POLL_UNKNOWN_THRESHOLD" ]]; then
+        CURRENT_HEALTH_JSON="$(curl -sS --max-time 10 "$SERVICE_URL/health" \
+          -H "Accept: application/json" 2>/dev/null || true)"
         if curl -fsSL --max-time 10 "$SERVICE_URL/health" -o /dev/null 2>/dev/null; then
           RUNNER_HEALTH="healthy"
         else
           RUNNER_HEALTH="unreachable"
         fi
-        echo "::error::Runner no longer knows job $JOB_ID (HTTP $POLL_LAST_CODE on $POLL_UNKNOWN_COUNT consecutive polls; runner health: $RUNNER_HEALTH). Jobs live in worker process memory, so a worker restart loses the job permanently; failing fast instead of waiting out the full poll budget." >&2
+        CURRENT_UPTIME="$(jq -r '.uptime_seconds // empty' <<<"$CURRENT_HEALTH_JSON" 2>/dev/null || true)"
+        RESTART_EVIDENCE="$(python3 - "$SUBMIT_UPTIME" "$CURRENT_UPTIME" <<'PY'
+import sys
+sys.path.insert(0, "automation")
+from render_lifecycle import detect_worker_restart
+prior, current = sys.argv[1], sys.argv[2]
+result = detect_worker_restart(prior, current)
+if result is True:
+    print("worker restart observed (uptime %s -> %s)" % (prior, current))
+elif result is False:
+    print("same worker process lifetime (uptime %s -> %s)" % (prior, current))
+else:
+    print("no uptime evidence (submit=%s current=%s)"
+          % (prior or "?", current or "?"))
+PY
+)"
+        # Same-worker resubmission (regression for run 36409152332): the
+        # payload is fully reproducible and the worker is healthy again,
+        # so retry once on the SAME worker instead of failing the whole
+        # attempt on a transient restart. Never creates a second service.
+        if [[ "$RUNNER_HEALTH" == "healthy" && "$POLL_RESUBMITS" -lt "$POLL_MAX_RESUBMITS" ]]; then
+          echo "Runner lost job $JOB_ID ($RESTART_EVIDENCE); resubmitting the same payload on the same worker (resubmission $((POLL_RESUBMITS + 1))/$POLL_MAX_RESUBMITS, no new service)."
+          LOST_JOB_ID="$JOB_ID"
+          RESUBMIT_RESPONSE="$(curl -fsSL --max-time 30 -X POST "$SERVICE_URL/v1/jobs" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -d "$JOB_PAYLOAD" || true)"
+          JOB_ID="$(jq -r '.job_id // .jobId // empty' <<<"$RESUBMIT_RESPONSE" 2>/dev/null || true)"
+          if [[ -z "$JOB_ID" ]]; then
+            echo "::error::Runner lost job $LOST_JOB_ID ($RESTART_EVIDENCE) and same-worker resubmission returned no job id; failing instead of polling a dead id." >&2
+            exit 1
+          fi
+          echo "Resubmitted runner job $JOB_ID (replaces lost job $LOST_JOB_ID)."
+          POLL_RESUBMITS=$((POLL_RESUBMITS + 1))
+          POLL_UNKNOWN_COUNT=0
+          POLL_EMPTY_COUNT=0
+          SUBMIT_UPTIME="$CURRENT_UPTIME"
+          continue
+        fi
+        echo "::error::Runner no longer knows job $JOB_ID (HTTP $POLL_LAST_CODE on $POLL_UNKNOWN_COUNT consecutive polls; runner health: $RUNNER_HEALTH; resubmissions used: $POLL_RESUBMITS/$POLL_MAX_RESUBMITS; $RESTART_EVIDENCE). Jobs live in worker process memory, so a worker restart loses the job permanently; failing fast instead of waiting out the full poll budget." >&2
         exit 1
       fi
       if [[ "$i" -eq 140 ]]; then
-        echo "::error::Runner job $JOB_ID did not finish in time (last status '${STATUS:-empty}', HTTP $POLL_LAST_CODE, $POLL_UNKNOWN_COUNT consecutive unknown-job polls)." >&2
+        echo "::error::Runner job $JOB_ID did not finish in time (last status '${STATUS:-empty}', HTTP $POLL_LAST_CODE, $POLL_UNKNOWN_COUNT consecutive unknown-job polls, $POLL_RESUBMITS resubmission(s) used)." >&2
         exit 1
       fi
       sleep 20

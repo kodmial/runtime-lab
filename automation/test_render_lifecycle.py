@@ -18,6 +18,7 @@ from render_lifecycle import (  # noqa: E402
     FREE_PLAN,
     JOB_POLL_INTERVAL_SECONDS,
     JOB_POLL_MAX_ATTEMPTS,
+    JOB_POLL_MAX_JOB_RESUBMITS,
     JOB_POLL_OUTCOMES,
     JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY,
     JOB_POLL_UNKNOWN_JOB_THRESHOLD,
@@ -37,6 +38,7 @@ from render_lifecycle import (  # noqa: E402
     RENDER_DELETE_SERVICE_PATH_TEMPLATE,
     RENDER_DELETION_VERIFIED_STATUSES,
     RENDER_DELETE_SUCCESS_STATUS,
+    RENDER_DOC_FREE_TIER,
     RENDER_DOC_URLS,
     RENDER_LIST_DEPLOYS_PATH_TEMPLATE,
     RENDER_LIST_SERVICES_PATH,
@@ -60,6 +62,7 @@ from render_lifecycle import (  # noqa: E402
     classify_deploy_status,
     classify_job_poll_response,
     deletion_succeeded,
+    detect_worker_restart,
     extract_owner_id,
     get_service_url,
     healthy_service_response,
@@ -77,6 +80,7 @@ from render_lifecycle import (  # noqa: E402
     service_name_for_attempt,
     should_fail_fast_on_unknown_job,
     should_probe_runner_health,
+    should_resubmit_after_job_loss,
     validate_worker_region,
     verify_free_plan_response,
 )
@@ -90,6 +94,11 @@ def test_exact_render_docs_referenced():
     assert "https://api-docs.render.com/reference/retrieve-service" in RENDER_DOC_URLS
     assert "https://api-docs.render.com/reference/retrieve-deploy" in RENDER_DOC_URLS
     assert "https://api-docs.render.com/reference/list-owners" in RENDER_DOC_URLS
+    # Free-tier platform behavior (restart-anytime, ephemeral filesystem)
+    # is a first-class contract: the job-loss resubmission policy depends
+    # on it (regression for run 36409152332).
+    assert RENDER_DOC_FREE_TIER == "https://render.com/docs/free"
+    assert RENDER_DOC_FREE_TIER in RENDER_DOC_URLS
 
 
 def test_render_workspace_owner_response_shape():
@@ -382,6 +391,37 @@ def test_job_poll_fail_fast_thresholds():
     assert should_probe_runner_health(JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY) is True
     assert should_probe_runner_health(2 * JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY) is True
     assert should_probe_runner_health(JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY + 1) is False
+
+
+def test_job_loss_resubmission_is_bounded_to_one_same_worker_retry():
+    # Regression for run 36409152332: a submitted job polled as pending
+    # for ~2 minutes, then turned into a permanent unknown-job 404 while
+    # the runner stayed healthy (documented anytime-restart of Free
+    # workers wiped the in-memory job). The controller resubmits the same
+    # payload once on the SAME worker; a second loss still fails fast.
+    assert JOB_POLL_MAX_JOB_RESUBMITS == 1
+    assert should_resubmit_after_job_loss(0) is True
+    assert should_resubmit_after_job_loss(1) is False
+    assert should_resubmit_after_job_loss(2) is False
+    assert should_resubmit_after_job_loss("bogus") is False
+    assert should_resubmit_after_job_loss(None) is False
+
+
+def test_worker_restart_discriminator_uses_health_uptime():
+    # The runner reports uptime_seconds on GET /health (seconds since the
+    # worker process started). A smaller current reading proves the
+    # process restarted between submit and loss; an advancing clock proves
+    # the same process dropped the job another way.
+    assert detect_worker_restart("300.5", "12.3") is True
+    assert detect_worker_restart(300, 12) is True
+    assert detect_worker_restart("12.3", "300.5") is False
+    assert detect_worker_restart("100", "100") is False
+    # Missing/unparsable readings carry no evidence either way.
+    assert detect_worker_restart("", "12.3") is None
+    assert detect_worker_restart("300.5", "") is None
+    assert detect_worker_restart(None, None) is None
+    assert detect_worker_restart("bogus", "12.3") is None
+    assert detect_worker_restart("300.5", "bogus") is None
 
 
 def test_shell_scripts_exist_and_reference_key_only_via_env():
