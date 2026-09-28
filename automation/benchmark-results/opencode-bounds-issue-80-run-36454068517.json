@@ -1,0 +1,87 @@
+{
+  "base_commit": "784ea0cdd2dddef6c972c0481e9a8fffa72348e6",
+  "benchmark_host": {
+    "opencode_bin": "/home/runner/.opencode/bin/opencode",
+    "pinned_opencode_version": "1.18.33",
+    "python_version": "3.12.3"
+  },
+  "correctness": {
+    "representative_task_outcome": "pass",
+    "representative_task_peak_tree_kb": 9660,
+    "representative_task_result": "line three",
+    "representative_task_seconds": 0.03
+  },
+  "fork": {
+    "fork_repo": "kodmial/opencode",
+    "fork_sha": "9000e7fc8d96c845512f7c73122431418a71d4e4",
+    "upstream_repo": "anomalyco/opencode"
+  },
+  "fresh_session": {
+    "default": true,
+    "verified": "fresh_session_env isolates per issue+run; assert_fresh_session rejects --continue/--session/--resume and resume env vars"
+  },
+  "full_binary_baseline": {
+    "note": "Unchanged pre-optimization baseline; fork-binary delta deferred to resourced builder per #79 substitution rule.",
+    "real_agent_peak_tree_kb": 614632,
+    "source": "automation/benchmark-results/memory-benchmark-issue-52-run-36423884312.json (issue #52)"
+  },
+  "issue": 80,
+  "large_log_estimate": {
+    "bounded_bytes": 32828,
+    "spooled_in_memory_bytes": 32871,
+    "unbounded_bytes": 110078
+  },
+  "run_id": "36454068517",
+  "schema": "runtime-lab-opencode-bounds-benchmark/v1",
+  "spec": "automation/opencode-bounds.spec.json",
+  "stress": {
+    "bounded_chars_total": 1125798,
+    "config": {
+      "fresh_session_per_issue": true,
+      "head_fraction": 0.5,
+      "max_session_bytes": 1048576,
+      "max_session_messages": 200,
+      "max_stderr_bytes": 262144,
+      "max_stdout_bytes": 262144,
+      "max_tool_result_chars": 32768,
+      "schema": "runtime-lab-opencode-bounds-spec/v1",
+      "spool_threshold_bytes": 65536
+    },
+    "reduction_ratio": 0.138,
+    "unbounded_chars_total": 1306659,
+    "workloads": [
+      {
+        "bounded_chars": 32871,
+        "id": "s1-large-build-log",
+        "unbounded_chars": 110078
+      },
+      {
+        "bounded_chars": 32871,
+        "id": "s2-recursive-search",
+        "unbounded_chars": 114023
+      },
+      {
+        "bounded_chars": 994277,
+        "dropped_messages": 0,
+        "id": "s3-repeated-shell",
+        "kept_messages": 51,
+        "unbounded_chars": 994277
+      },
+      {
+        "bounded_chars": 65779,
+        "id": "s4-fail-fix-rerun",
+        "unbounded_chars": 88281
+      }
+    ]
+  },
+  "verdict": "Every stress workload respects its configured in-memory bound with tail errors preserved; single-call and accumulated growth are capped. Binary peak-memory delta vs the 614632 kB baseline requires the bounded fork branch built on a resourced builder with memory_benchmark.py --include-network.",
+  "version_control": {
+    "exit_code": 0,
+    "peak_tree_kb": 176996,
+    "time_v": {
+      "available": true,
+      "exit_code": 0,
+      "max_rss_kb": 208532
+    }
+  }
+}
