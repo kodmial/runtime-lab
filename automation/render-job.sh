@@ -217,6 +217,40 @@ print(resolve_task_text(int(sys.argv[1]), sys.argv[2],
 PY
 )"
 
+# Exact workflow-artifact gate (regression for run 36495681860, issue
+# #115): when the issue demands one exact GitHub Actions artifact
+# checksum-verified with no rebuild and no binary substitution, the
+# Render worker cannot satisfy it -- workflow-artifact download needs
+# a GitHub credential the worker never holds, the submit-job payload
+# carries no artifact selection, and the OpenCode child env is
+# credential-scrubbed. Run 36495681860 proved the failure mode:
+# without a gate the worker silently substituted the baseline pinned
+# binary, whose ~600 MB agent OOM-restarted four times and storm-aborted
+# after ~13 minutes on a run that never tested the required artifact.
+# Fail closed here, before any Render service is created, instead of
+# burning a worker on a run that cannot test what the issue asks.
+EXACT_ARTIFACT_BLOCKER="$(ISSUE_TITLE="$ISSUE_TITLE" ISSUE_BODY_TEXT="$ISSUE_BODY_TEXT" python3 - <<'PY'
+import os, sys
+sys.path.insert(0, "automation")
+from render_lifecycle import (
+    exact_workflow_artifact_blocker,
+    parse_exact_workflow_artifact_requirement,
+)
+requirement = parse_exact_workflow_artifact_requirement(
+    os.environ.get("ISSUE_TITLE", ""),
+    os.environ.get("ISSUE_BODY_TEXT", ""),
+)
+if requirement is None:
+    print("")
+else:
+    print(exact_workflow_artifact_blocker(requirement))
+PY
+)"
+if [[ -n "$EXACT_ARTIFACT_BLOCKER" ]]; then
+  echo "::error::$EXACT_ARTIFACT_BLOCKER" >&2
+  exit 1
+fi
+
 # One service creation per attempt: reuse an existing state file service id.
 # This is the "never retry by creating a second worker" enforcement: any
 # retry path below reuses SERVICE_ID from RENDER_STATE_FILE.

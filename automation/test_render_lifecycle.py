@@ -65,6 +65,7 @@ from render_lifecycle import (  # noqa: E402
     classify_job_poll_response,
     deletion_succeeded,
     detect_worker_restart,
+    exact_workflow_artifact_blocker,
     extract_owner_id,
     format_restart_evidence,
     get_service_url,
@@ -74,6 +75,7 @@ from render_lifecycle import (  # noqa: E402
     experiment_record_path,
     knowledge_handoff_instructions,
     validate_experiment_record_text,
+    parse_exact_workflow_artifact_requirement,
     resolve_task_text,
     parse_job_result,
     render_path,
@@ -637,3 +639,88 @@ def test_shell_scripts_exist_and_reference_key_only_via_env():
     # Suspend appears only as a fallback path.
     assert "suspend" in cleanup
     assert "suspend" in job.lower() or "fallback" in job.lower() or True
+
+
+ISSUE_106_ARTIFACT_BODY = """\
+## Exact artifact under test
+
+Do **not rebuild OpenCode** for this task. Consume exactly the same artifact as #103:
+
+- Repository: `kodmial/opencode`
+- PR: `#12`
+- Branch: `opencode/issue11-max-headless`
+- Source SHA: `8ed6c749577d534c55ba9555ba4918ea8be95a97`
+- Workflow run: `36492639568` (`OpenCode Coding Artifact`)
+- Artifact name: `opencode-coding-linux-x64`
+- Artifact ID: `11001896223`
+- Artifact archive digest: `sha256:8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df`
+
+1. Download artifact ID `11001896223` from source workflow run `36492639568`.
+2. Verify `opencode-coding-linux-x64` against bundled `opencode-coding-linux-x64.sha256` before launch.
+5. Never silently fall back to another OpenCode binary.
+"""
+
+
+def test_exact_workflow_artifact_requirement_parses_issue_106_contract():
+    # Regression for run 36495681860 (issue #115): the source issue
+    # declares one exact GitHub Actions artifact (numeric id + source
+    # workflow run + sha256 archive digest). The parser must recover
+    # the full contract so the pre-creation gate can refuse to
+    # substitute another binary.
+    requirement = parse_exact_workflow_artifact_requirement(
+        "Qualify the same OpenCode PR #12 artifact on Render Free 512 MiB",
+        ISSUE_106_ARTIFACT_BODY,
+    )
+    assert requirement is not None
+    assert requirement["artifact_id"] == "11001896223"
+    assert requirement["artifact_name"] == "opencode-coding-linux-x64"
+    assert requirement["source_run_id"] == "36492639568"
+    assert requirement["archive_sha256"] == (
+        "8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df"
+    )
+    assert requirement["source_sha"] == "8ed6c749577d534c55ba9555ba4918ea8be95a97"
+
+
+def test_exact_workflow_artifact_requirement_rejects_partial_mentions():
+    # Bodies that merely mention artifacts must never trip the gate:
+    # only the full conjunction (numeric id + workflow run + sha256)
+    # proves an exact-artifact contract.
+    assert parse_exact_workflow_artifact_requirement(
+        "t", "please rebuild the opencode artifact from main") is None
+    assert parse_exact_workflow_artifact_requirement(
+        "t", "the build artifact ID 12345 was deleted yesterday") is None
+    assert parse_exact_workflow_artifact_requirement(
+        "t", "Workflow run 36492639568 produced logs") is None
+    assert parse_exact_workflow_artifact_requirement(
+        "t", "verify sha256:8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df"
+        " before deploy") is None
+    # Issue #86 release fingerprints (opencode-<track>-<sha12> ids with
+    # github-release: refs) are a different delivery story and must not
+    # match the numeric workflow-artifact conjunction.
+    assert parse_exact_workflow_artifact_requirement(
+        "t",
+        "artifact_id opencode-coding-abcdef123456 "
+        "artifact_reference github-release:kodmial/opencode@opencode-abcdef123456-x86_64 "
+        "Workflow run 36492639568 sha256:8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df",
+    ) is None
+    # Garbage input never raises and never matches.
+    assert parse_exact_workflow_artifact_requirement(None, None) is None
+    assert parse_exact_workflow_artifact_requirement("", "") is None
+    assert parse_exact_workflow_artifact_requirement(123, ["x"]) is None
+
+
+def test_exact_workflow_artifact_blocker_names_evidence_and_gap():
+    requirement = parse_exact_workflow_artifact_requirement(
+        "t", ISSUE_106_ARTIFACT_BODY)
+    assert requirement is not None
+    message = exact_workflow_artifact_blocker(requirement)
+    assert "11001896223" in message
+    assert "36492639568" in message
+    assert "opencode-coding-linux-x64" in message
+    assert "infrastructure-blocked" in message
+    assert "baseline binary" in message
+    assert "credential" in message
+    # A corrupt requirement still fails closed with a message.
+    fallback = exact_workflow_artifact_blocker({})
+    assert "infrastructure-blocked" in fallback
+    assert exact_workflow_artifact_blocker(None) != ""
