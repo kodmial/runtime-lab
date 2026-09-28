@@ -1,0 +1,121 @@
+name: Render execution controller
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number being executed"
+        required: true
+        type: string
+      mode:
+        description: "Execution mode: smoke or e2e"
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: runtime-lab-render-ephemeral
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      ISSUE_NUMBER: ${{ inputs.issue_number }}
+      EXECUTION_MODE: ${{ inputs.mode }}
+      RENDER_STATE_FILE: ${{ runner.temp }}/runtime-lab-render-state.json
+      RENDER_RESULT_FILE: ${{ runner.temp }}/runtime-lab-render-result.json
+
+    steps:
+      - name: Checkout trusted controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Execute Render lifecycle
+        id: execute
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RENDER_API_KEY: ${{ secrets.KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXECUTION_MODE" == "smoke" || "$EXECUTION_MODE" == "e2e" ]] || {
+            echo "::error::Unsupported execution mode: $EXECUTION_MODE"
+            exit 2
+          }
+          [[ -f automation/render-job.sh ]] || {
+            echo "::error::Missing automation/render-job.sh"
+            exit 2
+          }
+          bash automation/render-job.sh
+
+      - name: Delete ephemeral Render service
+        id: cleanup
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RENDER_API_KEY: ${{ secrets.KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -f automation/render-cleanup.sh ]]; then
+            bash automation/render-cleanup.sh
+            exit 0
+          fi
+
+          if [[ -s "$RENDER_STATE_FILE" ]]; then
+            echo "::error::Render state exists but automation/render-cleanup.sh is missing"
+            exit 1
+          fi
+
+          echo "No Render state was created; cleanup has nothing to delete."
+
+      - name: Finalize execution
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXECUTE_OUTCOME: ${{ steps.execute.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --remove-label "automation:in-progress" >/dev/null 2>&1 || true
+
+          if [[ "$EXECUTE_OUTCOME" != "success" || "$CLEANUP_OUTCOME" != "success" ]]; then
+            gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --add-label "automation:paused" >/dev/null 2>&1 || true
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "Render execution failed or cleanup was not proven. execute=$EXECUTE_OUTCOME cleanup=$CLEANUP_OUTCOME run=$GITHUB_RUN_ID."
+            echo "::error::Render execution or mandatory cleanup failed"
+            exit 1
+          fi
+
+          if [[ "$EXECUTION_MODE" == "smoke" ]]; then
+            gh issue close "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --reason completed \
+              --comment "Real Render smoke execution and mandatory cleanup completed successfully in workflow run $GITHUB_RUN_ID."
+            gh workflow run issue-scheduler.yml --repo "$GITHUB_REPOSITORY" --ref main
+          else
+            gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --add-label "automation:in-progress" >/dev/null 2>&1 || true
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "Render E2E execution and cleanup succeeded in workflow run $GITHUB_RUN_ID; waiting for the generated PR to pass CI and merge."
+          fi
