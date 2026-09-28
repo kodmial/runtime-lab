@@ -1091,25 +1091,37 @@ JOB_POLL_RESTART_STORM_THRESHOLD = 3
 
 
 def should_abandon_restart_storm(*, consecutive_restart_losses: object,
-                                 memory_pressure: object) -> bool:
+                                  memory_pressure: object,
+                                  threshold: object = None) -> bool:
     """True when resubmission is a proven-doomed storm (run 36439192645).
 
     Abandons only when BOTH hold: ``consecutive_restart_losses``
     (proven-restart resubmissions with no intervening model fallback)
-    reaches JOB_POLL_RESTART_STORM_THRESHOLD, and ``memory_pressure``
+    reaches the storm threshold (``JOB_POLL_RESTART_STORM_THRESHOLD``
+    by default; an explicit ``threshold`` overrides it so the shell
+    poll loop and this decision cannot diverge -- issue #113 found the
+    shell passing its resolved threshold into the storm snippet while
+    the snippet ignored it), and ``memory_pressure``
     (live telemetry verdict, see render_memory_sampler
     .detect_memory_pressure) is truthy. Anything else fails open
     toward the pre-existing budget-limited recovery: missing pressure
-    evidence (telemetry gaps) never abandons, and unparsable streaks
-    never abandon.
+    evidence (telemetry gaps) never abandons, unparsable streaks never
+    abandon, and an unparsable explicit threshold never abandons.
     """
     if not memory_pressure:
         return False
+    if threshold is None:
+        required = JOB_POLL_RESTART_STORM_THRESHOLD
+    else:
+        try:
+            required = int(threshold)
+        except (TypeError, ValueError):
+            return False
     try:
         streak = int(consecutive_restart_losses)
     except (TypeError, ValueError):
         return False
-    return streak >= JOB_POLL_RESTART_STORM_THRESHOLD
+    return streak >= required
 
 
 def detect_worker_restart(prior_uptime: object,

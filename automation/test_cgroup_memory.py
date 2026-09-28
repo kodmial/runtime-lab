@@ -39,12 +39,16 @@ from cgroup_memory import (  # noqa: E402
 )
 from render_memory_sampler import (  # noqa: E402
     MAX_INTERVAL_SECONDS,
+    MEMORY_PRESSURE_MIN_RESTARTS,
+    MEMORY_PRESSURE_STALL_SURGE_DELTA,
+    MEMORY_PRESSURE_USAGE_RATIO,
     detect_memory_pressure,
     detect_memory_pressure_file,
     error_sample,
     event_marker,
     extract_sample,
     memory_pressure_evidence,
+    pressure_decision_branch,
     read_samples,
     render_human_summary,
     sample_loop,
@@ -536,6 +540,123 @@ def test_memory_pressure_file_helper_fails_open(tmp_path):
             lines.append(json.dumps(sample, sort_keys=True))
     good.write_text("\n".join(lines) + "\n", encoding="utf-8")
     assert detect_memory_pressure_file(str(good)) is True
+
+
+def _run_36493316814_samples():
+    """Live telemetry shape of failed run 36493316814 (issue #113).
+
+    Five worker instances in ~13 minutes (f6960b19 -> 9df9d90b ->
+    95503138 -> 76db2200 -> 7338f38f at ~3-minute intervals), cgroup
+    usage pinned at the 512 MB limit (peak current 536854528 of
+    536870912), Python RSS ~33 MB, swap 0, memory.events counters
+    nearly quiet (within-group max-stall rise 448 against the 10000
+    surge threshold; global first/last deltas 0), every replacement
+    separated by sampler gap samples plus a job_resubmitted event
+    marker. The storm breaker abandoned at the fourth proven loss via
+    the replacements branch -- this shape must keep reporting
+    pressure (pinned plus repeated replacements) even though no
+    stall surge exists.
+    """
+    samples = []
+    index = 0
+    stall = 0
+    instances = ("f6960b19f65f", "9df9d90b9c1e", "95503138bc6c",
+                 "76db2200c588", "7338f38fa851")
+    # Within-group max-stall rises per instance lifetime; the largest
+    # single-group rise is 448, far below the 10000 surge threshold.
+    rises = (0, 0, 448, 0, 0)
+    for group, instance in enumerate(instances):
+        for i in range(8):
+            if i == 6:
+                stall += rises[group]
+            samples.append({
+                "type": "sample",
+                "timestamp": 1790635000.0 + index,
+                "ok": True,
+                "instance_id": instance,
+                "memory_limit_bytes": LIMIT_512M,
+                "memory_current_bytes": LIMIT_512M - 16384,
+                "memory_events": {"high": 0, "max": stall, "oom": 0,
+                                  "oom_kill": 0, "oom_group_kill": 0},
+            })
+            index += 20
+        samples.append(error_sample(float(index), "health poll failed: 502"))
+        index += 20
+        samples.append({"type": "event", "timestamp": float(index),
+                        "name": "job_resubmitted", "detail": "lost=x resubmitted=y"})
+        index += 1
+        stall = 0  # per-container counters reset on replacement
+    return samples
+
+
+def test_memory_pressure_quiet_counters_abandon_via_replacements():
+    # Regression for run 36493316814: quiet stall counters must not
+    # mask a pinned-usage replacement storm. The within-group surge
+    # (448) stays far below the surge threshold and the global
+    # first/last deltas read 0, yet four instance transitions with
+    # usage pinned at the limit is pressure via the replacements
+    # branch -- the exact verdict the live breaker reached.
+    samples = _run_36493316814_samples()
+    assert detect_memory_pressure(samples) is True
+    evidence = memory_pressure_evidence(samples)
+    assert evidence["pinned_at_limit"] is True
+    assert evidence["restart_transitions"] == 4
+    assert evidence["max_stall_surge_delta"] == 448
+    assert evidence["stall_surge"] is False
+    assert pressure_decision_branch(evidence) == "replacements"
+    # Same restart cadence without pinning keeps budget-limited
+    # recovery (transient host-maintenance shape, never a storm).
+    cool = [dict(s, memory_current_bytes=LIMIT_512M // 2)
+            if s.get("ok") else dict(s) for s in samples]
+    assert detect_memory_pressure(cool) is False
+    assert pressure_decision_branch(
+        memory_pressure_evidence(cool)) == "none"
+
+
+def test_pressure_decision_branch_names_deciding_evidence():
+    pinned = {"pinned_at_limit": True, "restart_transitions": 3,
+              "stall_surge": False}
+    assert pressure_decision_branch(pinned) == "replacements"
+    surge_only = {"pinned_at_limit": True, "restart_transitions": 0,
+                  "stall_surge": True}
+    assert pressure_decision_branch(surge_only) == "stall_surge"
+    assert pressure_decision_branch(
+        {"pinned_at_limit": True, "restart_transitions": 1,
+         "stall_surge": False}) == "none"
+    assert pressure_decision_branch(
+        {"pinned_at_limit": False, "restart_transitions": 9,
+         "stall_surge": True}) == "none"
+    # Missing/corrupt evidence never names a branch (fails open).
+    assert pressure_decision_branch({}) == "none"
+    assert pressure_decision_branch(None) == "none"
+    assert pressure_decision_branch(
+        {"pinned_at_limit": True, "restart_transitions": "bogus",
+         "stall_surge": False}) == "none"
+
+
+def test_summary_embeds_auditable_pressure_verdict():
+    # The durable summary must carry the storm decision inputs, not
+    # just the global first/last deltas (which read 0 across
+    # replacements by design and made run 36493316814 look
+    # unsupported after the fact).
+    samples = _run_36493316814_samples()
+    summary = summarize_samples(samples)
+    pressure = summary["memory_pressure"]
+    assert pressure["verdict"] is True
+    assert pressure["branch"] == "replacements"
+    assert pressure["usage_ratio_threshold"] == MEMORY_PRESSURE_USAGE_RATIO
+    assert pressure["min_restarts"] == MEMORY_PRESSURE_MIN_RESTARTS
+    assert pressure["stall_surge_delta"] == MEMORY_PRESSURE_STALL_SURGE_DELTA
+    assert pressure["restart_transitions"] == 4
+    assert pressure["max_stall_surge_delta"] == 448
+    text = render_human_summary(summary)
+    assert "memory-pressure verdict: PRESSURE" in text
+    assert "via replacements" in text
+    # Empty input still carries an explicit negative verdict.
+    empty = summarize_samples([])
+    assert empty["memory_pressure"]["verdict"] is False
+    assert empty["memory_pressure"]["branch"] == "none"
+    assert "memory-pressure verdict: NO PRESSURE" in render_human_summary(empty)
 
 
 # ---------------------------------------------------------------------------

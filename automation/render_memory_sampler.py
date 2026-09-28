@@ -259,6 +259,18 @@ def summarize_samples(
         ],
     }
     if not data:
+        summary["memory_pressure"] = {
+            "verdict": False,
+            "branch": "none",
+            "usage_ratio": None,
+            "usage_ratio_threshold": MEMORY_PRESSURE_USAGE_RATIO,
+            "pinned_at_limit": False,
+            "restart_transitions": 0,
+            "min_restarts": MEMORY_PRESSURE_MIN_RESTARTS,
+            "max_stall_surge_delta": 0,
+            "stall_surge_delta": MEMORY_PRESSURE_STALL_SURGE_DELTA,
+            "stall_surge": False,
+        }
         return summary
     timestamps = [s.get("timestamp") for s in data
                   if isinstance(s.get("timestamp"), (int, float))]
@@ -338,6 +350,32 @@ def summarize_samples(
                     "delta": last - first,
                 }
     summary["event_counter_changes"] = changes
+    # Storm-verdict audit trail (issue #113): the global first/last
+    # deltas above reset to ~0 on every container replacement by
+    # design, so they cannot adjudicate a storm verdict after the
+    # fact. Record the deciding inputs alongside them -- the
+    # gap-tolerant within-group evidence, the thresholds applied, the
+    # deciding branch, and the boolean verdict -- so the durable log
+    # states why pressure was (or was not) declared.
+    pressure = memory_pressure_evidence(data)
+    summary["memory_pressure"] = {
+        "verdict": detect_memory_pressure(
+            data,
+            min_restarts=MEMORY_PRESSURE_MIN_RESTARTS,
+            usage_ratio=MEMORY_PRESSURE_USAGE_RATIO,
+            stall_surge_delta=MEMORY_PRESSURE_STALL_SURGE_DELTA,
+        ),
+        "branch": pressure_decision_branch(
+            pressure, min_restarts=MEMORY_PRESSURE_MIN_RESTARTS),
+        "usage_ratio": pressure.get("usage_ratio"),
+        "usage_ratio_threshold": MEMORY_PRESSURE_USAGE_RATIO,
+        "pinned_at_limit": pressure.get("pinned_at_limit"),
+        "restart_transitions": pressure.get("restart_transitions"),
+        "min_restarts": MEMORY_PRESSURE_MIN_RESTARTS,
+        "max_stall_surge_delta": pressure.get("max_stall_surge_delta"),
+        "stall_surge_delta": MEMORY_PRESSURE_STALL_SURGE_DELTA,
+        "stall_surge": pressure.get("stall_surge"),
+    }
     return summary
 
 
@@ -400,6 +438,30 @@ def render_human_summary(summary: Mapping[str, Any]) -> str:
             )
     else:
         lines.append("- restarts observed: none")
+    # Storm-verdict audit trail (issue #113): state the deciding inputs
+    # explicitly, because the global event deltas above are ~0 by design
+    # across replacements while the verdict rests on the gap-tolerant
+    # within-group evidence (run 36493316814 abandoned via the
+    # replacements branch with a within-group surge of only 448).
+    pressure = summary.get("memory_pressure", {})
+    if isinstance(pressure, Mapping) and pressure:
+        ratio = pressure.get("usage_ratio")
+        lines.append(
+            "- memory-pressure verdict: %s (via %s; pinned %s at ratio %s >= %s; "
+            "transitions %s >= %s; surge %s >= %s is %s)"
+            % (
+                "PRESSURE" if pressure.get("verdict") else "NO PRESSURE",
+                pressure.get("branch"),
+                pressure.get("pinned_at_limit"),
+                ("%.4f" % ratio) if isinstance(ratio, float) else ratio,
+                pressure.get("usage_ratio_threshold"),
+                pressure.get("restart_transitions"),
+                pressure.get("min_restarts"),
+                pressure.get("max_stall_surge_delta"),
+                pressure.get("stall_surge_delta"),
+                "surge" if pressure.get("stall_surge") else "quiet",
+            )
+        )
     harness_events = summary.get("harness_events", [])
     if harness_events:
         lines.append("- harness events: %d recorded" % len(harness_events))
@@ -559,6 +621,43 @@ def detect_memory_pressure_file(path: str, **kwargs: Any) -> bool:
         return detect_memory_pressure(read_samples(path), **kwargs)
     except Exception:
         return False
+
+
+def pressure_decision_branch(
+    evidence: Mapping[str, Any],
+    *,
+    min_restarts: int = MEMORY_PRESSURE_MIN_RESTARTS,
+) -> str:
+    """Name the evidence branch behind a pressure verdict (issue #113).
+
+    Run 36493316814 abandoned via the replacements branch with nearly
+    quiet stall counters (within-group surge 448 against a 10000
+    threshold, global first/last deltas 0), yet the durable log showed
+    only those quiet counters -- inviting a misreading that no pressure
+    existed. This helper makes the deciding branch explicit for the
+    human summary and the storm diagnostic: ``"replacements"`` when
+    pinned usage plus repeated instance transitions carry the verdict,
+    ``"stall_surge"`` when a same-instance max-stall surge carries it
+    without enough transitions, otherwise ``"none"``. Never raises.
+    """
+    try:
+        if not evidence.get("pinned_at_limit"):
+            return "none"
+        try:
+            required = int(min_restarts)
+        except (TypeError, ValueError):
+            return "none"
+        try:
+            transitions = int(evidence.get("restart_transitions", 0))
+        except (TypeError, ValueError):
+            transitions = 0
+        if transitions >= required:
+            return "replacements"
+        if bool(evidence.get("stall_surge")):
+            return "stall_surge"
+        return "none"
+    except Exception:
+        return "none"
 
 
 def build_parser() -> argparse.ArgumentParser:

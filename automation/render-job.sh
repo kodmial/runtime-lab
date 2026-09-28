@@ -760,24 +760,48 @@ PY
         # instead. Without pressure evidence the streak alone never
         # abandons (transient host restarts keep budget-limited
         # recovery), and telemetry gaps fail open toward resubmission.
+        # The storm diagnostic carries the auditable decision inputs
+        # (pinned ratio, transitions, surge, resolved threshold, and
+        # the deciding branch -- run 36493316814 abandoned via the
+        # replacements branch with nearly quiet stall counters, which
+        # the old bare-counters line made look unsupported). The
+        # resolved streak threshold is honored by the decision helper,
+        # never ignored; a corrupt threshold fails open.
         STORM_EVIDENCE=""
         if [[ "$RESTART_VERDICT" == "restarted" ]]; then
           STORM_CHECK="$(python3 - "$POLL_RESTART_STREAK" "$POLL_STORM_THRESHOLD" "${RENDER_MEMORY_SAMPLES_FILE:-}" <<'PY' 2>/dev/null || true
 import sys
 sys.path.insert(0, "automation")
 from render_lifecycle import should_abandon_restart_storm
-from render_memory_sampler import detect_memory_pressure_file, memory_pressure_evidence, read_samples
+from render_memory_sampler import (
+    detect_memory_pressure_file,
+    memory_pressure_evidence,
+    pressure_decision_branch,
+    read_samples,
+)
 try:
     streak = int(sys.argv[1])
 except ValueError:
     streak = -1
+# The resolved streak threshold travels as a raw string on purpose:
+# should_abandon_restart_storm() parses it, so a corrupt value fails
+# open toward resubmission instead of abandoning (or silently
+# reverting to the default and diverging from the shell).
+threshold_arg = sys.argv[2] if len(sys.argv) > 2 else ""
 pressure = detect_memory_pressure_file(sys.argv[3]) if sys.argv[3] else False
-if should_abandon_restart_storm(consecutive_restart_losses=streak, memory_pressure=pressure):
+if should_abandon_restart_storm(
+    consecutive_restart_losses=streak,
+    memory_pressure=pressure,
+    threshold=threshold_arg,
+):
     try:
         evidence = memory_pressure_evidence(read_samples(sys.argv[3]))
-        print("STORM limit=%s current=%s restarts=%s stall_surge=%s" % (
+        ratio = evidence.get("usage_ratio")
+        print("STORM limit=%s current=%s pinned_ratio=%s restarts=%s stall_surge=%s storm_threshold=%s via=%s" % (
             evidence.get("memory_limit_bytes"), evidence.get("max_memory_current_bytes"),
-            evidence.get("restart_transitions"), evidence.get("max_stall_surge_delta")))
+            ("%.4f" % ratio) if isinstance(ratio, float) else ratio,
+            evidence.get("restart_transitions"), evidence.get("max_stall_surge_delta"),
+            threshold_arg, pressure_decision_branch(evidence)))
     except Exception:
         print("STORM")
 else:
