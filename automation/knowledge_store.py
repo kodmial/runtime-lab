@@ -249,7 +249,11 @@ def build_bootstrap_repo_request(
         "private": True,
         "visibility": "private",
         "description": description,
-        "has_issues": False,
+        # The Knowledge Plane roadmap lives in the private repository
+        # itself as native GitHub issues, so bootstrap must leave Issues
+        # enabled. (Previously has_issues=False; corrected per issue #37
+        # repository-settings correction.)
+        "has_issues": True,
         "has_projects": False,
         "has_wiki": False,
         "auto_init": False,
@@ -290,7 +294,52 @@ def require_private_bootstrap_request(payload: Mapping[str, Any]) -> Mapping[str
         )
     if str(payload.get("name", "") or "").strip() != KNOWLEDGE_REPO_NAME:
         raise _fail("bootstrap request names the wrong repository")
+    # The Knowledge Plane uses repository-native roadmap/dependency
+    # tracking, so bootstrap must not disable Issues.
+    if payload.get("has_issues") is not True:
+        raise _fail("bootstrap request must leave GitHub Issues enabled (has_issues=true)")
     return payload
+
+
+def build_knowledge_repo_settings_patch() -> dict[str, Any]:
+    """Return the PATCH body enabling Issues on the knowledge repository.
+
+    Minimal correction: only ``has_issues`` is flipped to ``True``.
+    Visibility and every other security-relevant setting are untouched
+    (never made public here).
+    """
+    return {"has_issues": True}
+
+
+def knowledge_repo_settings_patch_path(
+    owner: str = KNOWLEDGE_REPO_OWNER,
+    repo: str = KNOWLEDGE_REPO_NAME,
+) -> str:
+    """Return the API path for the knowledge-repository settings PATCH."""
+    if (owner or "").strip() != KNOWLEDGE_REPO_OWNER:
+        raise _fail("knowledge repository owner must be %r" % KNOWLEDGE_REPO_OWNER)
+    if (repo or "").strip() != KNOWLEDGE_REPO_NAME:
+        raise _fail("knowledge repository name must be %r" % KNOWLEDGE_REPO_NAME)
+    return "/repos/%s/%s" % (KNOWLEDGE_REPO_OWNER, KNOWLEDGE_REPO_NAME)
+
+
+def verify_knowledge_repo_settings_for_roadmap(info: Mapping[str, Any]) -> dict[str, Any]:
+    """Verify the repo stays private and has Issues enabled for the roadmap.
+
+    Combines :func:`verify_knowledge_repository` (exact full name, private,
+    default branch) with the ``has_issues == True`` requirement. Fail
+    closed on any violation; never weakens visibility.
+    """
+    verified = verify_knowledge_repository(info)
+    if not isinstance(info, Mapping):
+        raise _fail("repository info must be a mapping")
+    if info.get("has_issues") is not True:
+        raise _fail(
+            "knowledge repository %s must have GitHub Issues enabled "
+            "(has_issues=true) for the Knowledge Plane roadmap" % KNOWLEDGE_REPO_FULL
+        )
+    verified["has_issues"] = True
+    return verified
 
 
 def verify_knowledge_repository(info: Mapping[str, Any]) -> dict[str, Any]:
@@ -1388,6 +1437,7 @@ def plan_live_bootstrap(
         "verification": [
             "full name is exactly kodmial/agent-knowledge",
             "private == true / visibility is private",
+            "GitHub Issues enabled (has_issues=true) for Knowledge Plane roadmap",
             "default branch exists",
             "trusted layer can read the repository",
             "trusted layer can create/update a bootstrap file",
@@ -1434,6 +1484,7 @@ def plan_live_bootstrap_trusted_transport(
         "verification": [
             "full name is exactly kodmial/agent-knowledge",
             "private == true / visibility is private",
+            "GitHub Issues enabled (has_issues=true) for Knowledge Plane roadmap",
             "default branch exists",
             "trusted layer can read the repository",
             "trusted layer can create/update a bootstrap file",
