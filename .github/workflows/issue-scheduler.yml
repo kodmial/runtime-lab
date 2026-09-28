@@ -201,6 +201,37 @@ jobs:
                 if (err.status !== 404) throw err;
               }
               const openBlockers = blockers.filter(item => item.state === 'open');
+
+              // runtime-lab's bootstrap issues already encode their prerequisite
+              // DAG in Definition of Ready ("#N is completed"). Honor those
+              // references as a fallback until/native GitHub issue dependencies
+              // are populated, so parallel WIP cannot start dependent work early.
+              const readinessDependencyNumbers = [
+                ...new Set(
+                  [...(candidate.issue.body || '').matchAll(/#(\\d+)\\s+is completed\\b/gi)]
+                    .map(match => Number(match[1]))
+                    .filter(number =>
+                      Number.isInteger(number) &&
+                      number > 0 &&
+                      number !== candidate.issue.number
+                    )
+                ),
+              ];
+
+              for (const dependencyNumber of readinessDependencyNumbers) {
+                if (openBlockers.some(item => item.number === dependencyNumber)) continue;
+                try {
+                  const {data: dependency} = await github.rest.issues.get({
+                    owner, repo, issue_number: dependencyNumber,
+                  });
+                  if (dependency.state === 'open' && !dependency.pull_request) {
+                    openBlockers.push(dependency);
+                  }
+                } catch (err) {
+                  if (err.status !== 404) throw err;
+                }
+              }
+
               if (openBlockers.length) {
                 core.info('Skipping #' + candidate.issue.number + ': blocked by ' +
                   openBlockers.map(item => '#' + item.number).join(', '));
