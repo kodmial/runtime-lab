@@ -135,6 +135,18 @@ jobs:
 
           opencode run --auto --model "$OPENCODE_MODEL" "$PROMPT"
 
+          CURRENT_BRANCH="$(git branch --show-current)"
+          if [[ "$CURRENT_BRANCH" != "$BRANCH" ]]; then
+            echo "::error::OpenCode changed branch unexpectedly: expected '$BRANCH', got '$CURRENT_BRANCH'."
+            exit 1
+          fi
+
+          if [[ -n "$(git status --porcelain -- .github/workflows)" ]]; then
+            echo "::error::OpenCode modified .github/workflows/**, which this token cannot safely push."
+            git status --short -- .github/workflows
+            exit 1
+          fi
+
           if [[ -z "$(git status --porcelain)" ]]; then
             echo "OpenCode produced no repository changes."
             gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY"               --body "Automation produced no code changes; pausing this issue for manual inspection."
