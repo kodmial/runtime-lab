@@ -1,0 +1,168 @@
+{
+  "artifact": {
+    "archive_bytes": 143145833,
+    "archive_sha256": "8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df",
+    "artifact_id": "11001896223",
+    "artifact_name": "opencode-coding-linux-x64",
+    "binary_bytes": 143145088,
+    "binary_sha256": "a6dabf731c49999d5c95dd7477cd74f18070615f6a01a8ce36cd8e35b5dce38d",
+    "binary_version": "0.0.0--202609282229",
+    "branch": "opencode/issue11-max-headless",
+    "build_command": "bun run --cwd packages/opencode build:coding",
+    "build_metadata_source_ref": "refs/pull/12/merge",
+    "build_metadata_source_sha": "caf84a91a34a202a4a08e1ee583d40d53647750e",
+    "payload": [
+      "opencode-coding-linux-x64",
+      "opencode-coding-linux-x64.sha256",
+      "build-metadata.txt"
+    ],
+    "pr": 12,
+    "repo": "kodmial/opencode",
+    "retention_expiry": "2026-10-28",
+    "source_sha": "8ed6c749577d534c55ba9555ba4918ea8be95a97",
+    "source_workflow_name": "OpenCode Coding Artifact",
+    "source_workflow_run": "36492639568"
+  },
+  "base_commit": "6a67aa833b944428daa38f57f43e353bcf44ad97",
+  "classification": {
+    "maps_to_issue_taxonomy": "none cleanly: not reliable/marginal (nothing completed); not does-not-fit-memory (zero max/oom events, peaks under ceiling, failure not attributable to the 512 MiB envelope); not infrastructure-blocked-download (artifact downloaded, verified, started, telemetry captured). Definitive negative qualification: the exact artifact cannot perform the required workload on the required anonymous path.",
+    "memory_pressure_observed": false,
+    "root_cause": "artifact workflow stamps no OPENCODE_VERSION (no fetch-tags/version env), so Script.version falls back to 0.0.0 and the free-tier console gate rejects the client before any tool runs",
+    "verdict": "blocked-provider-version-gate"
+  },
+  "comparison": {
+    "baseline_host_peak_kb": 614632,
+    "note": "No valid memory delta: all real-agent trials fast-failed at the provider version gate before performing the workload (no search/edit/test executed). Fast-fail peaks must never be read as fit evidence."
+  },
+  "controls": {
+    "binary_help": {
+      "excluded_listed": [],
+      "note": "only run command listed",
+      "run_exposed": true
+    },
+    "docker_hog": {
+      "events": {
+        "max": 52,
+        "oom_kill": 1
+      },
+      "exit_inside": 137,
+      "note": "negative control proves OOM detection",
+      "peak_bytes": 536870912
+    },
+    "docker_version": {
+      "current_bytes": 3563520,
+      "events": {
+        "max": 0,
+        "oom_kill": 0
+      },
+      "exit_code": 0,
+      "note": "non-success signal only",
+      "peak_bytes": 47517696,
+      "swap_current": 0,
+      "swap_max": 0
+    },
+    "host_version": {
+      "exit_code": 0,
+      "max_family": 1,
+      "note": "non-success signal only",
+      "peak_main_kb": 100148,
+      "peak_tree_kb": 100148,
+      "time_v_max_rss_kb": 100628,
+      "wall_seconds": 0.33
+    }
+  },
+  "harness": {
+    "baseline_host_peak_bytes": 629383168,
+    "baseline_provenance": "issue-52-run-36423884312 + memory-benchmark-issue-52.md",
+    "ceiling_probe": {
+      "memory_max": 536870912,
+      "swap_current": 0,
+      "swap_max": 0
+    },
+    "docker_limits": [
+      "--memory=512m",
+      "--memory-swap=512m"
+    ],
+    "memory_max": 536870912,
+    "memory_swap_max": 0,
+    "model": "opencode/muse-spark-1.3-contributor-free"
+  },
+  "issue": 109,
+  "run_id": "36493321957",
+  "schema": "runtime-lab-max-headless-qualify/v1",
+  "trials": [
+    {
+      "binary_bytes": 143145088,
+      "binary_sha256": "a6dabf731c49999d5c95dd7477cd74f18070615f6a01a8ce36cd8e35b5dce38d",
+      "bun_options": "",
+      "correctness": "fail",
+      "edit_landed": false,
+      "exit_code": 1,
+      "memory_current_bytes": 9830400,
+      "memory_events": {
+        "high": 0,
+        "low": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_group_kill": 0,
+        "oom_kill": 0
+      },
+      "memory_peak_bytes": 442863616,
+      "peak_bytes": 442863616,
+      "peak_tree_kb": null,
+      "stderr_shape": "Error from provider (Console): OpenCode 1.18.0 or newer is required to use the free tier",
+      "swap_current_bytes": 0,
+      "swap_max_bytes": 0,
+      "trial": "docker-t1-unset",
+      "wall_seconds": null
+    },
+    {
+      "binary_bytes": 143145088,
+      "binary_sha256": "a6dabf731c49999d5c95dd7477cd74f18070615f6a01a8ce36cd8e35b5dce38d",
+      "bun_options": "",
+      "correctness": "fail",
+      "edit_landed": false,
+      "exit_code": 1,
+      "memory_current_bytes": 9674752,
+      "memory_events": {
+        "high": 0,
+        "low": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_group_kill": 0,
+        "oom_kill": 0
+      },
+      "memory_peak_bytes": 443039744,
+      "peak_bytes": 443039744,
+      "peak_tree_kb": null,
+      "stderr_shape": "Error from provider (Console): OpenCode 1.18.0 or newer is required to use the free tier",
+      "swap_current_bytes": 0,
+      "swap_max_bytes": 0,
+      "trial": "docker-t2-unset",
+      "wall_seconds": null
+    },
+    {
+      "binary_bytes": 143145088,
+      "binary_sha256": "a6dabf731c49999d5c95dd7477cd74f18070615f6a01a8ce36cd8e35b5dce38d",
+      "bun_options": "",
+      "correctness": "fail",
+      "edit_landed": false,
+      "exit_code": 1,
+      "max_family": 2,
+      "memory_current_bytes": null,
+      "memory_events": {},
+      "memory_peak_bytes": null,
+      "note": "unconstrained host peak; fast-fail so not a memory-fit signal",
+      "peak_bytes": 527278080,
+      "peak_tree_kb": 514920,
+      "stderr_shape": "Error from provider (Console): OpenCode 1.18.0 or newer is required to use the free tier",
+      "swap_current_bytes": null,
+      "swap_max_bytes": null,
+      "trial": "host-t3-unset",
+      "wall_seconds": 2.96
+    }
+  ],
+  "workflow_runs": [
+    "36493321957"
+  ]
+}
