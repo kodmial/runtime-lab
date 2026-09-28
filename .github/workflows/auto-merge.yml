@@ -189,7 +189,7 @@ jobs:
               .filter(pr =>
                 !pr.draft &&
                 pr.head.repo?.full_name === repoFullName &&
-                pr.head.ref.startsWith('opencode/')
+                /^opencode\/issue\d+-/.test(pr.head.ref)
               )
               .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
@@ -233,7 +233,7 @@ jobs:
                 pr.state !== 'open' ||
                 pr.draft ||
                 pr.head.repo?.full_name !== repoFullName ||
-                !pr.head.ref.startsWith('opencode/') ||
+                !/^opencode\/issue\d+-/.test(pr.head.ref) ||
                 hasLabel(pr, noAutoMerge)
               ) {
                 continue;
