@@ -206,12 +206,29 @@ else
     exit 1
   fi
   OWNERS_JSON="$(cat "$OWNERS_FILE")"
-  rm -f "$OWNERS_FILE"
-  OWNER_ID="$(jq -r '.[0].id // empty' <<<"$OWNERS_JSON")"
-  if [[ -z "$OWNER_ID" ]]; then
-    echo "::error::Could not resolve a Render owner id for service creation." >&2
+  if ! OWNER_ID="$(python3 - "$OWNERS_FILE" <<'PY'
+import json
+import sys
+sys.path.insert(0, "automation")
+from render_lifecycle import extract_owner_id
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+print(extract_owner_id(payload))
+PY
+  )"; then
+    OWNER_SHAPE="$(jq -c '
+      if type == "array" and length > 0 and (.[0] | type) == "object" then
+        {type: type, first_keys: (.[0] | keys), owner_keys: ((.[0].owner // {}) | keys)}
+      else
+        {type: type, length: (if type == "array" then length else null end)}
+      end
+    ' "$OWNERS_FILE" 2>/dev/null || echo '{"shape":"unavailable"}')"
+    rm -f "$OWNERS_FILE"
+    echo "::error::Could not resolve a Render owner id from the documented List Workspaces response shape: $OWNER_SHAPE" >&2
     exit 1
   fi
+  rm -f "$OWNERS_FILE"
 
   RUN_ID_SAFE="${GITHUB_RUN_ID:-local}"
   SERVICE_NAME="runtime-lab-issue${ISSUE_NUMBER}-${RUN_ID_SAFE}"
