@@ -136,6 +136,9 @@ try:  # pragma: no cover - import path depends on entrypoint
         build_status_command,
         find_opencode_binary,
         is_model_unavailable_error,
+        opencode_runtime_install_allowed,
+        probe_opencode_readiness,
+        resolve_opencode_bin_override,
         sanitize_output,
         summarize_changes,
     )
@@ -154,6 +157,9 @@ except ImportError:  # pytest inserts automation/ on sys.path
         build_status_command,
         find_opencode_binary,
         is_model_unavailable_error,
+        opencode_runtime_install_allowed,
+        probe_opencode_readiness,
+        resolve_opencode_bin_override,
         sanitize_output,
         summarize_changes,
     )
@@ -176,6 +182,7 @@ ENV_REGION = "RENDER_REGION"  # also accept WORKER_REGION below
 ENV_REGION_ALT = "WORKER_REGION"
 ENV_DEFAULT_MODEL = "RUNNER_DEFAULT_MODEL"
 ENV_OPENCODE_BIN = "RUNNER_OPENCODE_BIN"
+ENV_ALLOW_RUNTIME_INSTALL = "RUNNER_ALLOW_RUNTIME_INSTALL"
 
 ALLOWED_MODELS = frozenset({PREFERRED_MODEL, FALLBACK_MODEL})
 
@@ -425,6 +432,7 @@ class JobManager:
         opencode_bin: Optional[str] = None,
         instance_id: Optional[str] = None,
         pid: Optional[int] = None,
+        allow_runtime_install: Optional[bool] = None,
     ) -> None:
         if job_timeout_seconds <= 0:
             raise ValueError("job_timeout_seconds must be positive")
@@ -442,6 +450,14 @@ class JobManager:
         self.opencode_bin = resolve_opencode_bin(
             opencode_bin or os.environ.get(ENV_OPENCODE_BIN)
         )
+        if allow_runtime_install is None:
+            self.allow_runtime_install = opencode_runtime_install_allowed(
+                os.environ.get(ENV_ALLOW_RUNTIME_INSTALL)
+                if os.environ.get(ENV_ALLOW_RUNTIME_INSTALL) not in (None, "")
+                else None
+            )
+        else:
+            self.allow_runtime_install = bool(allow_runtime_install)
         self.start_time = start_time if start_time is not None else time.time()
         # Unique process/manager identity (issue #41): a fresh uuid per
         # manager startup proves a restart/replacement directly, even when
@@ -451,7 +467,32 @@ class JobManager:
         self.instance_id = raw_instance or uuid.uuid4().hex
         self.pid = int(pid) if pid is not None else os.getpid()
         self.started_at = float(self.start_time)
-        self.ready = True
+        # Deterministic OpenCode readiness (issue #52): in strict mode
+        # (runtime installation disabled) the worker is not ready when the
+        # expected binary is absent or non-executable, so Render health
+        # checks fail fast instead of accepting jobs that can only fail.
+        # The resolved path/version are logged by main() and exposed in
+        # /health; no secrets are ever included.
+        explicit_override = resolve_opencode_bin_override()
+        probe_target = (
+            self.opencode_bin
+            if self.opencode_bin and self.opencode_bin != "opencode"
+            else (explicit_override or find_opencode_binary() or None)
+        )
+        ready, resolved_path, version_detail = probe_opencode_readiness(
+            probe_target if (probe_target and os.path.isabs(probe_target)) else None
+        )
+        self.opencode_resolved_bin = resolved_path
+        self.opencode_version = version_detail if ready else ""
+        self.opencode_ready_detail = (
+            version_detail if ready else ("not ready: %s" % version_detail)
+        )
+        if self.allow_runtime_install:
+            self.ready = True
+        else:
+            self.ready = bool(ready)
+            if not ready:
+                self.opencode_bin = resolved_path or self.opencode_bin
         self._lock = threading.Lock()
         # Serializes OpenCode CLI provisioning (curl|bash installer) so
         # concurrent jobs never run concurrent heavyweight installers on
@@ -491,6 +532,13 @@ class JobManager:
             "jobs": counts,
             "job_timeout_seconds": self.job_timeout_seconds,
             "resources": read_resource_diagnostics(),
+            "opencode_bin": getattr(self, "opencode_resolved_bin", ""),
+            "opencode_version": getattr(self, "opencode_version", ""),
+            "opencode_ready": bool(getattr(self, "opencode_version", "")),
+            "opencode_detail": getattr(self, "opencode_ready_detail", ""),
+            "allow_runtime_install": bool(
+                getattr(self, "allow_runtime_install", True)
+            ),
         }
 
     def job_counts(self) -> dict[str, int]:
@@ -852,6 +900,15 @@ class JobManager:
         ``$OPENCODE_VERSION`` overrides the pin; an explicit
         RUNNER_OPENCODE_BIN/manager override is used verbatim (tests
         inject fakes this way) and skips provisioning.
+
+        Issue #52 strict mode: when runtime installation is disabled
+        (``RUNNER_ALLOW_RUNTIME_INSTALL=0``, the production Render start
+        command), a missing binary fails fast with FileNotFoundError and
+        never runs the network installer inside the job. The binary must
+        come from the deterministic deploy artifact
+        (``.opencode-bin/opencode`` copied at build time by
+        automation/install-opencode.sh) so build-time $HOME never needs
+        to equal runtime $HOME.
         """
         override = (self.opencode_bin or "").strip()
         if override and override != "opencode":
@@ -859,6 +916,13 @@ class JobManager:
         found = find_opencode_binary()
         if found:
             return found
+        if not getattr(self, "allow_runtime_install", True):
+            raise FileNotFoundError(
+                "opencode binary not found and runtime installation is disabled "
+                "(RUNNER_ALLOW_RUNTIME_INSTALL=0); provision via "
+                "automation/install-opencode.sh at build time so "
+                ".opencode-bin/opencode ships inside the deploy artifact"
+            )
         # Serialize provisioning: concurrent jobs must not run concurrent
         # curl|bash installers on the small free worker (issue #41 peak
         # memory/process pressure reduction). Re-check inside the lock so
@@ -1440,6 +1504,11 @@ def build_manager_from_env(
         default_model=resolve_default_model(os.environ.get(ENV_DEFAULT_MODEL)),
         command_builder=command_builder,
         opencode_bin=opencode_bin or os.environ.get(ENV_OPENCODE_BIN),
+        allow_runtime_install=opencode_runtime_install_allowed(
+            os.environ.get(ENV_ALLOW_RUNTIME_INSTALL)
+            if os.environ.get(ENV_ALLOW_RUNTIME_INSTALL) not in (None, "")
+            else None
+        ),
     )
 
 
@@ -1448,11 +1517,33 @@ def main() -> None:
     port = resolve_port(os.environ.get(ENV_PORT))
     manager = build_manager_from_env()
     server = create_server(port=port, manager=manager)
+    # Safe startup log (issue #52): resolved binary path plus version, or
+    # the not-ready reason. Never logs secrets; provider credentials stay
+    # environment-driven and are never printed here.
     print(
         "runtime-lab runner listening on 0.0.0.0:%d (region=%s model=%s timeout=%.0fs)"
         % (port, manager.region, manager.default_model, manager.job_timeout_seconds),
         flush=True,
     )
+    print(
+        "opencode binary: path=%s version=%s ready=%s allow_runtime_install=%s detail=%s"
+        % (
+            getattr(manager, "opencode_resolved_bin", "") or manager.opencode_bin,
+            getattr(manager, "opencode_version", "") or "-",
+            manager.ready,
+            getattr(manager, "allow_runtime_install", True),
+            getattr(manager, "opencode_ready_detail", ""),
+        ),
+        flush=True,
+    )
+    if not manager.ready and not getattr(manager, "allow_runtime_install", True):
+        print(
+            "WARNING: opencode binary is absent or non-executable and "
+            "RUNNER_ALLOW_RUNTIME_INSTALL=0; /health reports 503 until the "
+            "deploy artifact provides .opencode-bin/opencode "
+            "(see automation/install-opencode.sh).",
+            flush=True,
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

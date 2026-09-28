@@ -69,6 +69,26 @@ OPENCODE_INSTALL_COMMAND = "curl -fsSL https://opencode.ai/install | bash"
 OPENCODE_BIN_NAME = "opencode"
 OPENCODE_HOME_SUBPATH = os.path.join(".opencode", "bin", "opencode")
 OPENCODE_INSTALL_MAX_ATTEMPTS = 3
+# Deterministic deploy-artifact path for the OpenCode binary (issue #52).
+#
+# Render build-time $HOME is not guaranteed to equal runtime $HOME, so the
+# worker must never rely solely on ``$HOME/.opencode/bin/opencode``. The
+# build step (automation/install-opencode.sh) copies the pinned binary into
+# this repo-relative directory so it ships inside the deploy artifact; the
+# runner resolves it relative to this source file and the process working
+# directory before falling back to PATH/HOME.
+OPENCODE_DEPLOY_DIRNAME = ".opencode-bin"
+OPENCODE_DEPLOY_BIN_SUBPATH = os.path.join(OPENCODE_DEPLOY_DIRNAME, "opencode")
+# Explicit binary override (highest precedence). Honored verbatim.
+OPENCODE_BIN_ENV_VARS = ("RUNNER_OPENCODE_BIN", "OPENCODE_BIN")
+# When false ("0"/"false"/"no"), lazy network installation during a job is
+# disabled: a missing binary fails fast instead of running curl|bash.
+# Production workers set RUNNER_ALLOW_RUNTIME_INSTALL=0 via the Render start
+# command so jobs never pay installer memory/CPU or depend on network.
+RUNTIME_INSTALL_ENV_VARS = (
+    "RUNNER_ALLOW_RUNTIME_INSTALL",
+    "OPENCODE_ALLOW_RUNTIME_INSTALL",
+)
 
 # Pinned OpenCode release used for deterministic worker provisioning.
 #
@@ -119,7 +139,27 @@ MAX_SUMMARY_CHARS = 4000
 
 
 def find_opencode_binary() -> str | None:
-    """Return the OpenCode binary path, or None when not installed."""
+    """Return the OpenCode binary path, or None when not installed.
+
+    Precedence: explicit ``RUNNER_OPENCODE_BIN``/``OPENCODE_BIN`` override,
+    repo-relative deterministic deploy artifact (``.opencode-bin/opencode``
+    next to this source tree or under the process working directory),
+    ``PATH``, then ``$HOME/.opencode/bin/opencode``. The deploy-artifact
+    check is what makes build-time provisioning visible at runtime even
+    when build-time $HOME differs from runtime $HOME.
+    """
+    for env_var in OPENCODE_BIN_ENV_VARS:
+        raw = os.environ.get(env_var, "")
+        if raw and str(raw).strip():
+            candidate = str(raw).strip()
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+            # An explicit override pointing at a missing binary is a
+            # configuration error, not a discovery miss; keep searching so
+            # diagnostics can report every candidate deterministically.
+    for candidate in deploy_binary_candidates():
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
     on_path = shutil.which(OPENCODE_BIN_NAME)
     if on_path:
         return on_path
@@ -128,6 +168,88 @@ def find_opencode_binary() -> str | None:
     if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
         return candidate
     return None
+
+
+def deploy_binary_candidates() -> list[str]:
+    """Repo-relative deterministic binary candidates (deploy artifact)."""
+    candidates: list[str] = []
+    try:
+        source_dir = os.path.dirname(os.path.abspath(__file__))
+        repo_root = os.path.dirname(source_dir)
+        candidates.append(os.path.join(repo_root, OPENCODE_DEPLOY_BIN_SUBPATH))
+    except Exception:
+        pass
+    try:
+        candidates.append(
+            os.path.join(os.path.abspath(os.getcwd()), OPENCODE_DEPLOY_BIN_SUBPATH)
+        )
+    except Exception:
+        pass
+    # De-duplicate while preserving order.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            ordered.append(candidate)
+    return ordered
+
+
+def opencode_runtime_install_allowed(raw: object = None) -> bool:
+    """True unless runtime network installation was explicitly disabled."""
+    if raw is None:
+        for env_var in RUNTIME_INSTALL_ENV_VARS:
+            value = os.environ.get(env_var)
+            if value is not None and str(value).strip() != "":
+                raw = value
+                break
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in ("0", "false", "no", "off", "disabled")
+
+
+def resolve_opencode_bin_override() -> str | None:
+    """Return the explicit binary override, or None when not configured."""
+    for env_var in OPENCODE_BIN_ENV_VARS:
+        raw = os.environ.get(env_var, "")
+        if raw and str(raw).strip():
+            return str(raw).strip()
+    return None
+
+
+def probe_opencode_readiness(
+    binary: str | None = None, timeout: float = 20.0
+) -> tuple[bool, str, str]:
+    """Check that the expected OpenCode binary exists and reports a version.
+
+    Returns (ready, resolved_path, version_or_detail). Never raises: any
+    failure is reported as not-ready with a safe detail string (no secrets).
+    """
+    resolved = (binary or "").strip() if binary else None
+    if not resolved:
+        resolved = find_opencode_binary() or ""
+    if not resolved:
+        return False, "", "opencode binary not found in deploy artifact, PATH, or HOME"
+    if not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
+        return False, resolved, "opencode binary at %r is absent or non-executable" % resolved
+    try:
+        import subprocess as _subprocess
+
+        completed = _subprocess.run(
+            [resolved, "--version"],
+            timeout=max(1.0, float(timeout)),
+            stdout=_subprocess.PIPE,
+            stderr=_subprocess.PIPE,
+            text=True,
+        )
+        output = ((completed.stdout or "") + " " + (completed.stderr or "")).strip()
+        version = output.split()[0] if output else ""
+        if completed.returncode == 0 and version:
+            return True, resolved, version[:64]
+        detail = sanitize_output(output or ("exit %d" % completed.returncode))[:200]
+        return False, resolved, "opencode --version failed: %s" % detail
+    except Exception as exc:
+        return False, resolved, "opencode --version probe failed: %s" % str(exc)[:200]
 
 
 def opencode_install_shell_snippet(version: str | None = None) -> str:
