@@ -307,7 +307,7 @@ jobs:
           gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
             --body "OpenCode workflow run $GITHUB_RUN_ID failed before a usable PR was completed. Dispatch attempts recorded: $attempts."
 
-          max_attempts=2
+          max_attempts=4
           if (( attempts >= max_attempts )); then
             gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
               --add-label "automation:paused" >/dev/null 2>&1 || true
