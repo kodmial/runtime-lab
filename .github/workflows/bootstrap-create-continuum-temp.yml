@@ -1,0 +1,39 @@
+name: Bootstrap Continuum repository
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  create:
+    if: github.event.issue.title == '[bootstrap] create continuum'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.TAP_PAT }}
+    steps:
+      - name: Create private Continuum repository
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::TAP_PAT is not configured in runtime-lab."
+            exit 1
+          fi
+
+          if gh api repos/kodmial/continuum >/dev/null 2>&1; then
+            echo "kodmial/continuum already exists."
+            exit 0
+          fi
+
+          gh api --method POST user/repos \
+            -f name='continuum' \
+            -f description='Reusable GitHub automation and project lifecycle platform.' \
+            -F private=true \
+            -F has_issues=true \
+            -F has_projects=false \
+            -F has_wiki=false \
+            -F auto_init=true
