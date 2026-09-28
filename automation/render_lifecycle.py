@@ -47,6 +47,7 @@ RENDER_DOC_API_OVERVIEW = "https://render.com/docs/api"
 RENDER_DOC_CREATE_SERVICE = "https://api-docs.render.com/reference/create-service"
 RENDER_DOC_RETRIEVE_SERVICE = "https://api-docs.render.com/reference/retrieve-service"
 RENDER_DOC_LIST_SERVICES = "https://api-docs.render.com/reference/list-services"
+RENDER_DOC_LIST_WORKSPACES = "https://api-docs.render.com/reference/list-owners"
 RENDER_DOC_DELETE_SERVICE = "https://api-docs.render.com/reference/delete-service"
 RENDER_DOC_SUSPEND_SERVICE = "https://api-docs.render.com/reference/suspend-service-1"
 RENDER_DOC_RETRIEVE_DEPLOY = "https://api-docs.render.com/reference/retrieve-deploy"
@@ -58,6 +59,7 @@ RENDER_DOC_URLS = (
     RENDER_DOC_CREATE_SERVICE,
     RENDER_DOC_RETRIEVE_SERVICE,
     RENDER_DOC_LIST_SERVICES,
+    RENDER_DOC_LIST_WORKSPACES,
     RENDER_DOC_DELETE_SERVICE,
     RENDER_DOC_SUSPEND_SERVICE,
     RENDER_DOC_RETRIEVE_DEPLOY,
@@ -122,6 +124,29 @@ def render_url(path: str) -> str:
     if not path.startswith("/v1/"):
         raise ValueError("Render API path must start with /v1/: %r" % path)
     return RENDER_API_BASE + path
+
+
+def extract_owner_id(payload: object) -> str:
+    """Extract a workspace id from the Render List Workspaces response.
+
+    The documented response shape is a list whose first item contains an
+    owner object with an id field. A legacy top-level id is accepted
+    defensively, but malformed responses fail closed.
+    """
+    if (
+        not isinstance(payload, Sequence)
+        or isinstance(payload, (str, bytes, bytearray))
+        or not payload
+    ):
+        raise ValueError("Render workspaces response must be a non-empty array")
+    first = payload[0]
+    if not isinstance(first, Mapping):
+        raise ValueError("Render workspace entry must be an object")
+    owner = first.get("owner")
+    value = owner.get("id") if isinstance(owner, Mapping) else first.get("id")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Render workspace entry has no owner.id")
+    return value.strip()
 
 
 # ---------------------------------------------------------------------------
