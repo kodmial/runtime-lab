@@ -174,11 +174,24 @@ jobs:
 
           git fetch origin main "$HEAD_REF" --quiet
           git switch "$HEAD_REF"
-          git merge --no-commit --no-ff origin/main || true
+
+          set +e
+          git merge --no-commit --no-ff origin/main
+          MERGE_STATUS=$?
+          set -e
 
           if [[ -z "$(git diff --name-only --diff-filter=U)" ]]; then
-            git merge --abort >/dev/null 2>&1 || true
-            echo "No unresolved merge conflicts remain."
+            if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+              git commit -m "chore: sync main into PR #${PR_NUMBER}"
+              git push origin "HEAD:$HEAD_REF"
+              echo "Main merged cleanly into PR branch."
+            elif [[ "$MERGE_STATUS" -ne 0 ]]; then
+              echo "::error::Merge failed without resolvable conflict files."
+              exit "$MERGE_STATUS"
+            else
+              echo "PR branch already contains current main."
+            fi
+
             gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref main -f "pr_number=$PR_NUMBER"
             exit 0
           fi
