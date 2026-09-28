@@ -400,8 +400,11 @@ def verify_knowledge_repository(info: Mapping[str, Any]) -> dict[str, Any]:
 # Exact environment names that carry private-store access. TAP_PAT lacks
 # the TOKEN marker so it is listed explicitly; App keys are included
 # because an installation-token-capable key must never reach the worker.
+# TARGET_REPO_PAT (issue #85) is the temporary/bootstrap PAT for
+# cross-repository target writes: trusted-layer only, never worker-visible.
 STORAGE_CREDENTIAL_ENV_NAMES = (
     "TAP_PAT",
+    "TARGET_REPO_PAT",
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GITHUB_APP_ID",

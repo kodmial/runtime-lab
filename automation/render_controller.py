@@ -1184,6 +1184,8 @@ def execute_issue_attempt(
     runner_client: RunnerJobClient,
     health_attempts: int | None = None,
     knowledge_context: Mapping[str, Any] | None = None,
+    target_repository: str = "",
+    target_base_ref: str = "",
 ) -> DispatchResult:
     """Run one eligible issue on exactly one free ephemeral worker.
 
@@ -1201,6 +1203,13 @@ def execute_issue_attempt(
     text via ``render_trusted_task_text`` (fail closed on credential
     material or oversized contexts). When None, the task text is the
     knowledge-free baseline (backward compatible).
+
+    Cross-repository execution (issue #85): ``target_repository`` names
+    the allow-listed checkout target (``kodmial/runtime-lab`` self-target
+    by default, or ``kodmial/opencode`` when the source issue declares
+    ``runtime-lab-target``). ``base_sha`` pins the exact target base SHA.
+    The issue/task text and lifecycle stay sourced from the Runtime Lab
+    issue; only the worker checkout and write-back target change.
     """
     validate_execution_mode(execution_mode)
     validate_worker_region(region)
@@ -1209,6 +1218,78 @@ def execute_issue_attempt(
         raise ValueError("issue_number must be a positive integer")
     if not owner_id:
         raise ValueError("owner_id (Render workspace id) must not be empty")
+    # Cross-repository target (issue #85): explicit allow-list, fail
+    # closed on unapproved repositories. Defaults to self-target so
+    # existing behavior is unchanged when no target is requested.
+    try:
+        try:
+            from automation.cross_repo import (
+                SOURCE_REPO_FULL as _SOURCE_FULL,
+            )
+            from automation.cross_repo import (
+                SOURCE_REPO_URL as _SOURCE_URL,
+            )
+            from automation.cross_repo import (
+                TARGET_BASE_REF_DEFAULT as _TARGET_BASE_DEFAULT,
+            )
+            from automation.cross_repo import (
+                normalize_target_repo as _normalize_target,
+            )
+            from automation.cross_repo import (
+                resolve_target_spec as _resolve_target,
+            )
+            from automation.cross_repo import (
+                target_repo_url as _target_url,
+            )
+        except ImportError:
+            from cross_repo import (  # type: ignore[no-redef]
+                SOURCE_REPO_FULL as _SOURCE_FULL,
+            )
+            from cross_repo import (  # type: ignore[no-redef]
+                SOURCE_REPO_URL as _SOURCE_URL,
+            )
+            from cross_repo import (  # type: ignore[no-redef]
+                TARGET_BASE_REF_DEFAULT as _TARGET_BASE_DEFAULT,
+            )
+            from cross_repo import (  # type: ignore[no-redef]
+                normalize_target_repo as _normalize_target,
+            )
+            from cross_repo import (  # type: ignore[no-redef]
+                resolve_target_spec as _resolve_target,
+            )
+            from cross_repo import (  # type: ignore[no-redef]
+                target_repo_url as _target_url,
+            )
+        _spec = _resolve_target(
+            issue_body=body,
+            source_issue=issue_number,
+            target_base_ref=(target_base_ref or _TARGET_BASE_DEFAULT),
+            target_base_sha=(base_sha or ""),
+        )
+        if target_repository:
+            _explicit = _normalize_target(target_repository)
+            if _explicit != _spec.target_repo:
+                raise ValueError(
+                    "target_repository %r does not match the issue-declared "
+                    "target %r" % (target_repository, _spec.target_repo)
+                )
+        target_repo_full = _spec.target_repo
+        target_url = _target_url(target_repo_full)
+        target_ref = _spec.target_base_ref
+        pinned_sha = _spec.target_base_sha
+        source_url = _SOURCE_URL
+    except ImportError:
+        target_repo_full = (target_repository or "kodmial/runtime-lab").strip() \
+            or "kodmial/runtime-lab"
+        if target_repo_full not in ("kodmial/runtime-lab", "kodmial/opencode"):
+            raise ValueError(
+                "target_repository %r is not allow-listed" % (target_repository,)
+            )
+        target_url = PUBLIC_REPO_URL if target_repo_full == "kodmial/runtime-lab" \
+            else "https://github.com/kodmial/opencode"
+        target_ref = target_base_ref or PUBLIC_REPO_BRANCH
+        pinned_sha = base_sha or ""
+        source_url = PUBLIC_REPO_URL
 
     label_run = run_id or ("ctrl-%s" % (delivery_id[:8] if delivery_id else uuid.uuid4().hex[:8]))
     service_name = service_name_for_attempt(issue_number, label_run)
@@ -1274,12 +1355,14 @@ def execute_issue_attempt(
             execution_mode=execution_mode,
         )
         request = JobRequest(
-            repository_url=PUBLIC_REPO_URL,
-            base_ref=PUBLIC_REPO_BRANCH,
-            base_sha=select_base_sha(base_sha, ""),
+            repository_url=target_url,
+            base_ref=target_ref,
+            base_sha=select_base_sha(pinned_sha, ""),
             task_text=task_text,
             issue_number=issue_number,
             metadata=metadata,
+            source_repository=source_url,
+            target_repository=target_repo_full,
         )
         job_body = request.to_dict()
         job_id = runner_client.submit_job(base_url, job_body)
@@ -1733,23 +1816,140 @@ class Controller:
                                   reason="dispatching %s" % decision.reason)
             region = self.region
             model = self.model
+            # Cross-repository target (issue #85): parse the explicit
+            # machine-readable marker from the source issue body (fail
+            # closed on unapproved repositories -- no worker is created),
+            # then pin the exact target base SHA via the GitHub API when
+            # available. The issue/task text and lifecycle stay sourced
+            # from the Runtime Lab issue; only the checkout target changes.
+            try:
+                try:
+                    from automation.cross_repo import (
+                        SOURCE_REPO_FULL as _SOURCE_FULL,
+                    )
+                    from automation.cross_repo import (
+                        TARGET_BASE_REF_DEFAULT as _TARGET_REF_DEFAULT,
+                    )
+                    from automation.cross_repo import (
+                        build_execution_evidence as _build_evidence,
+                    )
+                    from automation.cross_repo import (
+                        format_evidence_line as _evidence_line,
+                    )
+                    from automation.cross_repo import (
+                        resolve_target_spec as _resolve_spec,
+                    )
+                    from automation.cross_repo import (
+                        target_repo_url as _target_repo_url,
+                    )
+                except ImportError:
+                    from cross_repo import (  # type: ignore[no-redef]
+                        SOURCE_REPO_FULL as _SOURCE_FULL,
+                    )
+                    from cross_repo import (  # type: ignore[no-redef]
+                        TARGET_BASE_REF_DEFAULT as _TARGET_REF_DEFAULT,
+                    )
+                    from cross_repo import (  # type: ignore[no-redef]
+                        build_execution_evidence as _build_evidence,
+                    )
+                    from cross_repo import (  # type: ignore[no-redef]
+                        format_evidence_line as _evidence_line,
+                    )
+                    from cross_repo import (  # type: ignore[no-redef]
+                        resolve_target_spec as _resolve_spec,
+                    )
+                    from cross_repo import (  # type: ignore[no-redef]
+                        target_repo_url as _target_repo_url,
+                    )
+                _target_spec = _resolve_spec(
+                    issue_body=event.body, source_issue=issue)
+                _have_cross_repo = True
+            except ImportError:
+                _target_spec = None
+                _have_cross_repo = False
+                _SOURCE_FULL = "kodmial/runtime-lab"
+                _TARGET_REF_DEFAULT = PUBLIC_REPO_BRANCH
+                _build_evidence = None  # type: ignore[assignment]
+                _evidence_line = None  # type: ignore[assignment]
+                _target_repo_url = None  # type: ignore[assignment]
+            except Exception as exc:
+                redacted = _redact_controller_error(exc)
+                if delivery:
+                    self.store.update(
+                        delivery, status="failed",
+                        execution_mode=decision.execution_mode,
+                        reason="unapproved target repository (worker cleaned up): %s"
+                        % redacted,
+                    )
+                return {"delivery_id": delivery, "processed": True,
+                        "dispatched": False,
+                        "reason": "unapproved target repository: %s" % redacted}
+            _pinned_sha = ""
+            _target_repo_name = ""
+            _target_ref = _TARGET_REF_DEFAULT
+            _target_url = PUBLIC_REPO_URL
+            if _have_cross_repo and _target_spec is not None:
+                _target_repo_name = _target_spec.target_repo
+                _target_ref = _target_spec.target_base_ref
+                _target_url = _target_repo_url(_target_spec.target_repo)
+                if self.github_api is not None:
+                    try:
+                        _get_base = getattr(self.github_api, "get_base_sha", None)
+                        if callable(_get_base):
+                            try:
+                                _pinned_sha = (_get_base(
+                                    _target_ref, _target_repo_name) or "").strip()
+                            except TypeError:
+                                _pinned_sha = (_get_base(_target_ref) or "").strip()
+                            if not _pinned_sha:
+                                raise ValueError(
+                                    "could not resolve target base SHA for %r@%r"
+                                    % (_target_repo_name, _target_ref))
+                    except Exception as exc:
+                        redacted = _redact_controller_error(exc)
+                        if delivery:
+                            self.store.update(
+                                delivery, status="failed",
+                                execution_mode=decision.execution_mode,
+                                reason="target base SHA could not be pinned "
+                                "(worker cleaned up): %s" % redacted,
+                            )
+                        return {"delivery_id": delivery, "processed": True,
+                                "dispatched": False,
+                                "reason": "target base SHA could not be pinned: %s"
+                                % redacted}
             # Best-effort reservation label before the worker starts; label
             # failures never block dispatch or cleanup.
             _best_effort_reserve(self.github_api, issue)
-            result = execute_issue_attempt(
-                delivery_id=delivery,
-                issue_number=issue,
-                execution_mode=decision.execution_mode,
-                title=event.title,
-                body=event.body,
-                base_sha="",
-                region=region,
-                model=model,
-                owner_id=self.owner_id,
-                run_id="ctrl-%s" % (delivery[:8] if delivery else uuid.uuid4().hex[:8]),
-                render_client=self.render_client,
-                runner_client=self.runner_client,
-            )
+            try:
+                result = execute_issue_attempt(
+                    delivery_id=delivery,
+                    issue_number=issue,
+                    execution_mode=decision.execution_mode,
+                    title=event.title,
+                    body=event.body,
+                    base_sha=_pinned_sha,
+                    region=region,
+                    model=model,
+                    owner_id=self.owner_id,
+                    run_id="ctrl-%s" % (delivery[:8] if delivery else uuid.uuid4().hex[:8]),
+                    render_client=self.render_client,
+                    runner_client=self.runner_client,
+                    target_repository=_target_repo_name,
+                    target_base_ref=_target_ref,
+                )
+            except Exception as exc:
+                redacted = _redact_controller_error(exc)
+                if delivery:
+                    self.store.update(
+                        delivery, status="failed",
+                        execution_mode=decision.execution_mode,
+                        reason="target dispatch failed (worker cleaned up): %s"
+                        % redacted,
+                    )
+                return {"delivery_id": delivery, "processed": True,
+                        "dispatched": False,
+                        "reason": "target dispatch failed: %s" % redacted}
             # Cleanup verification is a hard success gate. A successful
             # OpenCode result must never be materialized into GitHub while
             # its ephemeral Render worker may still exist.
@@ -1782,7 +1982,15 @@ class Controller:
             writeback_summary = ""
             if self.writeback_factory is not None:
                 try:
-                    client = self.writeback_factory(issue)
+                    # Target-aware factory (issue #85): factories may
+                    # accept (issue, target_repo) to bind the write-back
+                    # client to the cross-repo target; single-arg
+                    # factories keep the legacy behavior.
+                    try:
+                        client = self.writeback_factory(
+                            issue, _target_repo_name or _SOURCE_FULL)
+                    except TypeError:
+                        client = self.writeback_factory(issue)
                 except Exception as exc:
                     redacted = _redact_controller_error(exc)
                     result.writeback_error = redacted
@@ -1817,6 +2025,21 @@ class Controller:
                             from result_materialize import (  # type: ignore[no-redef]
                                 materialize_result as _materialize,
                             )
+                        # Fail closed when the bound write-back client does
+                        # not point at the pinned target repository.
+                        _client_repo = (
+                            getattr(client, "repository", "") or
+                            getattr(getattr(client, "api", None),
+                                    "repository", "") or ""
+                        )
+                        if _have_cross_repo and _target_repo_name:
+                            if _client_repo and (
+                                    _client_repo.strip().lower()
+                                    != _target_repo_name.strip().lower()):
+                                raise ValueError(
+                                    "write-back client targets %r, but the "
+                                    "pinned execution target is %r"
+                                    % (_client_repo, _target_repo_name))
                         payload = dict(result.result_payload)
                         payload.setdefault("issue_number", issue)
                         metadata = payload.get("metadata")
@@ -1832,15 +2055,60 @@ class Controller:
                             payload, client=client,
                             unique_suffix=re.sub(r"[^A-Za-z0-9._-]",
                                                 "-", suffix).strip("-") or "ctrl",
+                            base_ref=_target_ref,
+                            expected_base_sha=_pinned_sha,
+                            expected_repository_url=_target_url,
+                            source_repo_full=_SOURCE_FULL,
                             issue_title=event.title,
                         )
                         result.writeback_action = outcome.action
                         result.writeback_branch = outcome.branch
                         result.writeback_pr = outcome.pr_number
                         result.writeback_ci_dispatched = outcome.dispatched_ci
-                        writeback_summary = " writeback=%s branch=%s pr=%s" % (
-                            outcome.action, outcome.branch or "-",
-                            outcome.pr_number if outcome.pr_number is not None else "-")
+                        # Best-effort target head SHA for the evidence
+                        # record (never blocks write-back success).
+                        _head_sha = ""
+                        try:
+                            _api = getattr(client, "api", None)
+                            _branch_sha = getattr(
+                                _api, "get_branch_sha", None) if _api is not None \
+                                else getattr(client, "get_branch_sha", None)
+                            if callable(_branch_sha) and outcome.branch:
+                                try:
+                                    _head_sha = (_branch_sha(
+                                        outcome.branch, _target_repo_name)
+                                        or "").strip()
+                                except TypeError:
+                                    _head_sha = (_branch_sha(
+                                        outcome.branch) or "").strip()
+                        except Exception:
+                            _head_sha = ""
+                        if _build_evidence is not None and _target_spec is not None:
+                            try:
+                                _evidence = _build_evidence(
+                                    spec=_target_spec,
+                                    job_id=result.job_id,
+                                    target_head_sha=_head_sha,
+                                    target_branch=outcome.branch or "",
+                                    target_pr=outcome.pr_number,
+                                    writeback_action=outcome.action,
+                                )
+                                writeback_summary = (
+                                    " writeback=%s branch=%s pr=%s evidence=[%s]"
+                                    % (outcome.action, outcome.branch or "-",
+                                       outcome.pr_number
+                                       if outcome.pr_number is not None else "-",
+                                       _evidence_line(_evidence)))
+                            except Exception:
+                                writeback_summary = (
+                                    " writeback=%s branch=%s pr=%s" % (
+                                        outcome.action, outcome.branch or "-",
+                                        outcome.pr_number
+                                        if outcome.pr_number is not None else "-"))
+                        else:
+                            writeback_summary = " writeback=%s branch=%s pr=%s" % (
+                                outcome.action, outcome.branch or "-",
+                                outcome.pr_number if outcome.pr_number is not None else "-")
                         if outcome.action in ("created", "updated"):
                             pass  # reservation held by the open PR
                         else:

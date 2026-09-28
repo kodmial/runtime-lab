@@ -154,8 +154,11 @@ def build_controller_from_env(
             provider = app_provider
             github_api = api
 
-            def _factory(_issue: int, _api: Any = api) -> Any:
-                return writeback_client_for(_api)
+            def _factory(_issue: int, _target: str = "", _api: Any = api) -> Any:
+                # Cross-repo aware (issue #85): bind the write-back
+                # client to the allow-listed target repository when
+                # requested; default keeps the API-configured repo.
+                return writeback_client_for(_api, repository=(_target or ""))
 
             writeback_factory = _factory
     except Exception:

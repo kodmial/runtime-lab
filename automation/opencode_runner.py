@@ -306,11 +306,15 @@ def build_opencode_install_command(version: str | None = None) -> str:
 
 
 # Worker subprocesses must never inherit a credential that can read the
-# private agent-knowledge repository. Canonical list lives in
+# private agent-knowledge repository or write to a target repository.
+# Canonical list lives in
 # automation/knowledge_store.py:STORAGE_CREDENTIAL_ENV_NAMES; this local
 # copy keeps the runner stdlib-only without an import cycle.
+# TARGET_REPO_PAT is the temporary/bootstrap PAT for cross-repository
+# writes (issue #85): trusted-layer only, never in the OpenCode child env.
 WORKER_SCRUB_ENV_NAMES = (
     "TAP_PAT",
+    "TARGET_REPO_PAT",
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GITHUB_APP_ID",

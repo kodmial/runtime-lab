@@ -46,7 +46,19 @@ RENDER_STATE_FILE="${RENDER_STATE_FILE:-/tmp/runtime-lab-render-state.json}"
 RENDER_RESULT_FILE="${RENDER_RESULT_FILE:-/tmp/runtime-lab-render-result.json}"
 RENDER_REGION="${RENDER_REGION:-oregon}"
 OPENCODE_MODEL="${OPENCODE_MODEL:-opencode/muse-spark-1.3-contributor-free}"
-REPO_URL="https://github.com/kodmial/runtime-lab"
+# Cross-repository execution target (issue #85): explicit allow-listed
+# "owner/repo" (default: kodmial/runtime-lab self-target). The worker
+# clones the target repo; issue/task text stays sourced from this repo.
+TARGET_REPO="${TARGET_REPO:-kodmial/runtime-lab}"
+TARGET_BASE_SHA="${TARGET_BASE_SHA:-}"
+REPO_URL="$(python3 - "$TARGET_REPO" <<'PY'
+import sys
+sys.path.insert(0, "automation")
+from cross_repo import normalize_target_repo, target_repo_url
+full = normalize_target_repo(sys.argv[1])
+print(target_repo_url(full))
+PY
+)" || { echo "::error::TARGET_REPO '$TARGET_REPO' is not allow-listed." >&2; exit 2; }
 API_BASE="https://api.render.com/v1"
 
 # Bounded Render API retry envelope (mirrors render_lifecycle constants).
@@ -170,7 +182,24 @@ GIT_HEAD_SHA=""
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
   GIT_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
 fi
-BASE_SHA="$(ISSUE_TITLE="$ISSUE_TITLE" ISSUE_BODY_TEXT="$ISSUE_BODY_TEXT" python3 - "${GITHUB_SHA:-}" "$GIT_HEAD_SHA" <<'PY'
+# Cross-repo base SHA rule (issue #85): the local checkout HEAD is the
+# self-target SHA only. For a cross-repo target the exact base SHA must
+# come from TARGET_BASE_SHA (pinned by the caller) or from the target
+# remote HEAD via ls-remote; never reuse the local runtime-lab SHA.
+if [[ "$TARGET_REPO" != "kodmial/runtime-lab" && -z "$TARGET_BASE_SHA" ]]; then
+  TARGET_BASE_SHA="$(git ls-remote "$REPO_URL" HEAD 2>/dev/null | awk '{print $1}' || true)"
+fi
+if [[ "$TARGET_REPO" != "kodmial/runtime-lab" && -z "$TARGET_BASE_SHA" ]]; then
+  echo "::error::Cross-repo target '$TARGET_REPO' requires TARGET_BASE_SHA (could not resolve target HEAD)." >&2
+  exit 2
+fi
+BASE_SHA_INPUT_1="${GITHUB_SHA:-}"
+BASE_SHA_INPUT_2="$GIT_HEAD_SHA"
+if [[ -n "$TARGET_BASE_SHA" ]]; then
+  BASE_SHA_INPUT_1="$TARGET_BASE_SHA"
+  BASE_SHA_INPUT_2="$TARGET_BASE_SHA"
+fi
+BASE_SHA="$(ISSUE_TITLE="$ISSUE_TITLE" ISSUE_BODY_TEXT="$ISSUE_BODY_TEXT" python3 - "$BASE_SHA_INPUT_1" "$BASE_SHA_INPUT_2" <<'PY'
 import os, sys
 sys.path.insert(0, "automation")
 from render_lifecycle import select_base_sha
@@ -449,7 +478,7 @@ echo "Memory sampler started (pid $MEMORY_SAMPLER_PID, interval ${RENDER_MEMORY_
 
 # Build the minimum job payload and submit it to the runner.
 JOB_PAYLOAD="$(python3 - "$ISSUE_NUMBER" "$REPO_URL" "$TASK_TEXT" "$BASE_SHA" \
-  "$RENDER_REGION" "$OPENCODE_MODEL" "$EXECUTION_MODE" "${GITHUB_RUN_ID:-}" <<'PY'
+  "$RENDER_REGION" "$OPENCODE_MODEL" "$EXECUTION_MODE" "${GITHUB_RUN_ID:-}" "$TARGET_REPO" <<'PY'
 import json, sys
 sys.path.insert(0, "automation")
 from render_lifecycle import JobRequest, ExecutionMetadata
@@ -468,6 +497,7 @@ req = JobRequest(
     task_text=sys.argv[3],
     issue_number=issue,
     metadata=meta,
+    target_repository=sys.argv[9],
 )
 print(json.dumps(req.to_dict()))
 PY

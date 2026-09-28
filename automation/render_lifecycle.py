@@ -762,11 +762,68 @@ class JobRequest:
     task_text: str = ""
     issue_number: int = 0
     metadata: ExecutionMetadata | None = None
+    # Cross-repository execution (issue #85): ``repository_url`` is the
+    # *target* checkout (self-target ``kodmial/runtime-lab`` by default,
+    # or the allow-listed ``kodmial/opencode`` when the source issue
+    # declares ``runtime-lab-target``). ``source_repository`` records the
+    # tracking repo that owns the issue lifecycle; ``issue_number``
+    # always names the Runtime Lab source issue.
+    source_repository: str = PUBLIC_REPO_URL
+    target_repository: str = ""
 
     def __post_init__(self) -> None:
-        if self.repository_url != PUBLIC_REPO_URL:
+        try:  # pragma: no cover - import path depends on entrypoint
+            from automation.cross_repo import (
+                SOURCE_REPO_URL as _SOURCE_URL,
+            )
+            from automation.cross_repo import (
+                normalize_clone_url as _normalize_url,
+            )
+        except ImportError:
+            try:
+                from cross_repo import (  # type: ignore[no-redef]
+                    SOURCE_REPO_URL as _SOURCE_URL,
+                )
+                from cross_repo import (  # type: ignore[no-redef]
+                    normalize_clone_url as _normalize_url,
+                )
+            except ImportError:
+                _SOURCE_URL = PUBLIC_REPO_URL
+                _normalize_url = None  # type: ignore[assignment]
+        allowed_url = False
+        if self.repository_url == PUBLIC_REPO_URL:
+            allowed_url = True
+        elif _normalize_url is not None:
+            try:
+                _normalize_url(self.repository_url)
+                allowed_url = True
+            except ValueError:
+                allowed_url = False
+        if not allowed_url:
             raise ValueError(
-                "repository_url must be %r in this phase" % PUBLIC_REPO_URL
+                "repository_url %r is not an allow-listed execution target"
+                % (self.repository_url,)
+            )
+        if self.target_repository:
+            if _normalize_url is not None:
+                try:
+                    expected_full = _normalize_url(self.repository_url)
+                except ValueError as exc:
+                    raise ValueError(str(exc)) from None
+                if self.target_repository.strip().lower() != expected_full.lower():
+                    raise ValueError(
+                        "target_repository %r does not match repository_url %r"
+                        % (self.target_repository, self.repository_url)
+                    )
+            elif self.target_repository not in ("kodmial/runtime-lab",
+                                                "kodmial/opencode"):
+                raise ValueError(
+                    "target_repository %r is not allow-listed"
+                    % (self.target_repository,)
+                )
+        if self.source_repository and self.source_repository != _SOURCE_URL:
+            raise ValueError(
+                "source_repository must be %r in this phase" % _SOURCE_URL
             )
         if not self.base_ref:
             raise ValueError("base_ref must not be empty")
@@ -796,6 +853,12 @@ class JobRequest:
         }
         if self.base_sha:
             body["base_sha"] = self.base_sha
+        # Cross-repo correlation (issue #85): the tracking repo/issue that
+        # owns the lifecycle plus the explicit target repo. Older workers
+        # ignore the extra keys; newer workers echo them in the result.
+        body["source_repository"] = self.source_repository or PUBLIC_REPO_URL
+        if self.target_repository:
+            body["target_repository"] = self.target_repository
         return body
 
 

@@ -572,6 +572,8 @@ def materialize_result(
     expected_job_id: str = "",
     issue_title: str = "",
     commit_message: str = "",
+    expected_repository_url: str = "",
+    source_repo_full: str = "",
 ) -> MaterializeOutcome:
     """Materialize one collected worker result into a branch and PR.
 
@@ -587,6 +589,15 @@ def materialize_result(
 
     Base-SHA mismatches raise :class:`MaterializeError` before any
     branch, PR or CI dispatch happens (fail safely).
+
+    Cross-repository execution (issue #85): pass
+    ``expected_repository_url`` for the allow-listed target checkout URL
+    (defaults to the self-target runtime-lab URL) and
+    ``source_repo_full`` (``kodmial/runtime-lab``) when the result
+    targets ``kodmial/opencode``. The branch name stays correlated to
+    the source issue number, and the PR body links back to the source
+    issue without a bare ``Closes #N`` (which would close the wrong
+    issue in the target repo).
     """
     if client is None:
         raise ValueError("client (WritebackClient) must not be None")
@@ -598,10 +609,24 @@ def materialize_result(
         if issue_number <= 0:
             raise ValueError("issue_number must be a positive integer")
     expected_issue = int(issue_number) if issue_number else 0
+    expected_repo = (expected_repository_url or "").strip() or PUBLIC_REPO_URL
+    try:  # cross-repo allow-list (issue #85); self-target default above
+        try:
+            from automation.cross_repo import normalize_clone_url as _normalize_url
+        except ImportError:
+            from cross_repo import normalize_clone_url as _normalize_url  # type: ignore[no-redef]
+        _normalize_url(expected_repo)
+    except ImportError:
+        if expected_repo != PUBLIC_REPO_URL:
+            raise MaterializeError(
+                "repository mismatch: expected %r" % expected_repo
+            )
+    except ValueError as exc:
+        raise MaterializeError("repository mismatch: %s" % exc) from None
     validated = validate_result_payload(
         result,
         expected_issue_number=expected_issue,
-        expected_repository_url=PUBLIC_REPO_URL,
+        expected_repository_url=expected_repo,
         expected_base_sha=expected_base_sha,
         expected_job_id=expected_job_id,
     )
@@ -715,13 +740,78 @@ def materialize_result(
             files_deleted=deleted,
         )
     title = build_pr_title(issue_title, validated.issue_number)
-    body = build_pr_body(
-        issue_number=validated.issue_number,
-        job_id=validated.job_id,
-        base_sha=effective_base,
-        summary=validated.summary,
-        executed_model=validated.executed_model,
-    )
+    source_full = (source_repo_full or "").strip()
+    if source_full:
+        try:
+            try:
+                from automation.cross_repo import (
+                    SOURCE_REPO_FULL as _SOURCE_FULL,
+                )
+                from automation.cross_repo import (
+                    build_target_pr_body as _target_body,
+                )
+                from automation.cross_repo import (
+                    normalize_clone_url as _repo_of_url,
+                )
+            except ImportError:
+                from cross_repo import (  # type: ignore[no-redef]
+                    SOURCE_REPO_FULL as _SOURCE_FULL,
+                )
+                from cross_repo import (  # type: ignore[no-redef]
+                    build_target_pr_body as _target_body,
+                )
+                from cross_repo import (  # type: ignore[no-redef]
+                    normalize_clone_url as _repo_of_url,
+                )
+            _target_full = _repo_of_url(validated.repository_url)
+            _source_norm = _SOURCE_FULL
+            # Normalize the caller-supplied source spelling via the
+            # allow-list (fail closed on unapproved values).
+            try:
+                from automation.cross_repo import (
+                    normalize_target_repo as _normalize_repo,
+                )
+            except ImportError:
+                from cross_repo import (  # type: ignore[no-redef]
+                    normalize_target_repo as _normalize_repo,
+                )
+            _source_norm = _normalize_repo(source_full)
+            if _target_full.lower() != _source_norm.lower():
+                body = _target_body(
+                    source_issue=validated.issue_number,
+                    job_id=validated.job_id,
+                    target_repo=_target_full,
+                    target_base_ref=base_ref or PUBLIC_REPO_BRANCH,
+                    target_base_sha=effective_base,
+                    target_branch=branch,
+                    summary=validated.summary,
+                    executed_model=validated.executed_model,
+                    source_repo=_source_norm,
+                )
+            else:
+                body = build_pr_body(
+                    issue_number=validated.issue_number,
+                    job_id=validated.job_id,
+                    base_sha=effective_base,
+                    summary=validated.summary,
+                    executed_model=validated.executed_model,
+                )
+        except ImportError:
+            body = build_pr_body(
+                issue_number=validated.issue_number,
+                job_id=validated.job_id,
+                base_sha=effective_base,
+                summary=validated.summary,
+                executed_model=validated.executed_model,
+            )
+    else:
+        body = build_pr_body(
+            issue_number=validated.issue_number,
+            job_id=validated.job_id,
+            base_sha=effective_base,
+            summary=validated.summary,
+            executed_model=validated.executed_model,
+        )
     pr_number = client.create_pull_request(
         title=title, body=body, head=branch, base=base_ref or PUBLIC_REPO_BRANCH
     )
@@ -759,6 +849,8 @@ def materialize_from_file(
     expected_job_id: str = "",
     issue_title: str = "",
     commit_message: str = "",
+    expected_repository_url: str = "",
+    source_repo_full: str = "",
 ) -> MaterializeOutcome:
     """Load a collected result JSON file and materialize it (no worker)."""
     payload = load_result_file(result_file)
@@ -772,6 +864,8 @@ def materialize_from_file(
         expected_job_id=expected_job_id,
         issue_title=issue_title,
         commit_message=commit_message,
+        expected_repository_url=expected_repository_url,
+        source_repo_full=source_repo_full,
     )
 
 
@@ -1077,6 +1171,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="Expected job ID (validated when provided).")
     parser.add_argument("--issue-title", default="",
                         help="Source issue title for the PR title.")
+    parser.add_argument("--expected-repository-url", default="",
+                        help="Allow-listed target repository URL "
+                             "(default: runtime-lab self-target).")
+    parser.add_argument("--source-repo", default="",
+                        help="Tracking source repo 'owner/repo' for "
+                             "cross-repository PR linkage (issue #85).")
     parser.add_argument("--repo-dir", default=".",
                         help="Local repository checkout to publish from.")
     parser.add_argument("--json-output", default="",
@@ -1098,6 +1198,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_base_sha=args.expected_base_sha,
             expected_job_id=args.expected_job_id,
             issue_title=args.issue_title,
+            expected_repository_url=args.expected_repository_url,
+            source_repo_full=args.source_repo,
         )
     except (MaterializeError, ValueError, RuntimeError) as exc:
         print("::error::result materialization failed: %s" % exc)
