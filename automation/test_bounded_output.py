@@ -181,8 +181,13 @@ def test_run_bounded_preserves_stdout_stderr_split_and_exit_code(tmp_path):
 
 
 def test_run_bounded_timeout_stays_bounded(tmp_path):
+    # Use an unbounded producer so the timeout is deterministic: `seq 1 N`
+    # for a fixed N can finish in under 1s on fast CI disks, making the
+    # timeout assertion flaky. An infinite loop guarantees the child is
+    # still running when the 1s budget expires while still exercising the
+    # O(bound) spool slice on the timeout path.
     result = run_bounded(
-        ["sh", "-c", "seq 1 100000000"],
+        ["sh", "-c", "while true; do echo timeout-probe-line-0123456789; done"],
         cwd=str(tmp_path),
         timeout=1.0,
     )
