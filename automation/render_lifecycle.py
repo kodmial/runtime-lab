@@ -528,7 +528,20 @@ JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY = 5
 # retries within the unchanged 140-iteration poll budget, while a third
 # consecutive loss still fails fast with full diagnostics (all job ids,
 # resubmit count, restart evidence).
-JOB_POLL_MAX_JOB_RESUBMITS = 2
+#
+# Run 36422228148 then proved two resubmissions are not enough when
+# restarts cluster further: the original job (instance 67de372e1e5f)
+# was lost to a restart (5a3329272140), the first resubmission (job
+# 29d1b9d0a0fa4bc8a8c752e84eccb989) was lost to a second restart
+# (81873f2a0598), and the second resubmission (job
+# e6163a828552452f81f8832ee9fb49c5) was lost to a third restart
+# (3133df580cc1); the attempt failed fast with resubmissions used 2/2
+# after ~18 minutes, well inside the unchanged 140x20s poll budget, so
+# a third resubmission would still have had ample budget left. Three
+# bounded same-worker resubmissions (four job attempts total) convert
+# a triple-restart cluster into retries, while a fourth consecutive
+# loss still fails fast.
+JOB_POLL_MAX_JOB_RESUBMITS = 3
 # Poll outcome vocabulary for one job-status attempt (controller side).
 JOB_POLL_OUTCOMES = frozenset({
     "succeeded",

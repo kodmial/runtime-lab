@@ -412,7 +412,7 @@ echo "Submitted runner job $JOB_ID."
 # error instead of a bare "last status 'empty'".
 #
 # Job-loss recovery (regression for run 36409152332, extended for run
-# 36417263684): that run polled a
+# 36417263684 and run 36422228148): that run polled a
 # submitted job as pending for ~2 minutes before it turned into a
 # permanent unknown-job 404 with a healthy runner. Render may restart a
 # Free web service at any time (see RENDER_DOC_FREE_TIER in
@@ -423,8 +423,9 @@ echo "Submitted runner job $JOB_ID."
 # (JOB_POLL_MAX_JOB_RESUBMITS, never a second Render service) convert
 # transient restarts into retries; run 36417263684 lost both the
 # original and the first resubmission to two consecutive proven
-# restarts, so the bound is two resubmissions and a third consecutive
-# loss still fails
+# restarts, and run 36422228148 lost the original plus both
+# resubmissions to three consecutive proven restarts, so the bound is
+# three resubmissions and a fourth consecutive loss still fails
 # fast. A submit-time /health snapshot (uptime_seconds) is compared with
 # the loss-time reading via detect_worker_restart() so the diagnostic
 # states whether a restart was actually observed.
@@ -554,7 +555,7 @@ print(format_restart_evidence(prior, current, prior_inst, current_inst, prior_wa
 PY
 )"
         # Same-worker resubmission (regression for run 36409152332,
-        # extended for run 36417263684): the
+        # extended for runs 36417263684 and 36422228148): the
         # payload is fully reproducible and the worker is healthy again,
         # so retry up to JOB_POLL_MAX_JOB_RESUBMITS times on the SAME
         # worker instead of failing the whole
