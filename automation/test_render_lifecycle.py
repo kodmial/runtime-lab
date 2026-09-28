@@ -123,6 +123,8 @@ def test_agent_knowledge_handoff_is_stable_and_unique_per_run():
 
 
 def _valid_experiment_record(issue=9, run_id="r1"):
+    import json as _json
+
     headings = [
         "## Hypothesis / objective",
         "## Prior knowledge consulted",
@@ -137,15 +139,20 @@ def _valid_experiment_record(issue=9, run_id="r1"):
         "## Evidence",
         "## Cleanup proof",
     ]
+    metadata = {
+        "$schema": "automation/knowledge/schema/experiment.json",
+        "base_commit": "0" * 40,
+        "issue": issue,
+        "outcome": "succeeded",
+        "record_id": "issue-%d-run-%s" % (issue, run_id),
+        "run_id": str(run_id),
+        "schema": "runtime-lab-experiment/v1",
+        "supersedes": [],
+        "topic": "test",
+    }
     return "\n".join([
         "---",
-        "schema: runtime-lab-experiment/v1",
-        "issue: %d" % issue,
-        "run_id: %s" % run_id,
-        "base_commit: deadbeef",
-        "topic: test",
-        "outcome: succeeded",
-        "supersedes: []",
+        _json.dumps(metadata, sort_keys=True, indent=2),
         "---",
         "# test",
         *headings,
@@ -157,11 +164,13 @@ def test_experiment_record_validation_fails_closed():
     good = _valid_experiment_record()
     assert validate_experiment_record_text(good, 9, "r1") is True
     with pytest.raises(ValueError):
-        validate_experiment_record_text(good.replace("issue: 9", "issue: 8"), 9, "r1")
+        validate_experiment_record_text(good.replace('"issue": 9', '"issue": 8'), 9, "r1")
     with pytest.raises(ValueError):
-        validate_experiment_record_text(good.replace("run_id: r1", "run_id: old"), 9, "r1")
+        validate_experiment_record_text(good.replace('"run_id": "r1"', '"run_id": "old"'), 9, "r1")
     with pytest.raises(ValueError):
         validate_experiment_record_text(good.replace("## Cleanup proof", ""), 9, "r1")
+    with pytest.raises(ValueError):
+        validate_experiment_record_text(good.replace("{", "schema: runtime-lab-experiment/v1", 1), 9, "r1")
 
 def test_render_operations_represented():
     assert RENDER_API_BASE == "https://api.render.com/v1"

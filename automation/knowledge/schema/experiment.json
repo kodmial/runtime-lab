@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Machine-readable metadata contract for one immutable Runtime Lab experiment record. The JSON object lives as strict JSON front matter between the leading --- delimiters of automation/knowledge/experiments/issue-<ISSUE>-run-<RUN_ID>.md. This schema is the interoperability and documentation contract; runtime code enforces the same domain invariants directly in stdlib-only Python (see automation/knowledge_catalog.py) instead of embedding a generic JSON-Schema engine.",
+  "properties": {
+    "$schema": {
+      "const": "automation/knowledge/schema/experiment.json",
+      "description": "Repo-relative pointer to this schema document.",
+      "type": "string"
+    },
+    "base_commit": {
+      "description": "Full 40-character lowercase git SHA the run was based on.",
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "issue": {
+      "description": "GitHub issue number this run executed.",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "outcome": {
+      "description": "Terminal verdict of the run.",
+      "enum": [
+        "failed",
+        "inconclusive",
+        "succeeded"
+      ],
+      "type": "string"
+    },
+    "record_id": {
+      "description": "Deterministic identity derived from issue and run id: issue-<ISSUE>-run-<RUN_ID>. Must agree with the record filename.",
+      "pattern": "^issue-[1-9][0-9]*-run-[A-Za-z0-9._-]+$",
+      "type": "string"
+    },
+    "run_id": {
+      "description": "Automation run identifier (GitHub run id). Stored as a string.",
+      "maxLength": 96,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "type": "string"
+    },
+    "schema": {
+      "const": "runtime-lab-experiment/v1",
+      "description": "Metadata version tag.",
+      "type": "string"
+    },
+    "supersedes": {
+      "description": "Record IDs whose conclusions this record supersedes. History is never rewritten; newer records supersede older ones.",
+      "items": {
+        "pattern": "^issue-[1-9][0-9]*-run-[A-Za-z0-9._-]+$",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "topic": {
+      "description": "Short subsystem topic slug (for example render-lifecycle).",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "$schema",
+    "base_commit",
+    "issue",
+    "outcome",
+    "record_id",
+    "run_id",
+    "schema",
+    "supersedes",
+    "topic"
+  ],
+  "title": "Runtime Lab experiment record metadata",
+  "type": "object"
+}
