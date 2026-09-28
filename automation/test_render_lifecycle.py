@@ -521,6 +521,40 @@ def test_restart_storm_circuit_breaker_abandons_doomed_resubmission():
         consecutive_restart_losses=None, memory_pressure=True) is False
 
 
+def test_restart_storm_threshold_override_is_honored():
+    # Regression for issue #113: the shell poll loop resolves
+    # POLL_STORM_THRESHOLD from this module and passes it into the
+    # storm snippet, but the snippet ignored it and always applied
+    # the default. The explicit threshold must decide, so the two
+    # layers cannot diverge; a corrupt threshold fails open toward
+    # recovery instead of abandoning (or silently reverting).
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=2, memory_pressure=True,
+        threshold=2) is True
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=2, memory_pressure=True,
+        threshold=3) is False
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=2, memory_pressure=True) is False
+    # Numeric strings from the shell parse the same as ints.
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=3, memory_pressure=True,
+        threshold="3") is True
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=3, memory_pressure=True,
+        threshold="bogus") is False
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=3, memory_pressure=True,
+        threshold="") is False
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=3, memory_pressure=True,
+        threshold=None) is True
+    # Omitted threshold keeps the module default exactly.
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=JOB_POLL_RESTART_STORM_THRESHOLD,
+        memory_pressure=True) is True
+
+
 def test_worker_restart_discriminator_uses_health_uptime():
     # The runner reports uptime_seconds on GET /health (seconds since the
     # worker process started). A smaller current reading proves the

@@ -1350,6 +1350,14 @@ def test_job_poll_abandons_memory_pressure_restart_storm(tmp_path):
     assert "consecutive proven worker restarts" in combined
     assert "memory pressure" in combined
     assert "resubmissions used: 3" in combined
+    # Issue #113: the storm diagnostic must carry the auditable
+    # decision inputs (the pre-seeded file pins usage at the limit
+    # across three rotating instances with per-group surges of 9000,
+    # below the 10000 surge threshold, so the verdict travels via the
+    # replacements branch -- the same branch as live run 36493316814).
+    assert "storm_threshold=3" in combined
+    assert "via=replacements" in combined
+    assert "pinned_ratio=1.0000" in combined
     assert "did not finish in time" not in combined
     assert "Resubmitted runner job" in combined
     assert not result.exists() or result.read_text().strip() == ""
