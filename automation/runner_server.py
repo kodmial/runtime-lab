@@ -95,6 +95,8 @@ try:  # pragma: no cover - import path depends on entrypoint
         RUNNER_TERMINAL_STATUSES,
         RegionPolicyError,
         is_terminal_job_status,
+        experiment_record_path,
+        validate_experiment_record_text,
         render_path,
         validate_worker_region,
     )
@@ -1012,6 +1014,29 @@ class JobManager:
                 changes=changes, executed_model=executed_model,
             )
             return
+
+        # -- enforce durable agent knowledge handoff --------------------------
+        if "Repository knowledge handoff (mandatory)" in task_text:
+            issue_number = int(record.metadata.get("issue_number") or 0)
+            run_id = record.metadata.get("run_id", "")
+            relative_record = experiment_record_path(issue_number, run_id)
+            record_path = os.path.join(checkout_dir, relative_record)
+            try:
+                with open(record_path, "r", encoding="utf-8") as handle:
+                    record_text = handle.read(256 * 1024 + 1)
+                if len(record_text) > 256 * 1024:
+                    raise ValueError("experiment record exceeds 256 KiB")
+                validate_experiment_record_text(record_text, issue_number, run_id)
+            except (OSError, ValueError) as exc:
+                changes = self._best_effort_changes(checkout_dir)
+                self._finish(
+                    job_id, "failed", summary="",
+                    error="knowledge handoff validation failed: %s"
+                    % sanitize_output(str(exc))[:1000],
+                    exit_code=None, output=output,
+                    changes=changes, executed_model=executed_model,
+                )
+                return
 
         # -- detect repository changes (added/modified/deleted) --------------
         try:

@@ -125,7 +125,7 @@ jobs:
           - Inspect the existing repository before changing code.
           - Repository knowledge handoff is mandatory: before changing code, read automation/knowledge/PROTOCOL.md, then the relevant automation/knowledge/topics/*.md notes and prior automation/knowledge/experiments/ records for this issue/topic.
           - Do not repeat a previously failed experiment unless a material premise changed; record that changed premise.
-          - Before finishing, write exactly one run record at automation/knowledge/experiments/issue-${ISSUE_NUMBER}-run-${GITHUB_RUN_ID}.md following the protocol. Never include secrets.
+          - Before finishing, write exactly one run record at automation/knowledge/experiments/issue-${ISSUE_NUMBER}-run-${GITHUB_RUN_ID}.md following the protocol. Never include secrets. The workflow validates this record and fails closed if it is missing or malformed.
           - Promote only validated reusable facts to the relevant topic note; preserve superseded history rather than silently rewriting it.
           - Implement the complete task, not a partial sketch.
           - Add or update automated tests when appropriate.
@@ -138,6 +138,21 @@ jobs:
           )"
 
           opencode run --auto --model "$OPENCODE_MODEL" "$PROMPT"
+
+          # Validate mandatory knowledge handoff record before accepting the run.
+          python3 - "$ISSUE_NUMBER" "$GITHUB_RUN_ID" <<'PY'
+import pathlib, sys
+sys.path.insert(0, "automation")
+from render_lifecycle import experiment_record_path, validate_experiment_record_text
+issue = int(sys.argv[1])
+run_id = sys.argv[2]
+path = pathlib.Path(experiment_record_path(issue, run_id))
+if not path.is_file():
+    raise SystemExit("mandatory knowledge handoff record is missing: %s" % path)
+text = path.read_text(encoding="utf-8")
+validate_experiment_record_text(text, issue, run_id)
+print("Validated knowledge handoff:", path)
+PY
 
           CURRENT_BRANCH="$(git branch --show-current)"
           if [[ "$CURRENT_BRANCH" != "$BRANCH" ]]; then

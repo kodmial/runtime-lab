@@ -63,6 +63,45 @@ def knowledge_handoff_instructions(issue_number: int, run_id: object = "") -> st
         % (KNOWLEDGE_PROTOCOL_PATH, KNOWLEDGE_TOPICS_DIR, KNOWLEDGE_EXPERIMENTS_DIR, record)
     )
 
+EXPERIMENT_RECORD_REQUIRED_SECTIONS = (
+    "## Hypothesis / objective",
+    "## Prior knowledge consulted",
+    "## Preconditions / changed premise",
+    "## Procedure",
+    "## Observations",
+    "## Interpretation",
+    "## Decision / result",
+    "## Validation",
+    "## Reusable knowledge",
+    "## Unresolved questions / next experiment",
+    "## Evidence",
+    "## Cleanup proof",
+)
+
+
+def validate_experiment_record_text(
+    text: str, issue_number: int, run_id: object = ""
+) -> bool:
+    """Fail closed unless an experiment record has the required identity/schema."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("experiment record is empty")
+    if not isinstance(issue_number, int) or issue_number <= 0:
+        raise ValueError("issue_number must be a positive integer")
+    expected_run = str(run_id or "unknown").strip() or "unknown"
+    required_identity = (
+        "schema: runtime-lab-experiment/v1",
+        "issue: %d" % issue_number,
+        "run_id: %s" % expected_run,
+    )
+    for marker in required_identity:
+        if marker not in text:
+            raise ValueError("experiment record identity/schema mismatch")
+    for heading in EXPERIMENT_RECORD_REQUIRED_SECTIONS:
+        if heading not in text:
+            raise ValueError("experiment record is missing required section: %s" % heading)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Official Render API references (exact documentation used).
 # ---------------------------------------------------------------------------

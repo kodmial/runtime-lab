@@ -63,6 +63,7 @@ from render_lifecycle import (  # noqa: E402
     is_terminal_job_status,
     experiment_record_path,
     knowledge_handoff_instructions,
+    validate_experiment_record_text,
     resolve_task_text,
     parse_job_result,
     render_path,
@@ -104,6 +105,48 @@ def test_agent_knowledge_handoff_is_stable_and_unique_per_run():
     task = resolve_task_text(9, "smoke", title="Render smoke", body="Prove cleanup", run_id="abc-123")
     assert "Repository knowledge handoff (mandatory)" in task
     assert "issue-9-run-abc-123.md" in task
+
+
+def _valid_experiment_record(issue=9, run_id="r1"):
+    headings = [
+        "## Hypothesis / objective",
+        "## Prior knowledge consulted",
+        "## Preconditions / changed premise",
+        "## Procedure",
+        "## Observations",
+        "## Interpretation",
+        "## Decision / result",
+        "## Validation",
+        "## Reusable knowledge",
+        "## Unresolved questions / next experiment",
+        "## Evidence",
+        "## Cleanup proof",
+    ]
+    return "\n".join([
+        "---",
+        "schema: runtime-lab-experiment/v1",
+        "issue: %d" % issue,
+        "run_id: %s" % run_id,
+        "base_commit: deadbeef",
+        "topic: test",
+        "outcome: succeeded",
+        "supersedes: []",
+        "---",
+        "# test",
+        *headings,
+        "evidence",
+    ])
+
+
+def test_experiment_record_validation_fails_closed():
+    good = _valid_experiment_record()
+    assert validate_experiment_record_text(good, 9, "r1") is True
+    with pytest.raises(ValueError):
+        validate_experiment_record_text(good.replace("issue: 9", "issue: 8"), 9, "r1")
+    with pytest.raises(ValueError):
+        validate_experiment_record_text(good.replace("run_id: r1", "run_id: old"), 9, "r1")
+    with pytest.raises(ValueError):
+        validate_experiment_record_text(good.replace("## Cleanup proof", ""), 9, "r1")
 
 def test_render_operations_represented():
     assert RENDER_API_BASE == "https://api.render.com/v1"
