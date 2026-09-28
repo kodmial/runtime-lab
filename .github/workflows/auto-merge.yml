@@ -287,6 +287,16 @@ jobs:
               const issueMatch = pr.head.ref.match(/^opencode\/issue(\d+)-/);
               if (issueMatch) {
                 const issueNumber = Number(issueMatch[1]);
+                let completedIssue = null;
+                try {
+                  const response = await github.rest.issues.get({
+                    owner, repo, issue_number: issueNumber,
+                  });
+                  completedIssue = response.data;
+                } catch (err) {
+                  if (err.status !== 404) throw err;
+                }
+
                 try {
                   await github.rest.issues.update({
                     owner, repo, issue_number: issueNumber,
@@ -298,6 +308,41 @@ jobs:
                     await github.rest.issues.removeLabel({
                       owner, repo, issue_number: issueNumber, name: label,
                     });
+                  } catch (err) {
+                    if (err.status !== 404) throw err;
+                  }
+                }
+
+                // A merged automatic Render-repair issue is a recovery signal,
+                // not completion of the original smoke/E2E issue. Unpause the
+                // source and let the scheduler retry it from current main.
+                const repairMatch = (completedIssue?.body || '').match(
+                  /<!-- runtime-lab-render-repair source=(\d+) -->/
+                );
+                if (repairMatch) {
+                  const sourceIssue = Number(repairMatch[1]);
+                  try {
+                    const {data: source} = await github.rest.issues.get({
+                      owner, repo, issue_number: sourceIssue,
+                    });
+                    if (source.state === 'open') {
+                      for (const label of ['automation:paused', 'automation:in-progress']) {
+                        try {
+                          await github.rest.issues.removeLabel({
+                            owner, repo, issue_number: sourceIssue, name: label,
+                          });
+                        } catch (err) {
+                          if (err.status !== 404) throw err;
+                        }
+                      }
+                      await github.rest.issues.createComment({
+                        owner, repo, issue_number: sourceIssue,
+                        body: `Automatic Render recovery issue #${issueNumber} merged via PR #${pr.number}; source issue is unpaused and will be retried.`,
+                      });
+                      core.notice(
+                        `Render recovery #${issueNumber} completed; retrying source #${sourceIssue}.`
+                      );
+                    }
                   } catch (err) {
                     if (err.status !== 404) throw err;
                   }
