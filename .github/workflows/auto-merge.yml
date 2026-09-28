@@ -351,6 +351,13 @@ jobs:
 
               core.notice(`PR #${pr.number}: auto-merged CI-green head ${pr.head.sha}.`);
 
+              // GITHUB_TOKEN-generated merges do not reliably trigger follow-up
+              // push workflows. Explicitly dispatch durable knowledge sync so
+              // every merged agent record/topic reaches agent-knowledge.
+              await github.rest.actions.createWorkflowDispatch({
+                owner, repo, workflow_id: 'knowledge-sync.yml', ref: 'main',
+              });
+
               await github.rest.actions.createWorkflowDispatch({
                 owner, repo, workflow_id: 'issue-scheduler.yml', ref: 'main',
               });
