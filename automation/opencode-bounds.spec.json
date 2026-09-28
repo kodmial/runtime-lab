@@ -1,0 +1,43 @@
+{
+  "benchmark": {
+    "baseline_issue": 52,
+    "baseline_note": "Comparison baseline is the measured issue-52 real-agent peak (614632 kB tree) plus the issue-56 anon-mmap finding. Bounded-vs-unbounded accounting here is measured hermetically in this worker; the fork-binary peak delta requires a resourced fork builder running the same harness against the bounded branch.",
+    "baseline_peak_kb": 614632,
+    "method": "python3 automation/memory_benchmark.py hermetic probes plus automation/opencode_bounds.py stress_bounded_capture accounting and the deterministic representative coding task"
+  },
+  "boundaries": {
+    "no_provider_rewrite": "Bounds work must never change provider semantics. automation/opencode_bounds.py:check_no_provider_rewrite fails closed on provider-tree rewrites and direct-client markers.",
+    "diagnostic_context": "Every bound keeps head+tail context (tail errors survive) plus a bounded file-backed retrieval path (BoundedSpool.read_window); critical error information is never hidden."
+  },
+  "fork_base_sha": "9000e7fc8d96c845512f7c73122431418a71d4e4",
+  "fork_repo": "kodmial/opencode",
+  "fresh_session": {
+    "default": true,
+    "forbidden_env": ["OPENCODE_SESSION", "OPENCODE_SESSION_ID", "OPENCODE_CONTINUE", "OPENCODE_RESUME"],
+    "forbidden_flags": ["--continue", "--session", "--resume", "--session-id"],
+    "session_dir_env": "OPENCODE_SESSION_DIR"
+  },
+  "limits": {
+    "head_fraction": 0.5,
+    "max_session_bytes": 1048576,
+    "max_session_messages": 200,
+    "max_stderr_bytes": 262144,
+    "max_stdout_bytes": 262144,
+    "max_tool_result_chars": 32768,
+    "spool_threshold_bytes": 65536
+  },
+  "no_custom_provider_rewrite": true,
+  "pinned_opencode_version": "1.18.33",
+  "retention_points": [
+    "automation/runner_server.py:SubprocessCommandRunner.run",
+    "automation/runner_server.py:JobRecord.output",
+    "automation/opencode_runner.py:truncate/sanitize_output",
+    "automation/memory_benchmark.py:run_with_peak stdout/stderr",
+    "kodmial/opencode: session message store",
+    "kodmial/opencode: shell/tool stdout/stderr buffers",
+    "kodmial/opencode: task/subagent transcript fan-out"
+  ],
+  "schema": "runtime-lab-opencode-bounds-spec/v1",
+  "stress_workloads": ["s1-large-build-log", "s2-recursive-search", "s3-repeated-shell", "s4-fail-fix-rerun"],
+  "upstream_repo": "anomalyco/opencode"
+}
