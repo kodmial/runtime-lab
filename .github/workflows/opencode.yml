@@ -156,7 +156,28 @@ jobs:
 
           git add -A
           git commit -m "fix: implement issue #${ISSUE_NUMBER}"
-          git push -u origin "$BRANCH"
+
+          # main can advance while OpenCode is working. Rebase the task-only
+          # commit onto the latest main before publishing so creating the
+          # issue branch cannot be interpreted as changing protected workflow
+          # files that were updated on main in the meantime.
+          sync_and_verify_branch() {
+            git fetch origin main --quiet
+            git rebase origin/main
+
+            if [[ -n "$(git diff --name-only origin/main...HEAD -- .github/workflows)" ]]; then
+              echo "::error::Issue branch differs from current main under .github/workflows/**."
+              git diff --name-status origin/main...HEAD -- .github/workflows
+              exit 1
+            fi
+          }
+
+          sync_and_verify_branch
+          if ! git push -u origin "$BRANCH"; then
+            echo "Initial push failed; refreshing main and retrying once."
+            sync_and_verify_branch
+            git push -u origin "$BRANCH"
+          fi
 
           PR_NUMBER="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state all             --json number --jq '.[0].number // empty')"
           if [[ -z "$PR_NUMBER" ]]; then
