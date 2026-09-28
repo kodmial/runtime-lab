@@ -63,6 +63,7 @@ jobs:
             const paused = 'automation:paused';
             const marker = '<!-- runtime-lab-scheduler-dispatch -->';
             const pauseMarker = '<!-- runtime-lab-scheduler-pause -->';
+            const repairResetMarker = '<!-- runtime-lab-render-repair-reset -->';
             const renderSmoke = 'execution:render-smoke';
             const renderE2E = 'execution:render-e2e';
 
@@ -197,8 +198,15 @@ jobs:
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner, repo, issue_number: issue.number, per_page: 100,
               });
+              const resetAt = comments
+                .filter(comment => (comment.body || '').includes(repairResetMarker))
+                .map(comment => new Date(comment.created_at).getTime())
+                .sort((a, b) => b - a)[0] || 0;
               const dispatches = comments
-                .filter(comment => (comment.body || '').includes(marker))
+                .filter(comment =>
+                  (comment.body || '').includes(marker) &&
+                  new Date(comment.created_at).getTime() >= resetAt
+                )
                 .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
               const latest = dispatches[0];
               if (!latest) {
@@ -337,7 +345,14 @@ jobs:
               const previous = await github.paginate(github.rest.issues.listComments, {
                 owner, repo, issue_number: issue.number, per_page: 100,
               });
-              const attempt = previous.filter(c => (c.body || '').includes(marker)).length + 1;
+              const resetAt = previous
+                .filter(c => (c.body || '').includes(repairResetMarker))
+                .map(c => new Date(c.created_at).getTime())
+                .sort((a, b) => b - a)[0] || 0;
+              const attempt = previous.filter(c =>
+                (c.body || '').includes(marker) &&
+                new Date(c.created_at).getTime() >= resetAt
+              ).length + 1;
 
               if (attempt > maxAttempts) {
                 await removeLabel(issue.number, inProgress);
