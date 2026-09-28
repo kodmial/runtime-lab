@@ -337,7 +337,7 @@ jobs:
                       }
                       await github.rest.issues.createComment({
                         owner, repo, issue_number: sourceIssue,
-                        body: `Automatic Render recovery issue #${issueNumber} merged via PR #${pr.number}; source issue is unpaused and will be retried.`,
+                        body: `<!-- runtime-lab-render-repair-reset -->\nAutomatic Render recovery issue #${issueNumber} merged via PR #${pr.number}; source issue is unpaused and will be retried.`,
                       });
                       core.notice(
                         `Render recovery #${issueNumber} completed; retrying source #${sourceIssue}.`
