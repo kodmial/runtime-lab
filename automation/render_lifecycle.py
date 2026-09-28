@@ -433,14 +433,17 @@ def build_create_service_payload(
     repo: str = PUBLIC_REPO_URL,
     branch: str = PUBLIC_REPO_BRANCH,
     runtime: str = "python",
-    build_command: str = "pip install -r requirements.txt",
+    build_command: str = "pip install -r requirements.txt && bash automation/install-opencode.sh",
     start_command: str = "python -m automation.runner_server",
     health_check_path: str = "/health",
 ) -> dict[str, Any]:
     """Build the POST /v1/services body for an ephemeral free-tier worker.
 
     Uses the public Git URL explicitly with autoDeploy=no, so no
-    Render<->GitHub provider connection is required for this phase.
+    Render<->GitHub provider connection is required for this phase. The
+    build step installs the OpenCode CLI with the known-good NanoDictate
+    pattern (``curl -fsSL https://opencode.ai/install | bash`` via
+    automation/install-opencode.sh) so every worker can execute jobs.
     """
     if not name:
         raise ValueError("service name must not be empty")

@@ -1,0 +1,445 @@
+"""OpenCode execution helpers for the ephemeral Render runner (issue #3).
+
+This module is the reusable core for running OpenCode against a checked-out
+public repository inside a per-job isolated workspace. It is deliberately
+stdlib-only so the Render free-tier build and the minimal CI image both work.
+
+Known-good OpenCode CLI provisioning (from NanoDictate, via
+.github/workflows/opencode.yml, excluding extra integrations and
+release-specific behavior):
+
+    curl -fsSL https://opencode.ai/install | bash
+
+with bounded retries (3 attempts, linear backoff), followed by
+``test -x "$HOME/.opencode/bin/opencode"``. The shell entrypoint
+``automation/install-opencode.sh`` encodes exactly that pattern for the
+Render build step; ``ensure_opencode_cli`` below encodes the same pattern
+for lazy runtime provisioning.
+
+Non-interactive OpenCode invocation (same order as the known-good
+workflow step):
+
+    opencode run --auto --model "$OPENCODE_MODEL" "$PROMPT"
+
+No branch/push/PR commands are ever issued from this module or from the
+runner: only ``git clone``, ``git fetch``, ``git checkout``,
+``git rev-parse``, ``git status`` and ``git diff`` are used for read-only
+checkout and deterministic change detection. OpenCode itself is confined
+with ``OPENCODE_CONFIG_CONTENT`` that denies ``git *`` writes while
+allowing read-only inspection (status/diff/log/show/rev-parse/ls-files/
+grep/blame/branch/remote), mirroring the issue-mode permissions in
+``opencode.yml``.
+
+Secrets: provider/model credentials stay entirely environment-driven. This
+module never reads ``GITHUB_TOKEN``, ``GH_TOKEN`` or ``OPENCODE_API_KEY``
+for execution and never logs secret values; ``sanitize_output`` redacts
+any secret-shaped values that might appear in captured command output.
+"""
+
+from __future__ import annotations
+
+import base64
+import os
+import re
+import shutil
+import urllib.parse
+
+try:  # pragma: no cover - import path depends on entrypoint
+    from automation.render_lifecycle import (
+        ALLOWED_WORKER_REGIONS,
+        FALLBACK_MODEL,
+        PREFERRED_MODEL,
+    )
+except ImportError:  # pytest inserts automation/ on sys.path
+    from render_lifecycle import (  # type: ignore[no-redef]
+        ALLOWED_WORKER_REGIONS,
+        FALLBACK_MODEL,
+        PREFERRED_MODEL,
+    )
+
+# ---------------------------------------------------------------------------
+# OpenCode CLI provisioning (known-good NanoDictate pattern).
+# ---------------------------------------------------------------------------
+
+OPENCODE_INSTALL_URL = "https://opencode.ai/install"
+OPENCODE_INSTALL_COMMAND = "curl -fsSL https://opencode.ai/install | bash"
+OPENCODE_BIN_NAME = "opencode"
+OPENCODE_HOME_SUBPATH = os.path.join(".opencode", "bin", "opencode")
+OPENCODE_INSTALL_MAX_ATTEMPTS = 3
+
+# Confine OpenCode to read-only git inspection. Mirrors the issue-mode
+# OPENCODE_CONFIG_CONTENT in .github/workflows/opencode.yml: bash is
+# allowed, `git *` writes are denied, read-only git inspection is allowed.
+# The workflow owns all Git state; the runner never pushes or opens PRs.
+OPENCODE_CONFIG_CONTENT = (
+    '{"permission":{"bash":{"*":"allow","git *":"deny",'
+    '"git status":"allow","git status *":"allow",'
+    '"git diff":"allow","git diff *":"allow",'
+    '"git log":"allow","git log *":"allow",'
+    '"git show":"allow","git show *":"allow",'
+    '"git rev-parse *":"allow","git ls-files":"allow",'
+    '"git ls-files *":"allow","git grep *":"allow",'
+    '"git blame *":"allow","git branch --show-current":"allow",'
+    '"git remote -v":"allow"}}}'
+)
+
+# Per-job checkout lives in this subdirectory of the isolated workspace so
+# workspace-level files (task.txt) never leak into the reported repo diff.
+CHECKOUT_SUBDIR = "repo"
+
+# Deterministic result limits: large enough for real tasks, small enough
+# that a terminal result always fits in process memory and in the JSON
+# body GitHub collects before the ephemeral service is deleted.
+MAX_FILES = 200
+MAX_FILE_BYTES = 512 * 1024
+MAX_TOTAL_BYTES = 4 * 1024 * 1024
+MAX_OUTPUT_CHARS = 8000
+MAX_SUMMARY_CHARS = 4000
+
+
+def find_opencode_binary() -> str | None:
+    """Return the OpenCode binary path, or None when not installed."""
+    on_path = shutil.which(OPENCODE_BIN_NAME)
+    if on_path:
+        return on_path
+    home = os.path.expanduser("~")
+    candidate = os.path.join(home, OPENCODE_HOME_SUBPATH)
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
+
+def opencode_install_shell_snippet() -> str:
+    """Return the known-good install snippet (for docs/tests)."""
+    return OPENCODE_INSTALL_COMMAND
+
+
+def build_opencode_command(
+    model: str, task_text: str, opencode_bin: str = OPENCODE_BIN_NAME
+) -> list[str]:
+    """Build the non-interactive OpenCode command.
+
+    Order matches the known-good workflow step:
+    ``opencode run --auto --model <model> <task>``.
+    """
+    if model not in (PREFERRED_MODEL, FALLBACK_MODEL):
+        raise ValueError("unknown model: %r" % model)
+    if not isinstance(task_text, str) or not task_text.strip():
+        raise ValueError("task_text must be a non-empty string")
+    if not opencode_bin or not str(opencode_bin).strip():
+        raise ValueError("opencode_bin must be a non-empty string")
+    return [str(opencode_bin), "run", "--auto", "--model", model, task_text.strip()]
+
+
+def assert_public_clone_url(repository_url: str) -> str:
+    """Validate a clone URL carries no credentials (public https only)."""
+    if not isinstance(repository_url, str) or not repository_url.strip():
+        raise ValueError("repository_url must be a non-empty string")
+    url = repository_url.strip()
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https":
+        raise ValueError("repository_url must use https, got %r" % url)
+    if not parsed.hostname:
+        raise ValueError("repository_url has no host: %r" % url)
+    if parsed.username or parsed.password or "@" in (parsed.netloc.split(":")[0]):
+        raise ValueError("repository_url must not embed credentials")
+    return url
+
+
+def build_clone_command(repository_url: str, dest_dir: str) -> list[str]:
+    """Build ``git clone <public-https-url> <dest>`` (no credentials)."""
+    url = assert_public_clone_url(repository_url)
+    if not dest_dir or not str(dest_dir).strip():
+        raise ValueError("dest_dir must be a non-empty string")
+    return ["git", "clone", url, str(dest_dir)]
+
+
+def build_fetch_command(ref: str) -> list[str]:
+    """Build ``git fetch origin <ref>`` for pinning the base ref."""
+    if not isinstance(ref, str) or not ref.strip():
+        raise ValueError("ref must be a non-empty string")
+    return ["git", "fetch", "origin", ref.strip()]
+
+
+def build_checkout_command(ref: str) -> list[str]:
+    """Build ``git checkout <ref>`` for the exact base ref/SHA."""
+    if not isinstance(ref, str) or not ref.strip():
+        raise ValueError("ref must be a non-empty string")
+    return ["git", "checkout", ref.strip()]
+
+
+def build_rev_parse_command() -> list[str]:
+    """Build ``git rev-parse HEAD`` to record the checked-out SHA."""
+    return ["git", "rev-parse", "HEAD"]
+
+
+def build_status_command() -> list[str]:
+    """Build ``git status --porcelain`` for deterministic change detection."""
+    return ["git", "status", "--porcelain"]
+
+
+# ---------------------------------------------------------------------------
+# Model fallback detection (same worker/process, no second Render service).
+# ---------------------------------------------------------------------------
+
+_AVAILABILITY_TERMS = (
+    "unavailable",
+    "not found",
+    "not_found",
+    "not-found",
+    "unknown",
+    "no such",
+    "does not exist",
+    "not available",
+    "not supported",
+    "timed out",
+    "timeout",
+)
+_MODEL_TERMS = ("model", "provider", "opencode")
+
+
+def is_model_unavailable_error(text: str | None) -> bool:
+    """Detect a model/provider availability failure.
+
+    Mirrors the Actions-side fallback grep (``model|unavailable|not found``)
+    but requires a model/provider term alongside generic availability
+    wording, except that a bare ``unavailable`` is already a strong signal.
+    Case-insensitive; never raises on unexpected input.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return False
+    lowered = text.lower()
+    if "unavailable" in lowered:
+        return True
+    has_model_term = any(term in lowered for term in _MODEL_TERMS)
+    has_avail_term = any(term in lowered for term in _AVAILABILITY_TERMS)
+    if has_model_term and has_avail_term:
+        return True
+    # Provider 4xx/5xx surfaced without prose (e.g. "provider 404").
+    if "provider" in lowered and any(
+        code in lowered for code in ("404", "429", "500", "502", "503")
+    ):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Secret redaction (never log Render/OpenCode/GitHub secrets).
+# ---------------------------------------------------------------------------
+
+_SECRET_KEY_SUBSTRINGS = ("TOKEN", "KEY", "SECRET", "PASSWORD")
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-~+/=]+"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]+"),
+    re.compile(r"sk-[A-Za-z0-9\-_]+"),
+)
+
+
+def sanitize_output(text: str) -> str:
+    """Redact secret values and secret-shaped tokens from captured output."""
+    if not isinstance(text, str) or not text:
+        return text if isinstance(text, str) else ""
+    redacted = text
+    for pattern in _SECRET_PATTERNS:
+        redacted = pattern.sub("[redacted]", redacted)
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if not any(marker in upper for marker in _SECRET_KEY_SUBSTRINGS):
+            continue
+        if not isinstance(value, str) or len(value) < 4:
+            continue
+        if value in redacted:
+            redacted = redacted.replace(value, "[redacted]")
+    return redacted
+
+
+def truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
+    """Bound captured output so terminal results stay JSON-safe."""
+    if not isinstance(text, str):
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...[truncated]"
+
+
+# ---------------------------------------------------------------------------
+# Deterministic change detection (additions, edits, deletions).
+# ---------------------------------------------------------------------------
+
+
+def parse_git_status_porcelain(output: str) -> list[dict[str, str]]:
+    """Parse ``git status --porcelain`` into structured entries.
+
+    Returns a list of ``{"x":.., "y":.., "path":.., "orig":..}`` where
+    ``orig`` is set only for renames (``old -> new``). Handles quoted
+    paths conservatively by stripping surrounding quotes.
+    """
+    entries: list[dict[str, str]] = []
+    if not isinstance(output, str) or not output.strip():
+        return entries
+    for raw_line in output.splitlines():
+        line = raw_line.rstrip("\n")
+        if not line.strip():
+            continue
+        if len(line) < 4:
+            continue
+        x, y = line[0], line[1]
+        rest = line[3:].strip()
+        if not rest:
+            continue
+        orig = ""
+        path = rest
+        if " -> " in rest:
+            orig, path = [part.strip() for part in rest.split(" -> ", 1)]
+        for key in ("path", "orig"):
+            value = path if key == "path" else orig
+            if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+                if key == "path":
+                    path = value[1:-1]
+                else:
+                    orig = value[1:-1]
+        entries.append({"x": x, "y": y, "path": path, "orig": orig})
+    return entries
+
+
+def _classify_entry(entry: dict[str, str]) -> str:
+    x, y = entry.get("x", " "), entry.get("y", " ")
+    if x == "?" and y == "?":
+        return "added"
+    if x == "R" or y == "R":
+        return "renamed"
+    if "D" in (x, y):
+        return "deleted"
+    if "A" in (x, y):
+        return "added"
+    return "modified"
+
+
+def _read_repo_file(repo_dir: str, rel_path: str) -> bytes | None:
+    """Read a repo-relative file; return None when absent (deleted)."""
+    if not rel_path or rel_path.startswith("/") or ".." in rel_path.split("/"):
+        raise ValueError("unsafe repo path: %r" % rel_path)
+    full = os.path.join(repo_dir, rel_path)
+    try:
+        with open(full, "rb") as handle:
+            return handle.read()
+    except FileNotFoundError:
+        return None
+    except IsADirectoryError as exc:
+        raise ValueError("repo path is a directory: %r" % rel_path) from exc
+    except OSError as exc:
+        raise ValueError("cannot read repo file %r: %s" % (rel_path, exc)) from exc
+
+
+def build_changes(status_output: str, repo_dir: str) -> list[dict[str, str]]:
+    """Build a deterministic, self-contained change list.
+
+    Each entry is ``{"path":.., "change_type": added|modified|deleted,
+    "content_base64":..}`` with ``content_base64`` present for every
+    added/modified file (current bytes, base64) and absent for deletions.
+    Entries are sorted by path. Renames surface as a delete(old) plus an
+    add(new). Size/count limits raise ``ValueError`` deterministically
+    instead of producing a truncated patch.
+    """
+    if not os.path.isdir(repo_dir):
+        raise ValueError("repo_dir does not exist: %r" % repo_dir)
+    entries = parse_git_status_porcelain(status_output)
+    changes: list[dict[str, str]] = []
+    total_bytes = 0
+    # Expand renames into delete+add before counting against MAX_FILES.
+    expanded: list[tuple[str, str]] = []  # (change_type, path)
+    for entry in entries:
+        kind = _classify_entry(entry)
+        if kind == "renamed":
+            if entry["orig"]:
+                expanded.append(("deleted", entry["orig"]))
+            expanded.append(("added", entry["path"]))
+        elif kind == "added":
+            expanded.append(("added", entry["path"]))
+        elif kind == "deleted":
+            expanded.append(("deleted", entry["path"]))
+        else:
+            expanded.append(("modified", entry["path"]))
+    # Deterministic order; de-duplicate exact duplicates (defensive).
+    seen: set[tuple[str, str]] = set()
+    ordered: list[tuple[str, str]] = []
+    for change_type, path in sorted(expanded, key=lambda item: item[1]):
+        key = (change_type, path)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    if len(ordered) > MAX_FILES:
+        raise ValueError(
+            "too many changed files (%d > %d)" % (len(ordered), MAX_FILES)
+        )
+    for change_type, path in ordered:
+        if change_type == "deleted":
+            changes.append({"path": path, "change_type": "deleted"})
+            continue
+        content = _read_repo_file(repo_dir, path)
+        if content is None:
+            # Vanished between status and read: report as deleted.
+            changes.append({"path": path, "change_type": "deleted"})
+            continue
+        if len(content) > MAX_FILE_BYTES:
+            raise ValueError(
+                "file %r too large (%d > %d bytes)" % (path, len(content), MAX_FILE_BYTES)
+            )
+        total_bytes += len(content)
+        if total_bytes > MAX_TOTAL_BYTES:
+            raise ValueError(
+                "total changed bytes exceed %d bytes" % MAX_TOTAL_BYTES
+            )
+        changes.append(
+            {
+                "path": path,
+                "change_type": change_type,
+                "content_base64": base64.b64encode(content).decode("ascii"),
+            }
+        )
+    return changes
+
+
+def decode_change_content(change: dict[str, str]) -> bytes | None:
+    """Decode one change entry's content (None for deletions)."""
+    if change.get("change_type") == "deleted":
+        return None
+    encoded = change.get("content_base64", "")
+    if not encoded:
+        return b""
+    return base64.b64decode(encoded.encode("ascii"))
+
+
+def summarize_changes(changes: list[dict[str, str]]) -> str:
+    """One-line deterministic summary (counts + first paths)."""
+    if not changes:
+        return "no changes"
+    added = sum(1 for item in changes if item.get("change_type") == "added")
+    modified = sum(1 for item in changes if item.get("change_type") == "modified")
+    deleted = sum(1 for item in changes if item.get("change_type") == "deleted")
+    paths = ", ".join(item.get("path", "") for item in changes[:5])
+    summary = "files=%d added=%d modified=%d deleted=%d" % (
+        len(changes),
+        added,
+        modified,
+        deleted,
+    )
+    if paths:
+        summary += " [%s]" % paths
+        if len(changes) > 5:
+            summary += " (+%d more)" % (len(changes) - 5)
+    return summary
+
+
+def default_opencode_env_overrides() -> dict[str, str]:
+    """Safe default env overrides for the OpenCode subprocess.
+
+    Only confinement settings are provided here; provider/model
+    credentials stay inherited from the process environment (Render env
+    vars) and are never set or logged by this module.
+    """
+    return {
+        "OPENCODE_CONFIG_CONTENT": OPENCODE_CONFIG_CONTENT,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
