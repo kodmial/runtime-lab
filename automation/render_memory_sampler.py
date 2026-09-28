@@ -196,6 +196,24 @@ def sample_loop(
 
 _EVENT_COUNTERS = ("high", "max", "oom", "oom_kill", "oom_group_kill")
 
+# Memory-pressure restart-storm signal (issue #71, run 36439192645).
+#
+# The ~600-615 MB agent peak (issue #52) systematically exceeds the 512 MB
+# Free worker (vendor contract https://render.com/docs/free, re-verified
+# 2026-09-28: free = 0.1 CPU / 512 MB, anytime restart, ephemeral
+# filesystem). Under that mismatch the worker thrashes: cgroup usage pins
+# at the limit, memory.events max stalls surge, and the process is
+# replaced every few minutes, wiping the in-memory job each time. A
+# single pinned reading is not proof (a healthy run briefly touches the
+# limit); pressure requires sustained pinning PLUS replacement or stall
+# evidence. Per-container event counters reset on every replacement
+# (run 36434278632 showed first/last delta 0 across six replacements),
+# so the stall surge is measured within same-instance groups, never as
+# a global first-to-last delta.
+MEMORY_PRESSURE_USAGE_RATIO = 0.95
+MEMORY_PRESSURE_MIN_RESTARTS = 2
+MEMORY_PRESSURE_STALL_SURGE_DELTA = 10000
+
 
 def _as_int(value: Any) -> Optional[int]:
     if isinstance(value, bool):
@@ -386,6 +404,154 @@ def render_human_summary(summary: Mapping[str, Any]) -> str:
     if harness_events:
         lines.append("- harness events: %d recorded" % len(harness_events))
     return "\n".join(lines)
+
+
+def memory_pressure_evidence(
+    samples: Sequence[Mapping[str, Any]],
+    *,
+    usage_ratio: float = MEMORY_PRESSURE_USAGE_RATIO,
+    stall_surge_delta: int = MEMORY_PRESSURE_STALL_SURGE_DELTA,
+) -> dict[str, Any]:
+    """Summarize the memory-pressure restart-storm signal (issue #71).
+
+    Returns a small evidence dict (never raises): the observed cgroup
+    limit, the highest current usage, whether usage ever pinned at the
+    limit (>= ``usage_ratio``), how many instance replacements were
+    observed, and the largest same-instance memory.events max-counter
+    surge. Gaps (ok=false), event markers, and samples without numeric
+    cgroup fields are ignored. Per-instance grouping matters because
+    per-container event counters reset on every replacement.
+    """
+    evidence: dict[str, Any] = {
+        "samples_considered": 0,
+        "memory_limit_bytes": None,
+        "max_memory_current_bytes": None,
+        "usage_ratio": None,
+        "pinned_at_limit": False,
+        "restart_transitions": 0,
+        "max_stall_surge_delta": 0,
+    }
+    try:
+        limit: Optional[int] = None
+        peak = 0
+        considered = 0
+        instances: list[str] = []
+        transitions = 0
+        previous: Optional[str] = None
+        # Same-instance max-counter tracking for the stall surge: reset
+        # whenever the instance id changes or a gap breaks the sequence.
+        group_first: Optional[int] = None
+        group_last: Optional[int] = None
+        max_surge = 0
+        for sample in samples:
+            if not isinstance(sample, Mapping):
+                continue
+            if sample.get("type", "sample") != "sample" or not sample.get("ok"):
+                group_first = None
+                group_last = None
+                previous = None
+                continue
+            current = sample.get("memory_current_bytes")
+            if isinstance(current, bool):
+                current = None
+            sample_limit = sample.get("memory_limit_bytes")
+            if isinstance(sample_limit, bool):
+                sample_limit = None
+            if not isinstance(sample_limit, int) or not isinstance(current, int):
+                group_first = None
+                group_last = None
+                continue
+            if limit is None:
+                limit = sample_limit
+            considered += 1
+            if current > peak:
+                peak = current
+            instance = sample.get("instance_id")
+            if isinstance(instance, str) and instance:
+                if instance not in instances:
+                    instances.append(instance)
+                if previous is not None and instance != previous:
+                    transitions += 1
+                    if group_first is not None and group_last is not None:
+                        surge = group_last - group_first
+                        if surge > max_surge:
+                            max_surge = surge
+                    group_first = None
+                    group_last = None
+                previous = instance
+            events = sample.get("memory_events")
+            stalls = events.get("max") if isinstance(events, Mapping) else None
+            if isinstance(stalls, bool):
+                stalls = None
+            if isinstance(stalls, int):
+                if group_first is None:
+                    group_first = stalls
+                group_last = stalls
+        if group_first is not None and group_last is not None:
+            surge = group_last - group_first
+            if surge > max_surge:
+                max_surge = surge
+        evidence["samples_considered"] = considered
+        evidence["memory_limit_bytes"] = limit
+        evidence["max_memory_current_bytes"] = peak if considered else None
+        evidence["restart_transitions"] = transitions
+        evidence["max_stall_surge_delta"] = max_surge
+        if limit is not None and limit > 0 and considered:
+            ratio = peak / limit
+            evidence["usage_ratio"] = ratio
+            evidence["pinned_at_limit"] = ratio >= float(usage_ratio)
+        evidence["stall_surge"] = max_surge >= int(stall_surge_delta)
+    except Exception:
+        pass
+    return evidence
+
+
+def detect_memory_pressure(
+    samples: Sequence[Mapping[str, Any]],
+    *,
+    min_restarts: int = MEMORY_PRESSURE_MIN_RESTARTS,
+    usage_ratio: float = MEMORY_PRESSURE_USAGE_RATIO,
+    stall_surge_delta: int = MEMORY_PRESSURE_STALL_SURGE_DELTA,
+) -> bool:
+    """True when telemetry proves memory-pressure thrash (issue #71).
+
+    Requires usage pinned at the cgroup limit AND either repeated
+    instance replacements (>= ``min_restarts`` transitions) or a large
+    same-instance max-stall surge. Either corroborating signal excludes
+    a healthy run that merely brushes the limit once. Never raises:
+    missing/unparsable input reports no pressure (callers fail open
+    toward the pre-existing budget-limited recovery).
+    """
+    try:
+        evidence = memory_pressure_evidence(
+            samples,
+            usage_ratio=usage_ratio,
+            stall_surge_delta=stall_surge_delta,
+        )
+        if not evidence.get("pinned_at_limit"):
+            return False
+        try:
+            required = int(min_restarts)
+        except (TypeError, ValueError):
+            return False
+        if int(evidence.get("restart_transitions", 0)) >= required:
+            return True
+        return bool(evidence.get("stall_surge"))
+    except Exception:
+        return False
+
+
+def detect_memory_pressure_file(path: str, **kwargs: Any) -> bool:
+    """Best-effort file form of :func:`detect_memory_pressure`.
+
+    A missing/unreadable/unparsable samples file reports no pressure so
+    the poll loop keeps its pre-existing behavior instead of failing on
+    telemetry gaps.
+    """
+    try:
+        return detect_memory_pressure(read_samples(path), **kwargs)
+    except Exception:
+        return False
 
 
 def build_parser() -> argparse.ArgumentParser:

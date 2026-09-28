@@ -232,6 +232,18 @@ def test_job_poll_resubmits_on_same_worker_while_budget_remains():
     # service); it must never provision a second Render service.
     assert "$SERVICE_URL/v1/jobs" in job
     assert "no new service" in job
+    # Run 36439192645: a memory-pressure restart storm abandons
+    # resubmission instead of burning the whole poll budget and then
+    # starving a still-running job. The streak counts consecutive
+    # proven-restart resubmissions (pending polls do not reset it;
+    # fallback does), the pressure verdict comes from the Actions-side
+    # sampler evidence, and without pressure evidence the streak alone
+    # never abandons (transient clusters keep budget-limited recovery).
+    assert "POLL_RESTART_STREAK" in job
+    assert "POLL_RESTART_STREAK=0" in job
+    assert "should_abandon_restart_storm" in job
+    assert "detect_memory_pressure" in job
+    assert "restart storm" in job
     # The fallback path now tracks the in-flight payload so a later
     # loss-resubmission retries the fallback model, not the primary one.
     assert 'JOB_PAYLOAD="$RETRY_PAYLOAD"' in job
@@ -357,6 +369,10 @@ def test_job_poll_fails_fast_when_runner_forgets_job(tmp_path):
     env, state, result = _base_env(tmp_path)
     log = tmp_path / "curl-lost.log"
     env["PATH"] = _write_lost_job_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    # Hermetic telemetry: the fake /health answers carry no cgroup
+    # fields, so the sampler records gaps only and the storm pressure
+    # gate stays shut for the whole run.
+    env["RENDER_MEMORY_SAMPLES_FILE"] = str(tmp_path / "gaps-only.jsonl")
     state.write_text(json.dumps({
         "serviceId": "srv-existing",
         "deployId": "dep-1",
@@ -380,6 +396,10 @@ def test_job_poll_fails_fast_when_runner_forgets_job(tmp_path):
     # The sixth consecutive loss is now another retry, not a terminal
     # failure: no fixed-bound fail-fast diagnostic appears.
     assert "resubmissions used: 5/5" not in combined
+    # Without pressure evidence the streak alone never abandons (run
+    # 36439192645 companion): no storm diagnostic appears even after
+    # 46 proven-restart resubmissions.
+    assert "restart storm" not in combined
     # The budget-exhausted ending carries the loss context: unknown-job
     # polls plus the resubmission count.
     assert "did not finish in time" in combined
@@ -1269,6 +1289,72 @@ def test_job_poll_fails_fast_on_deterministic_same_process_loss(tmp_path):
     assert not result.exists() or result.read_text().strip() == ""
     calls = log.read_text()
     assert calls.count("POST http://fake-runner.local/v1/jobs") == 1
+    assert "POST https://api.render.com/v1/services" not in calls
+
+
+def _write_pressure_samples_file(path, instances=("storm-a", "storm-b", "storm-c")):
+    """Seed sampler JSONL with pinned-at-limit pressure evidence.
+
+    Mirrors the telemetry of run 36439192645 at the sample level:
+    cgroup usage pinned at the 512 MB limit across rotating instance
+    ids, so detect_memory_pressure() reports pressure from this file
+    even after the background sampler appends its own gap samples.
+    """
+    limit = 512 * 1024 * 1024
+    lines = []
+    index = 0
+    for instance in instances:
+        for i in range(10):
+            lines.append(json.dumps({
+                "type": "sample",
+                "timestamp": 1790607000.0 + index,
+                "ok": True,
+                "instance_id": instance,
+                "memory_limit_bytes": limit,
+                "memory_current_bytes": limit,
+                "memory_events": {"high": 0, "max": i * 1000},
+            }, sort_keys=True))
+            index += 1
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return str(path)
+
+
+def test_job_poll_abandons_memory_pressure_restart_storm(tmp_path):
+    # Regression for run 36439192645 at the shell/HTTP level: seven
+    # consecutive jobs were lost to seven proven worker restarts and
+    # every one was resubmitted under the budget-limited policy; the
+    # eighth job then stayed `running` until the shared budget ran out
+    # ("did not finish in time (last status 'running')") with cgroup
+    # usage pinned at 512 MB and +430,890 max-stall growth. With live
+    # pressure evidence the loop must abandon after the streak reaches
+    # the lifecycle threshold (initial submit + 3 resubmissions, then
+    # fail fast on the fourth proven loss) instead of burning the full
+    # budget -- with a storm diagnostic, no second Render service, and
+    # no result file.
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-storm.log"
+    env["PATH"] = _write_lost_job_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    env["RENDER_MEMORY_SAMPLES_FILE"] = _write_pressure_samples_file(
+        tmp_path / "storm-samples.jsonl")
+    state.write_text(json.dumps({
+        "serviceId": "srv-existing",
+        "deployId": "dep-1",
+        "region": "oregon",
+        "model": PREFERRED_MODEL,
+        "plan": "free",
+    }))
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, combined
+    assert "restart storm" in combined
+    assert "consecutive proven worker restarts" in combined
+    assert "memory pressure" in combined
+    assert "resubmissions used: 3" in combined
+    assert "did not finish in time" not in combined
+    assert "Resubmitted runner job" in combined
+    assert not result.exists() or result.read_text().strip() == ""
+    calls = log.read_text()
+    assert calls.count("POST http://fake-runner.local/v1/jobs") == 4
     assert "POST https://api.render.com/v1/services" not in calls
 
 
