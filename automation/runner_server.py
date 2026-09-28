@@ -136,6 +136,7 @@ try:  # pragma: no cover - import path depends on entrypoint
         OPENCODE_CONFIG_CONTENT,
         OPENCODE_INSTALL_MAX_ATTEMPTS,
         OPENCODE_INSTALL_RETRY_DELAYS,
+        assert_fresh_session_command,
         build_changes,
         build_checkout_command,
         build_clone_command,
@@ -144,12 +145,14 @@ try:  # pragma: no cover - import path depends on entrypoint
         build_rev_parse_command,
         build_status_command,
         find_opencode_binary,
+        fresh_session_env,
         is_model_unavailable_error,
         opencode_runtime_install_allowed,
         probe_opencode_readiness,
         resolve_opencode_bin_override,
         sanitize_output,
         summarize_changes,
+        truncate_head_tail,
     )
 except ImportError:  # pytest inserts automation/ on sys.path
     from opencode_runner import (  # type: ignore[no-redef]
@@ -157,6 +160,7 @@ except ImportError:  # pytest inserts automation/ on sys.path
         OPENCODE_CONFIG_CONTENT,
         OPENCODE_INSTALL_MAX_ATTEMPTS,
         OPENCODE_INSTALL_RETRY_DELAYS,
+        assert_fresh_session_command,
         build_changes,
         build_checkout_command,
         build_clone_command,
@@ -165,13 +169,42 @@ except ImportError:  # pytest inserts automation/ on sys.path
         build_rev_parse_command,
         build_status_command,
         find_opencode_binary,
+        fresh_session_env,
         is_model_unavailable_error,
         opencode_runtime_install_allowed,
         probe_opencode_readiness,
         resolve_opencode_bin_override,
         sanitize_output,
         summarize_changes,
+        truncate_head_tail,
     )
+
+try:  # pragma: no cover - import path depends on entrypoint
+    from automation.bounded_output import (
+        resolve_max_retained_jobs,
+        resolve_output_max_chars,
+        resolve_stream_max_chars,
+        run_bounded,
+    )
+except ImportError:  # pytest inserts automation/ on sys.path
+    try:
+        from bounded_output import (  # type: ignore[no-redef]
+            resolve_max_retained_jobs,
+            resolve_output_max_chars,
+            resolve_stream_max_chars,
+            run_bounded,
+        )
+    except ImportError:  # last resort: head-only fallback, still bounded
+        def resolve_max_retained_jobs(raw=None):  # type: ignore[misc]
+            return 20
+
+        def resolve_output_max_chars(raw=None):  # type: ignore[misc]
+            return 4000
+
+        def resolve_stream_max_chars(raw=None):  # type: ignore[misc]
+            return 32768
+
+        run_bounded = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Configuration (environment-driven; all optional, documented for Render).
@@ -210,10 +243,80 @@ _JOB_TRANSITIONS: dict[str, frozenset[str]] = {
 _MAX_OUTPUT_CHARS = 4000
 
 
-def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "...[truncated]"
+def terminal_output_limit() -> int:
+    """Terminal combined-output bound (env ``RUNNER_MAX_OUTPUT_CHARS``)."""
+    try:
+        return max(1, int(resolve_output_max_chars()))
+    except Exception:
+        return _MAX_OUTPUT_CHARS
+
+
+def stream_output_limit() -> int:
+    """Per-stream in-memory bound (env ``RUNNER_MAX_STREAM_CHARS``)."""
+    try:
+        return max(1, int(resolve_stream_max_chars()))
+    except Exception:
+        return 32768
+
+
+def _truncate(text: str, limit: int | None = None) -> str:
+    """Bound text as head + marker + tail (issue #80).
+
+    Keeps the head (command context) and the tail (where errors surface)
+    with an explicit omission marker. Short inputs are unchanged, so all
+    historical small-output behavior is preserved.
+    """
+    if limit is None:
+        limit = terminal_output_limit()
+    try:
+        return truncate_head_tail(text, limit)
+    except Exception:
+        if not isinstance(text, str):
+            return ""
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "...[truncated]"
+
+
+def _bound_stream(text: str) -> str:
+    """Bound one raw command stream to the configured in-memory limit.
+
+    This is the defense-in-depth layer behind the spooling capture in
+    :class:`SubprocessCommandRunner`: even a custom ``CommandRunner``
+    returning an unbounded string cannot grow worker memory past the
+    configured bound.
+    """
+    return _truncate(text, stream_output_limit())
+
+
+def _session_scope_dir(cwd: str) -> str:
+    """Return the workspace root scoping per-job session isolation.
+
+    The OpenCode pipeline runs inside ``<workspace>/repo`` (the clone);
+    the session database must live in the workspace root, never inside
+    the clone, or it would pollute ``git status`` change detection.
+    """
+    try:
+        if os.path.basename(os.path.normpath(cwd)) == CHECKOUT_SUBDIR:
+            return os.path.dirname(os.path.normpath(cwd))
+    except Exception:
+        pass
+    return cwd
+
+
+def _is_opencode_run_command(cmd: Sequence[str]) -> bool:
+    """True when ``cmd`` is an ``opencode run`` invocation (any binary path)."""
+    try:
+        parts = list(cmd)
+    except Exception:
+        return False
+    if len(parts) < 2:
+        return False
+    try:
+        binary = os.path.basename(str(parts[0]))
+    except Exception:
+        return False
+    return binary == "opencode" and "run" in parts[1:3]
 
 
 def resolve_port(raw: str | None) -> int:
@@ -283,20 +386,62 @@ class CommandRunner:
 
 
 class SubprocessCommandRunner(CommandRunner):
-    """Default implementation based on subprocess.run (no shell)."""
+    """Default implementation with O(bound) capture memory (issue #80).
+
+    The child streams stdout/stderr to spool files on disk and only
+    bounded head/tail slices are read back into memory, so one verbose
+    command (large test log, recursive grep, failing-test loop) cannot
+    spike the 512 MB worker. ``opencode run`` invocations additionally
+    execute with a per-job isolated session env (fresh ``OPENCODE_DB``
+    under the workspace root, never inside the clone) after a
+    fail-closed fresh-session assertion; history is never reused across
+    GitHub issues.
+    """
 
     def run(self, cmd: Sequence[str], cwd: str, timeout: float) -> CommandResult:
+        argv = list(cmd)
+        if _is_opencode_run_command(argv):
+            # Fail closed before starting any process with stale state.
+            assert_fresh_session_command(argv)
+        child_env: dict[str, str] | None = None
         try:
             try:
-                try:
-                    from automation.opencode_runner import scrubbed_env_for_worker
-                except ImportError:
-                    from opencode_runner import scrubbed_env_for_worker  # type: ignore[no-redef]
-                child_env: dict[str, str] | None = scrubbed_env_for_worker()
+                from automation.opencode_runner import scrubbed_env_for_worker
+            except ImportError:
+                from opencode_runner import scrubbed_env_for_worker  # type: ignore[no-redef]
+            child_env = scrubbed_env_for_worker()
+        except Exception:
+            child_env = None
+        if _is_opencode_run_command(argv) and child_env is not None:
+            # Fresh OpenCode session per issue: isolate the session sqlite
+            # database to this job's workspace (issue #80). Scoped to the
+            # workspace root so the clone used for change detection stays
+            # clean. Parent-env overrides win deterministically for the
+            # isolation keys only.
+            try:
+                child_env.update(fresh_session_env(_session_scope_dir(cwd)))
             except Exception:
-                child_env = None
+                pass
+        if run_bounded is not None:
+            try:
+                bounded = run_bounded(argv, cwd=cwd, timeout=timeout, child_env=child_env)
+            except FileNotFoundError as exc:
+                return CommandResult(returncode=127, stdout="", stderr="command not found: %s" % exc)
+            except OSError as exc:
+                return CommandResult(returncode=127, stdout="", stderr="execution failed: %s" % exc)
+            except Exception as exc:
+                return CommandResult(returncode=127, stdout="", stderr="execution failed: %s" % exc)
+            return CommandResult(
+                returncode=bounded.returncode,
+                stdout=bounded.stdout,
+                stderr=bounded.stderr,
+                timed_out=bounded.timed_out,
+            )
+        # Fallback when the bounded module is unavailable (kept bounded:
+        # PIPE path is only for environments where spooling cannot load).
+        try:
             completed = subprocess.run(
-                list(cmd),
+                argv,
                 cwd=cwd,
                 timeout=timeout,
                 stdout=subprocess.PIPE,
@@ -307,15 +452,20 @@ class SubprocessCommandRunner(CommandRunner):
         except subprocess.TimeoutExpired as exc:
             stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
             stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-            return CommandResult(returncode=124, stdout=str(stdout), stderr=str(stderr), timed_out=True)
+            return CommandResult(
+                returncode=124,
+                stdout=_bound_stream(str(stdout)),
+                stderr=_bound_stream(str(stderr)),
+                timed_out=True,
+            )
         except FileNotFoundError as exc:
             return CommandResult(returncode=127, stdout="", stderr="command not found: %s" % exc)
         except OSError as exc:
             return CommandResult(returncode=127, stdout="", stderr="execution failed: %s" % exc)
         return CommandResult(
             returncode=completed.returncode,
-            stdout=completed.stdout or "",
-            stderr=completed.stderr or "",
+            stdout=_bound_stream(completed.stdout or ""),
+            stderr=_bound_stream(completed.stderr or ""),
             timed_out=False,
         )
 
@@ -461,11 +611,20 @@ class JobManager:
         instance_id: Optional[str] = None,
         pid: Optional[int] = None,
         allow_runtime_install: Optional[bool] = None,
+        max_retained_jobs: Optional[int] = None,
     ) -> None:
         if job_timeout_seconds <= 0:
             raise ValueError("job_timeout_seconds must be positive")
         if default_model not in ALLOWED_MODELS:
             raise ValueError("unknown default model: %r" % default_model)
+        if max_retained_jobs is None:
+            try:
+                max_retained_jobs = int(resolve_max_retained_jobs())
+            except Exception:
+                max_retained_jobs = 20
+        if int(max_retained_jobs) <= 0:
+            raise ValueError("max_retained_jobs must be positive")
+        self.max_retained_jobs = int(max_retained_jobs)
         self.workspace_root = workspace_root or os.path.join(
             tempfile.gettempdir(), "runtime-lab-runner-workspaces"
         )
@@ -1178,13 +1337,18 @@ class JobManager:
             if result.timed_out:
                 opencode_timed_out = True
                 last_exit = result.returncode
-                last_output = sanitize_output(
+                # Bound at receipt: a custom CommandRunner may return an
+                # unbounded string, so the per-attempt buffer is capped here
+                # (stream bound) and only the terminal slice (output bound)
+                # is retained in the job record below. Head + tail keeps
+                # both the command context and the trailing error lines.
+                last_output = _bound_stream(sanitize_output(
                     (result.stdout or "") + ("\n" if result.stdout or result.stderr else "") + (result.stderr or "")
-                )
+                ))
                 break
-            combined = sanitize_output(
+            combined = _bound_stream(sanitize_output(
                 (result.stdout or "") + ("\n" if result.stdout or result.stderr else "") + (result.stderr or "")
-            )
+            ))
             last_output = combined
             last_exit = result.returncode
             executed_model = model
@@ -1192,15 +1356,19 @@ class JobManager:
                 first_error = ""
                 break
             # Non-zero: retry once with the fallback on availability errors.
+            # first_error is stored at the terminal bound (not the stream
+            # bound): it only feeds the failure message, so keeping a
+            # second full-size copy of the attempt output would double
+            # retention for no diagnostic gain (issue #80 duplication).
             if (
                 attempt_index == 0
                 and model == PREFERRED_MODEL
                 and len(models_to_try) > 1
                 and is_model_unavailable_error(combined)
             ):
-                first_error = combined
+                first_error = _truncate(combined)
                 continue
-            first_error = combined
+            first_error = _truncate(combined)
             break
         else:
             executed_model = requested_model
@@ -1222,7 +1390,7 @@ class JobManager:
             # changes so the failure is debuggable from the result alone.
             changes = self._best_effort_changes(checkout_dir)
             detail = _truncate((last_output.strip() or "opencode failed"), _MAX_OUTPUT_CHARS)
-            if first_error and executed_model == FALLBACK_MODEL and first_error != last_output:
+            if first_error and executed_model == FALLBACK_MODEL and first_error != _truncate(last_output):
                 detail = _truncate(
                     "primary model %s unavailable; fallback %s also failed: %s"
                     % (requested_model, FALLBACK_MODEL, detail), _MAX_OUTPUT_CHARS,
@@ -1324,6 +1492,7 @@ class JobManager:
         output: str = "", changes: Optional[list[dict[str, Any]]] = None,
         executed_model: str = "",
     ) -> None:
+        evicted_workspaces: list[str] = []
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
@@ -1344,6 +1513,45 @@ class JobManager:
                 record.executed_model = executed_model
                 record.metadata["executed_model"] = executed_model
             record.updated_at = time.time()
+            # Bound accumulated history: without eviction every terminal
+            # job's output/error/changes plus its workspace clone stays
+            # resident, so repeated shell calls and rerun sequences grow
+            # worker memory without a bound (issue #80).
+            evicted_workspaces = self._evict_old_terminal_jobs_locked()
+        for workspace in evicted_workspaces:
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    def _evict_old_terminal_jobs_locked(self) -> list[str]:
+        """Drop oldest terminal jobs past the retention cap; return workspaces.
+
+        Caller must hold ``self._lock``; workspace deletion happens after
+        the lock is released. The idempotency index is cleaned alongside
+        so evicted jobs never shadow new submits.
+        """
+        terminal = [
+            job for job in self._jobs.values()
+            if job.status in RUNNER_TERMINAL_STATUSES
+        ]
+        excess = len(terminal) - max(1, int(self.max_retained_jobs))
+        if excess <= 0:
+            return []
+        terminal.sort(key=lambda job: job.updated_at)
+        workspaces: list[str] = []
+        for job in terminal[:excess]:
+            self._jobs.pop(job.job_id, None)
+            if job.idempotency_key and self._idempotency.get(job.idempotency_key) == job.job_id:
+                self._idempotency.pop(job.idempotency_key, None)
+            if job.workspace:
+                workspaces.append(job.workspace)
+        return workspaces
+
+    def retained_terminal_count(self) -> int:
+        """Number of retained terminal jobs (bounded by the cap)."""
+        with self._lock:
+            return sum(
+                1 for job in self._jobs.values()
+                if job.status in RUNNER_TERMINAL_STATUSES
+            )
 
     # -- serialization ---------------------------------------------------------
 
