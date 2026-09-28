@@ -419,7 +419,14 @@ class SubprocessCommandRunner(CommandRunner):
             # clean. Parent-env overrides win deterministically for the
             # isolation keys only.
             try:
-                child_env.update(fresh_session_env(_session_scope_dir(cwd)))
+                session_env = fresh_session_env(_session_scope_dir(cwd))
+                child_env.update(session_env)
+                # OpenCode fails fast with "unable to open database file"
+                # when the OPENCODE_DB parent directory does not exist
+                # (measured, issue #78), so the launcher owns its creation.
+                db_path = session_env.get("OPENCODE_DB", "")
+                if db_path:
+                    os.makedirs(os.path.dirname(db_path), exist_ok=True)
             except Exception:
                 pass
         if run_bounded is not None:
