@@ -6,6 +6,8 @@ on:
     - cron: "*/15 * * * *"
   issues:
     types: [opened, reopened, closed, labeled, unlabeled]
+  pull_request_target:
+    types: [closed]
 
 permissions:
   actions: write
@@ -33,9 +35,19 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const wipLimit = Number.parseInt(process.env.WIP_LIMIT || '4', 10);
-            const leaseMinutes = Number.parseInt(process.env.LEASE_MINUTES || '90', 10);
-            const maxAttempts = Number.parseInt(process.env.MAX_DISPATCH_ATTEMPTS || '4', 10);
+
+            function positiveInt(name, fallback) {
+              const raw = process.env[name] || String(fallback);
+              const value = Number.parseInt(raw, 10);
+              if (!Number.isInteger(value) || value <= 0) {
+                throw new Error(name + ' must be a positive integer; got ' + raw);
+              }
+              return value;
+            }
+
+            const wipLimit = positiveInt('WIP_LIMIT', 4);
+            const leaseMinutes = positiveInt('LEASE_MINUTES', 90);
+            const maxAttempts = positiveInt('MAX_DISPATCH_ATTEMPTS', 4);
             const leaseMs = leaseMinutes * 60 * 1000;
 
             const priorities = ['priority:p0', 'priority:p1', 'priority:p2'];
@@ -184,6 +196,27 @@ jobs:
               const latest = dispatches[0];
               if (!latest) {
                 await removeLabel(issue.number, inProgress);
+                continue;
+              }
+
+              // Match NanoDictate's authoritative PR-close semantics. If the
+              // latest PR for this dispatch was explicitly closed without
+              // merge, do not silently reopen work after the lease expires.
+              const latestPr = prs[0] || null;
+              if (
+                latestPr &&
+                latestPr.state === 'closed' &&
+                !latestPr.merged_at &&
+                new Date(latestPr.created_at).getTime() >=
+                  new Date(latest.created_at).getTime()
+              ) {
+                await removeLabel(issue.number, inProgress);
+                await addLabel(issue.number, paused);
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issue.number,
+                  body: pauseMarker + '\nOpenCode PR #' + latestPr.number +
+                    ' was closed without merge; automation paused to avoid creating a replacement PR.',
+                });
                 continue;
               }
 
