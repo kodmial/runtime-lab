@@ -1133,6 +1133,7 @@ def execute_issue_attempt(
     render_client: RenderWorkerClient,
     runner_client: RunnerJobClient,
     health_attempts: int | None = None,
+    knowledge_context: Mapping[str, Any] | None = None,
 ) -> DispatchResult:
     """Run one eligible issue on exactly one free ephemeral worker.
 
@@ -1143,6 +1144,13 @@ def execute_issue_attempt(
     unavailable); unconditionally delete the worker and verify deletion.
     The controller never executes OpenCode itself: all OpenCode work
     happens inside the ephemeral worker via its runner API.
+
+    ``knowledge_context`` is an optional credential-free mapping as built
+    by ``automation.knowledge_store.build_worker_context``. When provided,
+    the trusted controller appends the selected knowledge to the task
+    text via ``render_trusted_task_text`` (fail closed on credential
+    material or oversized contexts). When None, the task text is the
+    knowledge-free baseline (backward compatible).
     """
     validate_execution_mode(execution_mode)
     validate_worker_region(region)
@@ -1198,6 +1206,15 @@ def execute_issue_attempt(
             raise RuntimeError("runner health check failed: %s" % last_error)
 
         task_text = resolve_task_text(issue_number, execution_mode, title=title, body=body, run_id=label_run)
+        if knowledge_context is not None:
+            try:
+                try:
+                    from automation.knowledge_store import render_trusted_task_text
+                except ImportError:
+                    from knowledge_store import render_trusted_task_text  # type: ignore[no-redef]
+            except ImportError as exc:
+                raise ValueError("knowledge_store module is required for knowledge enrichment: %s" % exc) from None
+            task_text = render_trusted_task_text(task_text, knowledge_context)
         metadata = ExecutionMetadata(
             issue_number=issue_number,
             attempt=1,

@@ -305,6 +305,52 @@ def build_opencode_install_command(version: str | None = None) -> str:
     return "%s -s -- --version %s" % (OPENCODE_INSTALL_COMMAND, resolved)
 
 
+# Worker subprocesses must never inherit a credential that can read the
+# private agent-knowledge repository. Canonical list lives in
+# automation/knowledge_store.py:STORAGE_CREDENTIAL_ENV_NAMES; this local
+# copy keeps the runner stdlib-only without an import cycle.
+WORKER_SCRUB_ENV_NAMES = (
+    "TAP_PAT",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_APP_ID",
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_APP_INSTALLATION_ID",
+)
+
+
+def scrubbed_env_for_worker(
+    environ: object = None,
+) -> dict[str, str]:
+    """Return a child-process env without private-store credentials.
+
+    Copies ``os.environ`` by default, drops every name in
+    :data:`WORKER_SCRUB_ENV_NAMES`, and preserves everything else
+    (PATH, model/provider config, confinement flags).
+    """
+    source = os.environ if environ is None else environ
+    if not hasattr(source, "items"):
+        raise ValueError("environ must be a mapping")
+    cleaned = {str(k): str(v) for k, v in dict(source).items()}
+    for name in WORKER_SCRUB_ENV_NAMES:
+        cleaned.pop(name, None)
+    return cleaned
+
+
+def assert_worker_env_clean(environ: object = None) -> None:
+    """Fail closed when a worker child env still carries credentials."""
+    source = os.environ if environ is None else environ
+    if not hasattr(source, "get"):
+        raise ValueError("environ must be a mapping")
+    present = [n for n in WORKER_SCRUB_ENV_NAMES
+               if str(source.get(n, "") or "").strip()]  # type: ignore[attr-defined]
+    if present:
+        raise ValueError(
+            "worker environment must never carry storage credentials "
+            "(present: %s)" % ", ".join(sorted(present))
+        )
+
+
 def build_opencode_command(
     model: str, task_text: str, opencode_bin: str = OPENCODE_BIN_NAME
 ) -> list[str]:
