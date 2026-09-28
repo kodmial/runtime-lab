@@ -466,6 +466,28 @@ DEPLOY_POLL_INTERVAL_SECONDS = 20
 # legitimately work for up to 2700s): 140*20s=2800s covers 2700s + buffer.
 JOB_POLL_MAX_ATTEMPTS = 140
 JOB_POLL_INTERVAL_SECONDS = 20
+# Job-loss / transport-error fail-fast policy for the poll loop.
+#
+# Run 36402447309 polled an empty job status for the full 140x20s budget
+# because the shell treated every unparsable poll (curl failure, HTTP 4xx/5xx
+# collapsed by curl -f, empty body) as "still working". Runner jobs live in
+# worker process memory, so a worker restart turns the polled job id into a
+# permanent 404 ("unknown job") that can never become terminal: waiting out
+# the full budget only masks the cause. The controller therefore fails fast
+# after this many consecutive unknown-job polls, and re-probes /health after
+# every this-many consecutive transport failures.
+JOB_POLL_UNKNOWN_JOB_THRESHOLD = 3
+JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY = 5
+# Poll outcome vocabulary for one job-status attempt (controller side).
+JOB_POLL_OUTCOMES = frozenset({
+    "succeeded",
+    "failed",
+    "timed_out",
+    "pending",
+    "unknown_job",
+    "transport_error",
+    "unknown_status",
+})
 RUNNER_HEALTH_MAX_ATTEMPTS = 30
 RUNNER_HEALTH_INTERVAL_SECONDS = 10
 DELETE_MAX_ATTEMPTS = 5
@@ -716,6 +738,71 @@ class JobResult:
 
 def is_terminal_job_status(status: str) -> bool:
     return status in RUNNER_TERMINAL_STATUSES
+
+
+def classify_job_poll_response(http_status: int | None,
+                               status_value: object) -> str:
+    """Classify one runner job-poll attempt into a poll outcome.
+
+    ``http_status`` is the HTTP status of ``GET /v1/jobs/{jobId}`` (None/0
+    when the request never completed). ``status_value`` is the parsed
+    ``status`` field of the response body ("" when there was no parseable
+    body). Returns one of ``JOB_POLL_OUTCOMES``:
+
+    - ``succeeded`` / ``failed`` / ``timed_out``: terminal runner states.
+    - ``pending``: the job is still working (queued/running on HTTP 2xx).
+    - ``unknown_job``: HTTP 404/410, the runner's documented "unknown job"
+      answer. The job id will never become terminal (e.g. worker restart
+      lost the in-memory job); the caller must fail fast, not keep polling.
+    - ``transport_error``: no usable answer (connection failure, 429/5xx, or
+      HTTP 2xx with a missing/empty status). Retryable within bounds, but
+      the caller must track consecutive occurrences and re-probe /health
+      instead of treating them as proof the job is still working.
+    - ``unknown_status``: HTTP 2xx with an unrecognized status string.
+    """
+    code: int | None
+    try:
+        code = int(http_status) if http_status is not None else None
+    except (TypeError, ValueError):
+        code = None
+    if code == 404 or code == 410:
+        return "unknown_job"
+    if code is None or code == 0:
+        return "transport_error"
+    if code == 429 or 500 <= code <= 599:
+        return "transport_error"
+    if 200 <= code <= 299:
+        status = status_value.strip() if isinstance(status_value, str) else ""
+        if status in RUNNER_TERMINAL_STATUSES:
+            return status
+        if status in ("queued", "running"):
+            return "pending"
+        if not status:
+            return "transport_error"
+        return "unknown_status"
+    if 400 <= code <= 499:
+        # Other 4xx on a poll (e.g. malformed job id shape) will never
+        # resolve into a terminal job state either.
+        return "unknown_job"
+    return "transport_error"
+
+
+def should_fail_fast_on_unknown_job(consecutive_unknown: int) -> bool:
+    """True once consecutive unknown-job polls prove the job is gone."""
+    try:
+        count = int(consecutive_unknown)
+    except (TypeError, ValueError):
+        return False
+    return count >= JOB_POLL_UNKNOWN_JOB_THRESHOLD
+
+
+def should_probe_runner_health(consecutive_transport_errors: int) -> bool:
+    """True every Nth consecutive transport failure (health re-probe point)."""
+    try:
+        count = int(consecutive_transport_errors)
+    except (TypeError, ValueError):
+        return False
+    return count > 0 and count % JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY == 0
 
 
 # ---------------------------------------------------------------------------
