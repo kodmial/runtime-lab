@@ -515,9 +515,11 @@ echo "Submitted runner job $JOB_ID."
 # (JOB_POLL_MAX_JOB_RESUBMITS, never a second Render service) convert
 # transient restarts into retries; run 36417263684 lost both the
 # original and the first resubmission to two consecutive proven
-# restarts, and run 36422228148 lost the original plus both
-# resubmissions to three consecutive proven restarts, so the bound is
-# three resubmissions and a fourth consecutive loss still fails
+# restarts, run 36422228148 lost the original plus both
+# resubmissions to three consecutive proven restarts, and run
+# 36425019190 lost the original plus all three resubmissions to
+# four consecutive proven restarts, so the bound is
+# four resubmissions and a fifth consecutive loss still fails
 # fast. A submit-time /health snapshot (uptime_seconds) is compared with
 # the loss-time reading via detect_worker_restart() so the diagnostic
 # states whether a restart was actually observed.
@@ -648,7 +650,7 @@ print(format_restart_evidence(prior, current, prior_inst, current_inst, prior_wa
 PY
 )"
         # Same-worker resubmission (regression for run 36409152332,
-        # extended for runs 36417263684 and 36422228148): the
+        # extended for runs 36417263684, 36422228148 and 36425019190): the
         # payload is fully reproducible and the worker is healthy again,
         # so retry up to JOB_POLL_MAX_JOB_RESUBMITS times on the SAME
         # worker instead of failing the whole
