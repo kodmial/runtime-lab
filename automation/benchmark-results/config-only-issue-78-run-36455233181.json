@@ -1,0 +1,353 @@
+{
+  "arms": [
+    {
+      "arm": "bare-baseline",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 2,
+      "n": 3,
+      "peak_main_kb": 514620,
+      "peak_tree_kb": 514620,
+      "peak_tree_kb_min": 503164,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.59,
+      "wall_seconds_max": 1.63
+    },
+    {
+      "arm": "single-bun_options",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 2,
+      "n": 3,
+      "peak_main_kb": 515596,
+      "peak_tree_kb": 515596,
+      "peak_tree_kb_min": 505316,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.6,
+      "wall_seconds_max": 1.64
+    },
+    {
+      "arm": "single-opencode_pure",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 2,
+      "n": 3,
+      "peak_main_kb": 517084,
+      "peak_tree_kb": 517084,
+      "peak_tree_kb_min": 511132,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.57,
+      "wall_seconds_max": 1.57
+    },
+    {
+      "arm": "single-opencode_disable_default_plugins",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 2,
+      "n": 3,
+      "peak_main_kb": 518528,
+      "peak_tree_kb": 518528,
+      "peak_tree_kb_min": 513332,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.57,
+      "wall_seconds_max": 1.58
+    },
+    {
+      "arm": "single-opencode_disable_external_skills",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 3,
+      "n": 3,
+      "peak_main_kb": 578308,
+      "peak_tree_kb": 578308,
+      "peak_tree_kb_min": 508488,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.59,
+      "wall_seconds_max": 1.64
+    },
+    {
+      "arm": "single-opencode_disable_lsp_download",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 2,
+      "n": 3,
+      "peak_main_kb": 512728,
+      "peak_tree_kb": 512728,
+      "peak_tree_kb_min": 506560,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.57,
+      "wall_seconds_max": 1.58
+    },
+    {
+      "arm": "single-opencode_disable_share",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 2,
+      "n": 3,
+      "peak_main_kb": 516096,
+      "peak_tree_kb": 516096,
+      "peak_tree_kb_min": 510292,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.58,
+      "wall_seconds_max": 1.59
+    },
+    {
+      "arm": "single-opencode_disable_autoupdate",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 2,
+      "n": 3,
+      "peak_main_kb": 517632,
+      "peak_tree_kb": 517632,
+      "peak_tree_kb_min": 510948,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.57,
+      "wall_seconds_max": 1.57
+    },
+    {
+      "arm": "single-opencode_disable_models_fetch",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 2,
+      "n": 3,
+      "peak_main_kb": 511884,
+      "peak_tree_kb": 511884,
+      "peak_tree_kb_min": 511248,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.59,
+      "wall_seconds_max": 1.61
+    },
+    {
+      "arm": "single-config-file",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 2,
+      "n": 3,
+      "peak_main_kb": 526508,
+      "peak_tree_kb": 526508,
+      "peak_tree_kb_min": 522524,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.59,
+      "wall_seconds_max": 1.61
+    },
+    {
+      "arm": "single-pure-flag",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 2,
+      "n": 3,
+      "peak_main_kb": 517136,
+      "peak_tree_kb": 517136,
+      "peak_tree_kb_min": 513100,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.57,
+      "wall_seconds_max": 1.57
+    },
+    {
+      "arm": "cumulative",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 3,
+      "n": 3,
+      "peak_main_kb": 521056,
+      "peak_tree_kb": 521056,
+      "peak_tree_kb_min": 519960,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.61,
+      "wall_seconds_max": 1.62
+    },
+    {
+      "arm": "loo-without-bun_options",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 3,
+      "n": 3,
+      "peak_main_kb": 553268,
+      "peak_tree_kb": 553268,
+      "peak_tree_kb_min": 520332,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.66,
+      "wall_seconds_max": 1.79
+    },
+    {
+      "arm": "loo-without-pure",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 3,
+      "n": 3,
+      "peak_main_kb": 523164,
+      "peak_tree_kb": 523164,
+      "peak_tree_kb_min": 517584,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.59,
+      "wall_seconds_max": 1.61
+    },
+    {
+      "arm": "loo-without-disable_default_plugins",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 3,
+      "n": 3,
+      "peak_main_kb": 519448,
+      "peak_tree_kb": 519448,
+      "peak_tree_kb_min": 515564,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.61,
+      "wall_seconds_max": 1.63
+    },
+    {
+      "arm": "loo-without-disable_external_skills",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 2,
+      "n": 3,
+      "peak_main_kb": 521452,
+      "peak_tree_kb": 521452,
+      "peak_tree_kb_min": 520504,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.6,
+      "wall_seconds_max": 1.62
+    },
+    {
+      "arm": "loo-without-disable_lsp_download",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 3,
+      "n": 3,
+      "peak_main_kb": 524408,
+      "peak_tree_kb": 524408,
+      "peak_tree_kb_min": 519824,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.59,
+      "wall_seconds_max": 1.62
+    },
+    {
+      "arm": "loo-without-disable_share",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 3,
+      "n": 3,
+      "peak_main_kb": 522860,
+      "peak_tree_kb": 522860,
+      "peak_tree_kb_min": 520428,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.58,
+      "wall_seconds_max": 1.61
+    },
+    {
+      "arm": "loo-without-disable_autoupdate",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 3,
+      "n": 3,
+      "peak_main_kb": 522796,
+      "peak_tree_kb": 522796,
+      "peak_tree_kb_min": 510628,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.59,
+      "wall_seconds_max": 1.63
+    },
+    {
+      "arm": "loo-without-disable_models_fetch",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 3,
+      "n": 3,
+      "peak_main_kb": 523240,
+      "peak_tree_kb": 523240,
+      "peak_tree_kb_min": 516548,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.6,
+      "wall_seconds_max": 1.64
+    },
+    {
+      "arm": "loo-without-config_dir",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 2,
+      "n": 3,
+      "peak_main_kb": 519692,
+      "peak_tree_kb": 519692,
+      "peak_tree_kb_min": 515388,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.58,
+      "wall_seconds_max": 1.59
+    },
+    {
+      "arm": "loo-without-pure-flag",
+      "exit_code": 1,
+      "exit_codes": [
+        1
+      ],
+      "max_family_size": 3,
+      "n": 3,
+      "peak_main_kb": 521016,
+      "peak_tree_kb": 521016,
+      "peak_tree_kb_min": 516560,
+      "provenance": "hermetic bootstrap probe, pinned 1.18.33",
+      "wall_seconds": 1.59,
+      "wall_seconds_max": 1.62
+    }
+  ],
+  "baseline_host_peak_kb": 614632,
+  "baseline_provenance": "issue-52-run-36423884312 + memory-benchmark-issue-52.md",
+  "fork_base_sha": "9000e7fc8d96c845512f7c73122431418a71d4e4",
+  "fork_repo": "kodmial/opencode",
+  "issue": 78,
+  "note": "pass-1 cumulative arm discarded: it measured the OPENCODE_DB fast-fail (parent dir missing), not bootstrap. Every arm here creates the DB dir first, as the runner now does.",
+  "opencode_bin": "/home/runner/.opencode/bin/opencode",
+  "pinned_opencode_version": "1.18.33",
+  "profile_fingerprint": {
+    "config_sha256": "9801ee65b404b8fc9ea979f1fd75b98d183304f1e80d6a4b455234a2028984ff",
+    "env_keys": "BUN_OPTIONS,GIT_TERMINAL_PROMPT,OPENCODE_CONFIG_CONTENT,OPENCODE_DB,OPENCODE_DISABLE_AUTOUPDATE,OPENCODE_DISABLE_DEFAULT_PLUGINS,OPENCODE_DISABLE_EMBEDDED_WEB_UI,OPENCODE_DISABLE_EXTERNAL_SKILLS,OPENCODE_DISABLE_LSP_DOWNLOAD,OPENCODE_DISABLE_MODELS_FETCH,OPENCODE_DISABLE_SHARE,OPENCODE_PURE",
+    "fork_base_sha": "9000e7fc8d96c845512f7c73122431418a71d4e4",
+    "fork_repo": "kodmial/opencode",
+    "pinned_opencode_version": "1.18.33",
+    "profile": "config-only",
+    "schema": "runtime-lab-opencode-lowmem-profile/v1"
+  },
+  "run_id": "36455233181",
+  "schema": "runtime-lab-config-only-benchmark/v1"
+}
