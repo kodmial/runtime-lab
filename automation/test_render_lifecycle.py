@@ -18,6 +18,9 @@ from render_lifecycle import (  # noqa: E402
     FREE_PLAN,
     JOB_POLL_INTERVAL_SECONDS,
     JOB_POLL_MAX_ATTEMPTS,
+    JOB_POLL_OUTCOMES,
+    JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY,
+    JOB_POLL_UNKNOWN_JOB_THRESHOLD,
     LIFECYCLE_STEPS,
     CLEANUP_TRIGGER_EVENTS,
     MAX_CONCURRENT_AUTOMATION_JOBS,
@@ -55,6 +58,7 @@ from render_lifecycle import (  # noqa: E402
     assert_free_plan,
     build_create_service_payload,
     classify_deploy_status,
+    classify_job_poll_response,
     deletion_succeeded,
     extract_owner_id,
     get_service_url,
@@ -71,6 +75,8 @@ from render_lifecycle import (  # noqa: E402
     requires_cleanup,
     select_model,
     service_name_for_attempt,
+    should_fail_fast_on_unknown_job,
+    should_probe_runner_health,
     validate_worker_region,
     verify_free_plan_response,
 )
@@ -329,6 +335,53 @@ def test_job_poll_budget_covers_runner_timeout():
     # when deploy/health are fast (deploy went live in ~40s in the failed
     # run); 140*20s=2800s leaves room for create/health/cleanup.
     assert budget <= 55 * 60 - 300
+
+
+def test_job_poll_classification_distinguishes_pending_from_loss():
+    # Regression for run 36402447309: the shell collapsed every unparsable
+    # poll (unknown-job 404, 429/5xx, curl failure, empty body) into "" and
+    # retried it as queued/running for the full budget, masking the cause.
+    # Only queued/running on HTTP 2xx counts as pending.
+    assert classify_job_poll_response(200, "queued") == "pending"
+    assert classify_job_poll_response(200, "running") == "pending"
+    assert classify_job_poll_response(200, "succeeded") == "succeeded"
+    assert classify_job_poll_response(200, "failed") == "failed"
+    assert classify_job_poll_response(200, "timed_out") == "timed_out"
+    # The runner's documented unknown-job answer (jobs live in worker
+    # process memory, so a restart loses them permanently) is terminal
+    # evidence of loss, never "still working".
+    assert classify_job_poll_response(404, "") == "unknown_job"
+    assert classify_job_poll_response(404, "running") == "unknown_job"
+    assert classify_job_poll_response(410, "") == "unknown_job"
+    assert classify_job_poll_response(400, "") == "unknown_job"
+    # Transport failures and empty bodies are retryable, but must be
+    # tracked and health-probed, not mistaken for pending work.
+    assert classify_job_poll_response(0, "") == "transport_error"
+    assert classify_job_poll_response(None, "running") == "transport_error"
+    assert classify_job_poll_response(429, "") == "transport_error"
+    assert classify_job_poll_response(503, "") == "transport_error"
+    assert classify_job_poll_response(500, "running") == "transport_error"
+    assert classify_job_poll_response(200, "") == "transport_error"
+    assert classify_job_poll_response(200, "flying") == "unknown_status"
+    assert set(JOB_POLL_OUTCOMES) == {
+        "succeeded", "failed", "timed_out", "pending",
+        "unknown_job", "transport_error", "unknown_status",
+    }
+
+
+def test_job_poll_fail_fast_thresholds():
+    # Fail-fast policy: a few consecutive unknown-job polls prove loss
+    # (never wait out the full budget); transport failures re-probe
+    # /health periodically instead of polling blindly.
+    assert JOB_POLL_UNKNOWN_JOB_THRESHOLD >= 1
+    assert JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY >= 1
+    assert should_fail_fast_on_unknown_job(JOB_POLL_UNKNOWN_JOB_THRESHOLD - 1) is False
+    assert should_fail_fast_on_unknown_job(JOB_POLL_UNKNOWN_JOB_THRESHOLD) is True
+    assert should_fail_fast_on_unknown_job(JOB_POLL_UNKNOWN_JOB_THRESHOLD + 5) is True
+    assert should_probe_runner_health(0) is False
+    assert should_probe_runner_health(JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY) is True
+    assert should_probe_runner_health(2 * JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY) is True
+    assert should_probe_runner_health(JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY + 1) is False
 
 
 def test_shell_scripts_exist_and_reference_key_only_via_env():

@@ -393,19 +393,63 @@ fi
 echo "Submitted runner job $JOB_ID."
 
 # Poll the job status/result (bounded; same worker, no new service).
-# A 429/5xx from the runner surfaces as an empty poll body and is retried
-# as not-finished within the same bounded loop; the worker is never replaced.
 # Budget 140x20s=2800s covers the runner execution timeout of 45 minutes
 # (see JOB_POLL_MAX_ATTEMPTS in automation/render_lifecycle.py); run
 # 36399649036 failed prematurely with only 60x20s=1200s while the runner was
 # still legitimately working.
+#
+# Poll-outcome discipline (regression for run 36402447309): that run polled
+# an empty status for the full budget because `curl -fsSL ... || true`
+# collapsed every failure (unknown-job 404, 429/5xx, connection errors,
+# empty bodies) into "" and the loop treated "" as queued/running. Empty is
+# not evidence the job is still working. Each attempt is therefore
+# classified with classify_job_poll_response() from the HTTP status plus
+# the parsed status field: terminal states finish, queued/running waits, a
+# persistent unknown-job 404/410 fails fast (jobs live in worker process
+# memory, so a worker restart loses the job permanently and the id can
+# never become terminal), and transport failures are retried within the
+# same budget with periodic /health re-probes plus a diagnostic final
+# error instead of a bare "last status 'empty'".
 FALLBACK_MODEL="opencode/space-bunny-free"
 TRIED_FALLBACK="no"
+POLL_UNKNOWN_COUNT=0
+POLL_EMPTY_COUNT=0
+POLL_LAST_CODE="000"
+POLL_UNKNOWN_THRESHOLD="$(python3 - <<'PY'
+import sys
+sys.path.insert(0, "automation")
+from render_lifecycle import JOB_POLL_UNKNOWN_JOB_THRESHOLD
+print(JOB_POLL_UNKNOWN_JOB_THRESHOLD)
+PY
+)"
+POLL_HEALTH_EVERY="$(python3 - <<'PY'
+import sys
+sys.path.insert(0, "automation")
+from render_lifecycle import JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY
+print(JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY)
+PY
+)"
 for ((i = 1; i <= 140; i++)); do
-  RESULT_JSON="$(curl -fsSL --max-time 30 "$SERVICE_URL/v1/jobs/$JOB_ID" \
-    -H "Accept: application/json" 2>/dev/null || true)"
+  POLL_BODY_FILE="$(mktemp)"
+  POLL_LAST_CODE="$(curl -sS -o "$POLL_BODY_FILE" -w '%{http_code}' --max-time 30 \
+    "$SERVICE_URL/v1/jobs/$JOB_ID" -H "Accept: application/json" 2>/dev/null || true)"
+  POLL_LAST_CODE="$(tr -dc '0-9' <<<"$POLL_LAST_CODE" || true)"
+  [[ -z "$POLL_LAST_CODE" ]] && POLL_LAST_CODE="000"
+  RESULT_JSON="$(cat "$POLL_BODY_FILE" 2>/dev/null || true)"
+  rm -f "$POLL_BODY_FILE"
   STATUS="$(jq -r '.status // empty' <<<"$RESULT_JSON" 2>/dev/null || true)"
-  case "$STATUS" in
+  POLL_OUTCOME="$(python3 - "$POLL_LAST_CODE" "$STATUS" <<'PY'
+import sys
+sys.path.insert(0, "automation")
+from render_lifecycle import classify_job_poll_response
+try:
+    code = int(sys.argv[1])
+except ValueError:
+    code = None
+print(classify_job_poll_response(code, sys.argv[2]))
+PY
+)"
+  case "$POLL_OUTCOME" in
     succeeded)
       printf '%s\n' "$RESULT_JSON" > "$RENDER_RESULT_FILE"
       echo "Runner job $JOB_ID succeeded."
@@ -426,21 +470,60 @@ for ((i = 1; i <= 140; i++)); do
         JOB_ID="$(jq -r '.job_id // .jobId // empty' <<<"$SUBMIT_RESPONSE")"
         [[ -n "$JOB_ID" ]] || { echo "::error::Fallback submit returned no job id." >&2; exit 1; }
         echo "Submitted fallback runner job $JOB_ID."
+        POLL_UNKNOWN_COUNT=0
+        POLL_EMPTY_COUNT=0
         continue
       fi
       printf '%s\n' "$RESULT_JSON" > "$RENDER_RESULT_FILE"
-      echo "::error::Runner job $JOB_ID ended with status '$STATUS': $ERROR_TEXT" >&2
+      echo "::error::Runner job $JOB_ID ended with status '$POLL_OUTCOME': $ERROR_TEXT" >&2
       exit 1
       ;;
-    queued|running|"")
+    pending)
+      POLL_UNKNOWN_COUNT=0
+      POLL_EMPTY_COUNT=0
       if [[ "$i" -eq 140 ]]; then
         echo "::error::Runner job $JOB_ID did not finish in time (last status '${STATUS:-empty}')." >&2
         exit 1
       fi
       sleep 20
       ;;
+    unknown_job)
+      POLL_UNKNOWN_COUNT=$((POLL_UNKNOWN_COUNT + 1))
+      POLL_EMPTY_COUNT=0
+      if [[ "$POLL_UNKNOWN_COUNT" -ge "$POLL_UNKNOWN_THRESHOLD" ]]; then
+        if curl -fsSL --max-time 10 "$SERVICE_URL/health" -o /dev/null 2>/dev/null; then
+          RUNNER_HEALTH="healthy"
+        else
+          RUNNER_HEALTH="unreachable"
+        fi
+        echo "::error::Runner no longer knows job $JOB_ID (HTTP $POLL_LAST_CODE on $POLL_UNKNOWN_COUNT consecutive polls; runner health: $RUNNER_HEALTH). Jobs live in worker process memory, so a worker restart loses the job permanently; failing fast instead of waiting out the full poll budget." >&2
+        exit 1
+      fi
+      if [[ "$i" -eq 140 ]]; then
+        echo "::error::Runner job $JOB_ID did not finish in time (last status '${STATUS:-empty}', HTTP $POLL_LAST_CODE, $POLL_UNKNOWN_COUNT consecutive unknown-job polls)." >&2
+        exit 1
+      fi
+      sleep 20
+      ;;
+    transport_error)
+      POLL_EMPTY_COUNT=$((POLL_EMPTY_COUNT + 1))
+      POLL_UNKNOWN_COUNT=0
+      if (( POLL_EMPTY_COUNT % POLL_HEALTH_EVERY == 0 )); then
+        if curl -fsSL --max-time 10 "$SERVICE_URL/health" -o /dev/null 2>/dev/null; then
+          echo "Job $JOB_ID poll hit $POLL_EMPTY_COUNT consecutive transport failures (last HTTP $POLL_LAST_CODE); runner still healthy, continuing within the poll budget." >&2
+        else
+          echo "::error::Runner job $JOB_ID poll failed $POLL_EMPTY_COUNT consecutive times (last HTTP $POLL_LAST_CODE) and the runner health check is also failing; failing fast instead of waiting out the full poll budget." >&2
+          exit 1
+        fi
+      fi
+      if [[ "$i" -eq 140 ]]; then
+        echo "::error::Runner job $JOB_ID did not finish in time (last HTTP $POLL_LAST_CODE, last status '${STATUS:-empty}', $POLL_EMPTY_COUNT consecutive transport failures)." >&2
+        exit 1
+      fi
+      sleep 20
+      ;;
     *)
-      echo "::error::Runner returned unknown job status '$STATUS'." >&2
+      echo "::error::Runner returned unknown job status '$STATUS' (HTTP $POLL_LAST_CODE)." >&2
       exit 1
       ;;
   esac

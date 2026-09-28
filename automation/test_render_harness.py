@@ -201,6 +201,116 @@ def test_region_validation_happens_before_any_creation():
     assert validate_idx < create_idx
 
 
+def test_job_poll_loop_distinguishes_empty_from_pending():
+    # Regression for run 36402447309: the poll loop treated an empty status
+    # (curl -f collapsing 404/5xx/connection errors into "") as
+    # queued/running and waited out the full budget with a bare
+    # "last status 'empty'" error that masked whether the job was lost.
+    job = _read("render-job.sh")
+    assert 'queued|running|"")' not in job
+    assert "classify_job_poll_response" in job
+    assert "unknown_job" in job
+    assert "transport_error" in job
+    assert "no longer knows job" in job
+    # Unknown-job answers fail fast with a health-qualified diagnostic;
+    # transport failures re-probe /health instead of polling blindly.
+    assert "POLL_UNKNOWN_THRESHOLD" in job or "UNKNOWN_JOB_THRESHOLD" in job
+    assert job.count("$SERVICE_URL/health") >= 2
+
+
+def _write_lost_job_bin(directory, curl_log):
+    """Fake bin where the runner answers 404 for a submitted job poll.
+
+    Reproduces run 36402447309 at the HTTP-contract level: submit returns
+    a job id, but every GET /v1/jobs/<id> is the runner's documented
+    unknown-job 404 (e.g. worker restart lost the in-memory job) while
+    /health stays healthy.
+    """
+    bin_dir = Path(directory) / "bin-lost"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'LOG="%s"\n' % curl_log +
+        'OUT=""; METHOD="GET"; DATA=""; URL=""; WANT_CODE=""\n'
+        'ARGS=("$@")\n'
+        'i=0\n'
+        'while [[ $i -lt ${#ARGS[@]} ]]; do\n'
+        '  case "${ARGS[$i]}" in\n'
+        '    -o) OUT="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -D) i=$((i+2));;\n'
+        '    -X) METHOD="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -w) WANT_CODE="yes"; i=$((i+2));;\n'
+        '    -d|--data*) DATA="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -H|--max-time|--connect-timeout) i=$((i+2));;\n'
+        '    -*) i=$((i+1));;\n'
+        '    *) URL="${ARGS[$i]}"; i=$((i+1));;\n'
+        '  esac\n'
+        'done\n'
+        'if [[ -n "$DATA" && "$METHOD" == "GET" ]]; then METHOD="POST"; fi\n'
+        'echo "$METHOD $URL" >> "$LOG"\n'
+        'emit() { local code="$1" body="$2";'
+        ' if [[ -n "$OUT" ]]; then printf "%s" "$body" > "$OUT";'
+        ' else printf "%s" "$body"; fi;'
+        ' if [[ -n "$WANT_CODE" ]]; then printf "%s" "$code"; fi; }\n'
+        'case "$URL" in\n'
+        '  */owners*) emit 200 \'[{"id":"own-1"}]\';;\n'
+        '  */v1/services/deploys/*|*/deploys/*) emit 200 \'{"status":"live"}\';;\n'
+        '  */v1/jobs/job-lost)'
+        ' emit 404 \'{"error":"unknown job: job-lost"}\';;\n'
+        '  */v1/jobs)'
+        ' if [[ "$METHOD" == "POST" ]]; then'
+        ' emit 201 \'{"job_id":"job-lost"}\'; else emit 404 \'{"error":"x"}\'; fi;;\n'
+        '  */health) exit 0;;\n'
+        '  */services/srv-existing)'
+        ' emit 200 \'{"serviceDetails":{"plan":"free","url":"http://fake-runner.local"}}\';;\n'
+        '  *) emit 200 \'{}\';;\n'
+        'esac\n'
+        'exit 0\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    sleep = bin_dir / "sleep"
+    sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    sleep.chmod(0o755)
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "issue" && "$2" == "view" ]]; then\n'
+        '  printf \'{"title":"Harness title","body":"Harness body"}\'\n'
+        "  exit 0\n"
+        "fi\n"
+        'echo "unexpected gh call: $*" >&2\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    return str(bin_dir)
+
+
+def test_job_poll_fails_fast_when_runner_forgets_job(tmp_path):
+    # End-to-end at the shell/HTTP level: a persistent unknown-job 404
+    # must fail fast with a loss diagnostic, not wait out the poll budget
+    # and report a generic "did not finish in time ... empty" timeout.
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-lost.log"
+    env["PATH"] = _write_lost_job_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    state.write_text(json.dumps({
+        "serviceId": "srv-existing",
+        "deployId": "dep-1",
+        "region": "oregon",
+        "model": PREFERRED_MODEL,
+        "plan": "free",
+    }))
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, combined
+    assert "no longer knows job job-lost" in combined
+    assert "runner health: healthy" in combined
+    assert "did not finish in time" not in combined
+    assert not result.exists() or result.read_text().strip() == ""
+
+
 def test_job_poll_loop_matches_lifecycle_budget_and_covers_runner_timeout():
     # Regression for run 36399649036: render-job.sh polled only 60x20s
     # while the runner may work up to RUNNER_JOB_TIMEOUT_SECONDS, so the
