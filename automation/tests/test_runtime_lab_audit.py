@@ -1,9 +1,9 @@
 """Tests for the issue #14 architecture-audit helpers.
 
 Covers both unit behavior (fixtures) and live repository invariants. The live
-checks are read-only and must pass on the current main branch; the documented
-gap test for the missing #4 harness entrypoints asserts the gap explicitly
-instead of failing CI with an unclear error.
+checks are read-only and must pass on the current main branch; the harness
+entrypoint test asserts the #4 scripts referenced by the Render executor
+workflow exist.
 """
 
 from __future__ import annotations
@@ -140,16 +140,15 @@ def test_live_render_executor_pins_allowed_region_and_model():
     assert PREFERRED_MODEL in text
 
 
-def test_live_missing_harness_gap_is_documented():
+def test_live_harness_entrypoints_exist():
     """Issue #4 owns automation/render-job.sh and render-cleanup.sh.
 
-    The Render executor workflow references both entrypoints, but neither
-    file exists on main yet, so every render-executor run currently fails
-    closed with "Missing automation/render-job.sh". This test records that
-    known gap explicitly instead of letting CI fail obscurely.
+    The Render executor workflow references both entrypoints, and both
+    files now exist, so render-executor runs no longer fail closed with
+    "Missing automation/render-job.sh".
     """
     presence = render_harness_files_present(REPO_ROOT)
     assert presence == {
-        "automation/render-job.sh": False,
-        "automation/render-cleanup.sh": False,
+        "automation/render-job.sh": True,
+        "automation/render-cleanup.sh": True,
     }
