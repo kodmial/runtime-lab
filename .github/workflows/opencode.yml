@@ -274,3 +274,35 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           gh api --method DELETE             "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/opencode-conflict-repair"             >/dev/null 2>&1 || true
+
+      - name: Release failed issue reservation
+        if: failure() && github.event_name == 'workflow_dispatch' && inputs.mode == 'issue'
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT || github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$ISSUE_NUMBER" ]] || exit 0
+
+          marker='<!-- runtime-lab-scheduler-dispatch -->'
+          attempts="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments" \
+            --jq "[.[] | select((.body // \"\") | contains(\"$marker\"))] | length" \
+            | awk '{s+=$1} END {print s+0}')"
+
+          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --remove-label "automation:in-progress" >/dev/null 2>&1 || true
+
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "OpenCode workflow run $GITHUB_RUN_ID failed before a usable PR was completed. Dispatch attempts recorded: $attempts."
+
+          max_attempts=2
+          if (( attempts >= max_attempts )); then
+            gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --add-label "automation:paused" >/dev/null 2>&1 || true
+            echo "Issue #$ISSUE_NUMBER paused after $attempts failed dispatch attempts."
+          else
+            gh workflow run issue-scheduler.yml --repo "$GITHUB_REPOSITORY" --ref main
+            echo "Released issue #$ISSUE_NUMBER and requested scheduler retry."
+          fi
+
