@@ -934,6 +934,62 @@ def should_resubmit_after_job_loss(*, polls_remaining: object,
     return remaining > 0
 
 
+# Memory-pressure restart-storm circuit breaker (run 36439192645).
+#
+# Run 36439192645 lost seven consecutive jobs to seven proven worker
+# restarts (~3-minute intervals, instance da61 -> f96d -> 4c14 -> 15e5
+# -> 1d8e -> 4e9b -> 25b7 -> b9b4) and resubmitted every one under the
+# budget-limited policy above; the eighth job then stayed `running` on
+# the healthy worker for 24+ minutes until the shared 140-poll budget
+# was exhausted ("did not finish in time (last status 'running')").
+# Telemetry proves the driver is systematic, not transient: cgroup
+# usage pinned at the 512 MB limit (current/peak 512.0/512.5 MB),
+# memory.events max stalls +430,890, eight instance ids. The ~600-615
+# MB agent peak (issue #52, irreducible per issue #56) does not fit the
+# 512 MB Free worker (RENDER_DOC_FREE_TIER: 0.1 CPU / 512 MB, anytime
+# restart, ephemeral filesystem), so each resubmission restarts the
+# same oversized workload and guarantees the next restart: zero
+# forward progress per attempt while every resubmission also shrinks
+# the next attempt's execution window below the runner's 45-minute
+# timeout (shared-budget starvation).
+#
+# The breaker therefore abandons resubmission once a streak of
+# CONSECUTIVE proven-restart losses reaches this threshold AND live
+# container telemetry proves memory pressure. The pressure gate is
+# what keeps this from becoming another fixed-count treadmill (runs
+# 36417263684 ... 36434278632 grew 1 -> 2 -> 3 -> 4 -> 5 -> unlimited):
+# a restart cluster WITHOUT pressure evidence (genuine transient host
+# maintenance) still gets full budget-limited recovery, while a
+# pressure-proven storm fails fast with an actionable diagnostic after
+# ~10 minutes of zero progress instead of burning the whole 45-minute
+# budget. Pending polls between losses do not reset the streak (they
+# are the doomed attempt running, not forward progress); a model
+# fallback submit resets it (different model, changed premise).
+JOB_POLL_RESTART_STORM_THRESHOLD = 3
+
+
+def should_abandon_restart_storm(*, consecutive_restart_losses: object,
+                                 memory_pressure: object) -> bool:
+    """True when resubmission is a proven-doomed storm (run 36439192645).
+
+    Abandons only when BOTH hold: ``consecutive_restart_losses``
+    (proven-restart resubmissions with no intervening model fallback)
+    reaches JOB_POLL_RESTART_STORM_THRESHOLD, and ``memory_pressure``
+    (live telemetry verdict, see render_memory_sampler
+    .detect_memory_pressure) is truthy. Anything else fails open
+    toward the pre-existing budget-limited recovery: missing pressure
+    evidence (telemetry gaps) never abandons, and unparsable streaks
+    never abandon.
+    """
+    if not memory_pressure:
+        return False
+    try:
+        streak = int(consecutive_restart_losses)
+    except (TypeError, ValueError):
+        return False
+    return streak >= JOB_POLL_RESTART_STORM_THRESHOLD
+
+
 def detect_worker_restart(prior_uptime: object,
                            current_uptime: object,
                            prior_instance_id: object = None,

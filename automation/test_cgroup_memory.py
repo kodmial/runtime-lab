@@ -39,9 +39,12 @@ from cgroup_memory import (  # noqa: E402
 )
 from render_memory_sampler import (  # noqa: E402
     MAX_INTERVAL_SECONDS,
+    detect_memory_pressure,
+    detect_memory_pressure_file,
     error_sample,
     event_marker,
     extract_sample,
+    memory_pressure_evidence,
     read_samples,
     render_human_summary,
     sample_loop,
@@ -392,6 +395,98 @@ def test_summarize_empty_samples():
     assert summary["instance_changed"] is False
     assert summary["max_memory_current_bytes"] is None
     assert "Container memory summary" in render_human_summary(summary)
+
+
+def _pressure_sample(index, instance, current=LIMIT_512M, stalls=0):
+    return {
+        "type": "sample",
+        "timestamp": 1790607000.0 + index,
+        "ok": True,
+        "instance_id": instance,
+        "memory_limit_bytes": LIMIT_512M,
+        "memory_current_bytes": current,
+        "memory_events": {"high": 0, "max": stalls},
+    }
+
+
+def test_memory_pressure_detector_requires_pinning_plus_replacement():
+    # Mirrors run 36439192645: usage pinned at the 512 MB limit across
+    # eight instance ids with a +430,890 max-stall delta. Pinning plus
+    # repeated replacements is pressure.
+    samples = []
+    for group, instance in enumerate(("da612faaaa53", "f96d4c16e369", "4c1448fcadb6")):
+        for i in range(10):
+            samples.append(_pressure_sample(
+                group * 10 + i, instance, stalls=group * 200000 + i * 1000))
+    assert detect_memory_pressure(samples) is True
+    evidence = memory_pressure_evidence(samples)
+    assert evidence["pinned_at_limit"] is True
+    assert evidence["restart_transitions"] == 2
+    # Pinning alone (one healthy instance brushing the limit) is not
+    # pressure: a single hot run must not trip the storm breaker.
+    assert detect_memory_pressure(samples[:10]) is False
+    # Replacements alone at low usage are not pressure either (genuine
+    # transient host maintenance keeps budget-limited recovery).
+    cool = [_pressure_sample(i, "inst-%d" % (i // 5), current=LIMIT_512M // 2)
+            for i in range(15)]
+    assert detect_memory_pressure(cool) is False
+    # Gaps, event markers, and samples without cgroup fields never
+    # report pressure (callers fail open toward resubmission).
+    assert detect_memory_pressure([]) is False
+    assert detect_memory_pressure([error_sample(1.0, "boom")]) is False
+    assert detect_memory_pressure(
+        [{"type": "event", "timestamp": 1.0, "name": "x"}]) is False
+    # A lone pinned sample proves nothing (no replacement, no surge).
+    assert detect_memory_pressure(
+        [_pressure_sample(0, "a", current=LIMIT_512M)]) is False
+    no_fields = [dict(_pressure_sample(0, "a"))]
+    for sample in no_fields:
+        del sample["memory_current_bytes"]
+    assert detect_memory_pressure(no_fields) is False
+
+
+def test_memory_pressure_stall_surge_counts_within_instances_only():
+    # Per-container counters reset on every replacement (run
+    # 36434278632 showed first/last delta 0 across six replacements),
+    # so a global first-to-last delta must never drive the surge: the
+    # surge is measured within same-instance groups.
+    reset = []
+    for group, instance in enumerate(("a", "b", "c")):
+        # Each replacement resets max stalls to ~0; global first->last
+        # delta is 0, but every group surges 50,000 within itself.
+        for i in range(5):
+            reset.append(_pressure_sample(
+                group * 5 + i, instance, stalls=i * 12500))
+    evidence = memory_pressure_evidence(reset)
+    assert evidence["restart_transitions"] == 2
+    assert evidence["max_stall_surge_delta"] == 50000
+    assert evidence["stall_surge"] is True
+    assert detect_memory_pressure(reset) is True
+    # Same global shape without any within-group surge is not a surge
+    # (flat counters); restarts still carry it via the replacement
+    # signal, but the surge flag itself must stay False.
+    flat = []
+    for group, instance in enumerate(("a", "b")):
+        for i in range(5):
+            flat.append(_pressure_sample(group * 5 + i, instance, stalls=7))
+    flat_evidence = memory_pressure_evidence(flat)
+    assert flat_evidence["max_stall_surge_delta"] == 0
+    assert flat_evidence["stall_surge"] is False
+
+
+def test_memory_pressure_file_helper_fails_open(tmp_path):
+    assert detect_memory_pressure_file(str(tmp_path / "missing.jsonl")) is False
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text("not json\n{broken\n", encoding="utf-8")
+    assert detect_memory_pressure_file(str(bad)) is False
+    good = tmp_path / "pressure.jsonl"
+    lines = []
+    for group, instance in enumerate(("i-1", "i-2", "i-3")):
+        for i in range(4):
+            sample = _pressure_sample(group * 4 + i, instance)
+            lines.append(json.dumps(sample, sort_keys=True))
+    good.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert detect_memory_pressure_file(str(good)) is True
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ from render_lifecycle import (  # noqa: E402
     JOB_POLL_INTERVAL_SECONDS,
     JOB_POLL_MAX_ATTEMPTS,
     JOB_POLL_OUTCOMES,
+    JOB_POLL_RESTART_STORM_THRESHOLD,
     JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY,
     JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES,
     JOB_POLL_UNKNOWN_JOB_THRESHOLD,
@@ -81,6 +82,7 @@ from render_lifecycle import (  # noqa: E402
     select_model,
     service_name_for_attempt,
     should_fail_fast_on_unknown_job,
+    should_abandon_restart_storm,
     should_fail_fast_on_transport,
     should_probe_runner_health,
     should_resubmit_after_job_loss,
@@ -465,6 +467,58 @@ def test_job_loss_resubmission_is_budget_limited_not_count_limited():
         polls_remaining="bogus", worker_restarted=True) is False
     assert should_resubmit_after_job_loss(
         polls_remaining=None, worker_restarted=True) is False
+
+
+def test_restart_storm_circuit_breaker_abandons_doomed_resubmission():
+    # Regression for run 36439192645: seven consecutive jobs were lost
+    # to seven proven worker restarts (instances da61 -> f96d -> 4c14
+    # -> 15e5 -> 1d8e -> 4e9b -> 25b7 -> b9b4 at ~3-minute intervals)
+    # and every one was resubmitted under the budget-limited policy;
+    # the eighth job then stayed `running` for 24+ minutes until the
+    # shared 140-poll budget was exhausted. Telemetry proves the
+    # driver is systematic memory pressure (cgroup pinned at the
+    # 512 MB limit, memory.events max stalls +430,890): the ~600 MB
+    # agent does not fit the Free worker, so each resubmission only
+    # restarts the same oversized workload with zero forward progress.
+    # The breaker abandons only when BOTH hold: a streak of
+    # consecutive proven-restart losses at the threshold AND live
+    # memory-pressure evidence. The pressure gate (not the count) is
+    # what keeps this from becoming another fixed-count treadmill:
+    # transient host restarts without pressure keep budget-limited
+    # recovery, and telemetry gaps fail open toward resubmission.
+    assert JOB_POLL_RESTART_STORM_THRESHOLD >= 2
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=JOB_POLL_RESTART_STORM_THRESHOLD,
+        memory_pressure=True) is True
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=JOB_POLL_RESTART_STORM_THRESHOLD + 5,
+        memory_pressure=True) is True
+    # Below the threshold the storm is not yet proven: keep recovering.
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=JOB_POLL_RESTART_STORM_THRESHOLD - 1,
+        memory_pressure=True) is False
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=0, memory_pressure=True) is False
+    # Without pressure evidence the streak alone never abandons --
+    # this preserves budget-limited recovery for transient clusters
+    # (runs 36417263684 .. 36434278632) and keeps the always-lost
+    # harness ending at budget exhaustion, not at a count.
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=JOB_POLL_RESTART_STORM_THRESHOLD,
+        memory_pressure=False) is False
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=10**9, memory_pressure=False) is False
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=10**9, memory_pressure=None) is False
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=10**9, memory_pressure="") is False
+    # Unparsable streaks fail open toward recovery (the pressure gate
+    # already requires positive evidence; a corrupt counter must not
+    # convert recovery into abandonment).
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses="bogus", memory_pressure=True) is False
+    assert should_abandon_restart_storm(
+        consecutive_restart_losses=None, memory_pressure=True) is False
 
 
 def test_worker_restart_discriminator_uses_health_uptime():

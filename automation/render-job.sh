@@ -531,10 +531,14 @@ echo "Submitted runner job $JOB_ID."
 # poll budget, so a fixed count is no longer incremented -- the loop
 # resubmits while poll iterations remain (should_resubmit_after_job_loss
 # in automation/render_lifecycle.py) and only fails fast on an
-# exhausted budget or a proven deterministic loss (same healthy worker
+# exhausted budget, a proven deterministic loss (same healthy worker
 # process no longer knows the job it accepted; an unknown-job 404
 # proves the poll reached the worker, so resubmission cannot recover
-# it). A submit-time /health snapshot (uptime_seconds) is compared with
+# it), or a proven memory-pressure restart storm (run 36439192645:
+# should_abandon_restart_storm in automation/render_lifecycle.py plus
+# detect_memory_pressure in automation/render_memory_sampler.py --
+# without pressure evidence the streak alone never abandons, so
+# transient host restarts keep budget-limited recovery). A submit-time /health snapshot (uptime_seconds) is compared with
 # the loss-time reading via detect_worker_restart() so the diagnostic
 # states whether a restart was actually observed.
 FALLBACK_MODEL="opencode/space-bunny-free"
@@ -544,6 +548,12 @@ POLL_EMPTY_COUNT=0
 POLL_UNHEALTHY_COUNT=0
 POLL_LAST_CODE="000"
 POLL_RESUBMITS=0
+# Consecutive proven-restart resubmissions with no intervening model
+# fallback (regression for run 36439192645): pending polls between
+# losses do not reset this -- they are the doomed attempt still
+# running, not forward progress -- while a fallback submit resets it
+# (different model, changed premise).
+POLL_RESTART_STREAK=0
 POLL_UNKNOWN_THRESHOLD="$(python3 - <<'PY'
 import sys
 sys.path.insert(0, "automation")
@@ -572,9 +582,17 @@ from render_lifecycle import JOB_POLL_MAX_ATTEMPTS
 print(JOB_POLL_MAX_ATTEMPTS)
 PY
 )"
+POLL_STORM_THRESHOLD="$(python3 - <<'PY'
+import sys
+sys.path.insert(0, "automation")
+from render_lifecycle import JOB_POLL_RESTART_STORM_THRESHOLD
+print(JOB_POLL_RESTART_STORM_THRESHOLD)
+PY
+)"
 [[ "$POLL_MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || POLL_MAX_ATTEMPTS=140
 [[ "$POLL_MAX_UNHEALTHY" =~ ^[0-9]+$ ]] || POLL_MAX_UNHEALTHY=1
 [[ "$POLL_HEALTH_EVERY" =~ ^[0-9]+$ ]] || POLL_HEALTH_EVERY=5
+[[ "$POLL_STORM_THRESHOLD" =~ ^[0-9]+$ ]] || POLL_STORM_THRESHOLD=3
 # Submit-time runner health snapshot (best-effort restart-evidence
 # baseline; never fails the attempt when the body is unavailable).
 # Issue #41: capture the unique process instance id plus the wall-clock
@@ -635,6 +653,9 @@ PY
         POLL_UNKNOWN_COUNT=0
         POLL_EMPTY_COUNT=0
         POLL_UNHEALTHY_COUNT=0
+        # A fallback submit is a changed premise (different model), so
+        # the restart-storm streak restarts with it.
+        POLL_RESTART_STREAK=0
         continue
       fi
       printf '%s\n' "$RESULT_JSON" > "$RENDER_RESULT_FILE"
@@ -695,6 +716,50 @@ print("restarted" if verdict is True else ("same-process" if verdict is False el
 PY
 )"
         POLLS_REMAINING=$((POLL_MAX_ATTEMPTS - i))
+        # Restart-storm circuit breaker (regression for run
+        # 36439192645, which lost seven consecutive jobs to seven
+        # proven restarts and then starved the eighth `running` job
+        # when the shared budget ran out): when the loss is a proven
+        # restart AND the streak of consecutive proven-restart losses
+        # reached the lifecycle threshold AND live container
+        # telemetry proves memory pressure, resubmitting the
+        # identical payload cannot succeed -- the ~600 MB agent does
+        # not fit the 512 MB Free worker, so every resubmission only
+        # restarts the same oversized workload and burns budget with
+        # zero forward progress. Fail fast with a storm diagnostic
+        # instead. Without pressure evidence the streak alone never
+        # abandons (transient host restarts keep budget-limited
+        # recovery), and telemetry gaps fail open toward resubmission.
+        STORM_EVIDENCE=""
+        if [[ "$RESTART_VERDICT" == "restarted" ]]; then
+          STORM_CHECK="$(python3 - "$POLL_RESTART_STREAK" "$POLL_STORM_THRESHOLD" "${RENDER_MEMORY_SAMPLES_FILE:-}" <<'PY' 2>/dev/null || true
+import sys
+sys.path.insert(0, "automation")
+from render_lifecycle import should_abandon_restart_storm
+from render_memory_sampler import detect_memory_pressure_file, memory_pressure_evidence, read_samples
+try:
+    streak = int(sys.argv[1])
+except ValueError:
+    streak = -1
+pressure = detect_memory_pressure_file(sys.argv[3]) if sys.argv[3] else False
+if should_abandon_restart_storm(consecutive_restart_losses=streak, memory_pressure=pressure):
+    try:
+        evidence = memory_pressure_evidence(read_samples(sys.argv[3]))
+        print("STORM limit=%s current=%s restarts=%s stall_surge=%s" % (
+            evidence.get("memory_limit_bytes"), evidence.get("max_memory_current_bytes"),
+            evidence.get("restart_transitions"), evidence.get("max_stall_surge_delta")))
+    except Exception:
+        print("STORM")
+else:
+    print("OK")
+PY
+)"
+          if [[ "$STORM_CHECK" == STORM* ]]; then
+            STORM_EVIDENCE="${STORM_CHECK#STORM}"
+            echo "::error::Runner restart storm: job $JOB_ID lost to $((POLL_RESTART_STREAK + 1)) consecutive proven worker restarts with container memory pressure (${STORM_EVIDENCE# }); resubmitting the identical payload cannot succeed on this 512 MB worker (agent peak ~600 MB); failing fast instead of burning the poll budget (resubmissions used: $POLL_RESUBMITS; poll $i/$POLL_MAX_ATTEMPTS; $RESTART_EVIDENCE). Jobs live in worker process memory, so each restart wipes the job; provision a larger worker or shrink the workload instead of retrying here." >&2
+            exit 1
+          fi
+        fi
         # Budget-limited same-worker resubmission (regression for run
         # 36434278632, which lost six consecutive jobs to six proven
         # restarts inside the poll budget and exhausted the old fixed
@@ -702,8 +767,9 @@ PY
         # worker is healthy again, so resubmit on the SAME worker while
         # poll iterations remain instead of failing the whole attempt
         # on transient restarts. A sixth (or Nth) consecutive restart
-        # loss is another retry, not a terminal failure. Never creates
-        # a second service.
+        # loss is another retry, not a terminal failure -- unless the
+        # storm breaker above proved the worker cannot host this
+        # workload. Never creates a second service.
         if [[ "$RUNNER_HEALTH" == "healthy" && "$RESTART_VERDICT" != "same-process" && "$POLLS_REMAINING" -gt 0 ]]; then
           echo "Runner lost job $JOB_ID ($RESTART_EVIDENCE); resubmitting the same payload on the same worker (resubmission $((POLL_RESUBMITS + 1)), $POLLS_REMAINING poll(s) of budget remaining, no new service)."
           LOST_JOB_ID="$JOB_ID"
@@ -719,6 +785,12 @@ PY
           echo "Resubmitted runner job $JOB_ID (replaces lost job $LOST_JOB_ID)."
           memory_sampler_record_event "job_resubmitted" "lost=$LOST_JOB_ID resubmitted=$JOB_ID count=$POLL_RESUBMITS"
           POLL_RESUBMITS=$((POLL_RESUBMITS + 1))
+          # Only proven restarts extend the storm streak; an
+          # inconclusive ("unknown") verdict resubmits without
+          # strengthening or clearing the storm evidence.
+          if [[ "$RESTART_VERDICT" == "restarted" ]]; then
+            POLL_RESTART_STREAK=$((POLL_RESTART_STREAK + 1))
+          fi
           POLL_UNKNOWN_COUNT=0
           POLL_EMPTY_COUNT=0
           POLL_UNHEALTHY_COUNT=0
