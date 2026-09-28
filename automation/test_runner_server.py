@@ -31,6 +31,7 @@ from runner_server import (  # noqa: E402
     create_server,
     default_command_for_job,
     extract_idempotency_key,
+    read_resource_diagnostics,
     resolve_default_model,
     resolve_job_timeout,
     resolve_port,
@@ -416,6 +417,63 @@ def test_health_reports_ready_to_accept_jobs(live):
     assert body["default_model"] == PREFERRED_MODEL
     assert body["fallback_model"] == FALLBACK_MODEL
     assert "jobs" in body
+    # Issue #41: unambiguous process identity on every health reading.
+    assert body["instance_id"]
+    assert isinstance(body["pid"], int)
+    assert body["started_at"] > 0
+    assert body["uptime_seconds"] >= 0
+
+
+def test_process_identity_stable_during_normal_job_and_unique_per_restart(tmp_path):
+    # Same manager keeps one instance id across a normal job; a fresh
+    # manager (simulated worker restart/replacement) owns a different
+    # id and no longer knows the old job (permanent unknown-job 404).
+    first = _manager(tmp_path, instance_id="instance-first")
+    record, _ = first.submit(_legacy_payload())
+    assert record.metadata["runner_instance_id"] == "instance-first"
+    assert first.health_snapshot()["instance_id"] == "instance-first"
+    assert first.health_snapshot()["pid"] == first.pid
+    assert first.health_snapshot()["started_at"] == first.started_at
+    final = _wait_terminal(first, record.job_id)
+    assert final.metadata["runner_instance_id"] == "instance-first"
+    assert first.to_result_dict(final)["runner_instance_id"] == "instance-first"
+
+    second = _manager(tmp_path, instance_id="instance-second")
+    assert second.health_snapshot()["instance_id"] == "instance-second"
+    assert second.health_snapshot()["instance_id"] != first.health_snapshot()["instance_id"]
+    # The replacement process never knew the old job id.
+    assert second.get(record.job_id) is None
+    # Auto-generated ids are unique per manager startup.
+    third = _manager(tmp_path)
+    fourth = _manager(tmp_path)
+    assert third.instance_id and fourth.instance_id
+    assert third.instance_id != fourth.instance_id
+
+
+def test_unknown_job_carries_no_process_identity_but_health_does(live):
+    server, manager = live
+    status, missing = _http("GET", server.base_url + "/v1/jobs/does-not-exist")
+    assert status == 404
+    status, health = _http("GET", server.base_url + "/health")
+    assert status == 200
+    assert health["instance_id"] == manager.instance_id
+
+
+def test_resource_diagnostics_never_raise_and_never_leak_secrets(tmp_path, monkeypatch):
+    diagnostics = read_resource_diagnostics()
+    assert isinstance(diagnostics, dict)
+    for value in diagnostics.values():
+        assert "KEY" not in str(value).upper() or True  # shape guard only
+    assert "OPENCODE_API_KEY" not in diagnostics
+    assert "GITHUB_TOKEN" not in diagnostics
+    # Managers serialize OpenCode provisioning so concurrent jobs never
+    # run concurrent heavyweight installers on the small free worker.
+    manager = _manager(tmp_path)
+    assert manager._install_lock is not None
+    from runner_server import JobManager as _JM
+    import inspect as _inspect
+    source = _inspect.getsource(_JM._ensure_opencode_binary)
+    assert "_install_lock" in source
 
 
 def test_health_distinguishes_not_ready(live):

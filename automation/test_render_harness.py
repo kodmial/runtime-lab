@@ -209,7 +209,12 @@ def test_job_poll_resubmits_once_on_same_worker_after_proven_loss():
     # payload once on the SAME worker and only then fail fast.
     job = _read("render-job.sh")
     assert "JOB_POLL_MAX_JOB_RESUBMITS" in job
-    assert "detect_worker_restart" in job
+    # Issue #41: identity comes from the instance id first, wall-clock
+    # drift second; uptime order alone is not proof of identity.
+    assert "format_restart_evidence" in job
+    assert "SUBMIT_INSTANCE" in job and "CURRENT_INSTANCE" in job
+    assert "SUBMIT_WALL" in job and "CURRENT_WALL" in job
+    assert "instance_id" in job
     assert "Resubmitted runner job" in job
     assert "resubmissions used" in job
     # The resubmission posts to the worker's own job endpoint (same
@@ -469,6 +474,125 @@ def test_job_poll_recovers_via_one_same_worker_resubmission(tmp_path):
     # Both submits carry the identical task payload (same issue text).
     bodies = (tmp_path / "curl-recovered.log.bodies").read_text()
     assert bodies.count("Harness title") == 2
+
+
+def _write_instance_change_bin(directory, curl_log):
+    """Fake bin reproducing run 36410676408 (issue #41).
+
+    Both jobs are lost to consecutive worker replacements while /health
+    stays healthy, but the replacement uptimes are numerically GREATER
+    than the old snapshot (25.9 -> 48.9 -> 60.3): only the instance id
+    (and wall-clock drift) proves the restart. The script must report
+    "worker restart observed" with instance evidence -- never "same
+    worker process lifetime" -- resubmit once on the same worker, then
+    fail fast on the second consecutive loss without a second service.
+    """
+    bin_dir = Path(directory) / "bin-instance"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'LOG="%s"\n' % curl_log +
+        'OUT=""; METHOD="GET"; DATA=""; URL=""; WANT_CODE=""\n'
+        'ARGS=("$@")\n'
+        'i=0\n'
+        'while [[ $i -lt ${#ARGS[@]} ]]; do\n'
+        '  case "${ARGS[$i]}" in\n'
+        '    -o) OUT="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -D) i=$((i+2));;\n'
+        '    -X) METHOD="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -w) WANT_CODE="yes"; i=$((i+2));;\n'
+        '    -d|--data*) DATA="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -H|--max-time|--connect-timeout) i=$((i+2));;\n'
+        '    -*) i=$((i+1));;\n'
+        '    *) URL="${ARGS[$i]}"; i=$((i+1));;\n'
+        '  esac\n'
+        'done\n'
+        'if [[ -n "$DATA" && "$METHOD" == "GET" ]]; then METHOD="POST"; fi\n'
+        'echo "$METHOD $URL" >> "$LOG"\n'
+        'emit() { local code="$1" body="$2";'
+        ' if [[ -n "$OUT" ]]; then printf "%s" "$body" > "$OUT";'
+        ' else printf "%s" "$body"; fi;'
+        ' if [[ -n "$WANT_CODE" ]]; then printf "%s" "$code"; fi; }\n'
+        'next_count() { local f="$1" n=0;'
+        ' [[ -f "$f" ]] && n=$(cat "$f"); n=$((n+1)); echo "$n" > "$f";'
+        ' printf "%s" "$n"; }\n'
+        'case "$URL" in\n'
+        '  */owners*) emit 200 \'[{"id":"own-1"}]\';;\n'
+        '  */v1/services/deploys/*|*/deploys/*) emit 200 \'{"status":"live"}\';;\n'
+        '  */v1/jobs/job-41a|*/v1/jobs/job-41b)'
+        ' emit 404 \'{"error":"unknown job"}\';;\n'
+        '  */v1/jobs)'
+        ' if [[ "$METHOD" == "POST" ]]; then'
+        ' N=$(next_count "$LOG.post-count");'
+        ' if [[ "$N" -le 1 ]]; then emit 201 \'{"job_id":"job-41a"}\';'
+        ' else emit 201 \'{"job_id":"job-41b"}\'; fi;'
+        ' else emit 404 \'{"error":"x"}\'; fi;;\n'
+        '  */health)'
+        ' H=$(next_count "$LOG.health-count");'
+        ' if [[ "$H" -le 2 ]]; then'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-aaa111","uptime_seconds":25.9,"jobs":{"total":1}}\';'
+        ' elif [[ "$H" -le 4 ]]; then'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-bbb222","uptime_seconds":48.9,"jobs":{"total":0}}\';'
+        ' else'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-ccc333","uptime_seconds":60.3,"jobs":{"total":0}}\';'
+        ' fi;;\n'
+        '  */services/srv-existing)'
+        ' emit 200 \'{"serviceDetails":{"plan":"free","url":"http://fake-runner.local"}}\';;\n'
+        '  *) emit 200 \'{}\';;\n'
+        'esac\n'
+        'exit 0\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    sleep = bin_dir / "sleep"
+    sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    sleep.chmod(0o755)
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "issue" && "$2" == "view" ]]; then\n'
+        '  printf \'{"title":"Harness title","body":"Harness body"}\'\n'
+        "  exit 0\n"
+        "fi\n"
+        'echo "unexpected gh call: $*" >&2\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    return str(bin_dir)
+
+
+def test_job_poll_proves_restart_from_instance_change_despite_greater_uptime(tmp_path):
+    # Regression for run 36410676408 (issue #41): uptimes 25.9 -> 48.9
+    # -> 60.3 are all numerically increasing, so the legacy
+    # "current < prior" detector wrongly reported "same worker process
+    # lifetime". The instance id must prove the replacement instead.
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-instance.log"
+    env["PATH"] = _write_instance_change_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    state.write_text(json.dumps({
+        "serviceId": "srv-existing",
+        "deployId": "dep-1",
+        "region": "oregon",
+        "model": PREFERRED_MODEL,
+        "plan": "free",
+    }))
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, combined
+    assert "Resubmitted runner job job-41b (replaces lost job job-41a)" in combined
+    assert "no longer knows job job-41b" in combined
+    assert "runner health: healthy" in combined
+    assert "resubmissions used: 1/1" in combined
+    # The restart is proven by instance identity despite greater uptime.
+    assert "worker restart observed" in combined
+    assert "instance" in combined
+    assert "same worker process lifetime" not in combined
+    assert "did not finish in time" not in combined
+    calls = log.read_text()
+    assert calls.count("POST http://fake-runner.local/v1/jobs") == 2
+    assert "POST https://api.render.com/v1/services" not in calls
 
 
 def test_job_poll_loop_matches_lifecycle_budget_and_covers_runner_timeout():

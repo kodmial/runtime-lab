@@ -529,6 +529,13 @@ JOB_POLL_OUTCOMES = frozenset({
     "transport_error",
     "unknown_status",
 })
+# Wall-clock skew tolerance for restart detection (issue #41): when both
+# wall-clock readings are available, the elapsed wall time must exceed the
+# uptime delta by more than this many seconds to prove a replacement
+# process. 60s absorbs poll/health timing jitter while remaining far
+# below the multi-minute drift seen in run 36410676408 (minutes elapsed
+# with only ~23s/~11s uptime deltas).
+WORKER_RESTART_WALL_SKEW_TOLERANCE_SECONDS = 60
 RUNNER_HEALTH_MAX_ATTEMPTS = 30
 RUNNER_HEALTH_INTERVAL_SECONDS = 10
 DELETE_MAX_ATTEMPTS = 5
@@ -856,23 +863,107 @@ def should_resubmit_after_job_loss(resubmits_used: int) -> bool:
 
 
 def detect_worker_restart(prior_uptime: object,
-                           current_uptime: object) -> bool | None:
-    """Compare runner /health uptime readings across a job loss.
+                           current_uptime: object,
+                           prior_instance_id: object = None,
+                           current_instance_id: object = None,
+                           prior_wall_seconds: object = None,
+                           current_wall_seconds: object = None,
+                           skew_tolerance_seconds: object = None) -> bool | None:
+    """Compare runner /health readings across a job loss (issue #41).
 
-    The runner reports ``uptime_seconds`` (seconds since the worker
-    process started) on ``GET /health``. Returns True when both readings
-    parse and the current reading is smaller (the worker process
-    restarted, resetting its uptime clock and wiping the in-memory job);
-    False when both parse and the clock kept advancing (same process
-    lifetime, so the job was dropped another way); None when either
-    reading is missing or unparsable (no restart evidence either way).
+    A changed non-empty process instance id proves a restart/replacement
+    directly, even when the new uptime is numerically greater than the old
+    snapshot (run 36410676408: wall-clock advanced several minutes while
+    uptime moved only 25.9 -> 48.9 -> 60.3, so the legacy
+    ``current < prior`` check wrongly reported "same worker process
+    lifetime"). Never infer identity from uptime order alone when
+    instance ids are available.
+
+    Precedence:
+    1. Both instance ids present and non-empty: True when different
+       (proven restart), False when equal (same process lifetime).
+    2. Both uptimes parse and current < prior: True (classic restart).
+    3. Both uptimes parse and both wall-clock readings parse: True when
+       the wall-clock elapsed exceeds the uptime delta by more than the
+       skew tolerance (a replacement process with a larger uptime than
+       the old snapshot is still a different process).
+    4. Both uptimes parse: False (same lifetime, no restart evidence).
+    5. Otherwise: None (missing/unparsable readings, no evidence).
     """
+    prior_instance = str(prior_instance_id or "").strip()
+    current_instance = str(current_instance_id or "").strip()
+    if prior_instance and current_instance:
+        return current_instance != prior_instance
     try:
         prior = float(str(prior_uptime).strip())
         current = float(str(current_uptime).strip())
     except (TypeError, ValueError, AttributeError):
         return None
-    return current < prior
+    if current < prior:
+        return True
+    try:
+        tolerance = (WORKER_RESTART_WALL_SKEW_TOLERANCE_SECONDS
+                     if skew_tolerance_seconds is None
+                     else float(str(skew_tolerance_seconds).strip()))
+    except (TypeError, ValueError, AttributeError):
+        tolerance = float(WORKER_RESTART_WALL_SKEW_TOLERANCE_SECONDS)
+    if prior_wall_seconds is not None and current_wall_seconds is not None:
+        try:
+            prior_wall = float(str(prior_wall_seconds).strip())
+            current_wall = float(str(current_wall_seconds).strip())
+        except (TypeError, ValueError, AttributeError):
+            return False
+        elapsed = current_wall - prior_wall
+        if elapsed < 0:
+            return None
+        if elapsed - (current - prior) > tolerance:
+            return True
+    return False
+
+
+def format_restart_evidence(prior_uptime: object,
+                            current_uptime: object,
+                            prior_instance_id: object = None,
+                            current_instance_id: object = None,
+                            prior_wall_seconds: object = None,
+                            current_wall_seconds: object = None,
+                            skew_tolerance_seconds: object = None) -> str:
+    """Human-readable restart evidence for controller diagnostics."""
+    verdict = detect_worker_restart(
+        prior_uptime, current_uptime, prior_instance_id,
+        current_instance_id, prior_wall_seconds, current_wall_seconds,
+        skew_tolerance_seconds,
+    )
+    prior_label = str(prior_uptime).strip() or "?"
+    current_label = str(current_uptime).strip() or "?"
+    prior_instance = str(prior_instance_id or "").strip()
+    current_instance = str(current_instance_id or "").strip()
+    if prior_instance and current_instance and prior_instance != current_instance:
+        return ("worker restart observed (instance %s -> %s; uptime %s -> %s)"
+                % (prior_instance[:12], current_instance[:12],
+                   prior_label, current_label))
+    if verdict is True:
+        if prior_wall_seconds is not None and current_wall_seconds is not None:
+            try:
+                elapsed = (float(str(current_wall_seconds).strip())
+                           - float(str(prior_wall_seconds).strip()))
+                delta = (float(str(current_uptime).strip())
+                         - float(str(prior_uptime).strip()))
+                return ("worker restart observed (wall-clock elapsed %.0fs "
+                        "but uptime delta only %.1fs: uptime %s -> %s)"
+                        % (elapsed, delta, prior_label, current_label))
+            except (TypeError, ValueError, AttributeError):
+                pass
+        return ("worker restart observed (uptime %s -> %s)"
+                % (prior_label, current_label))
+    if verdict is False:
+        if prior_instance and current_instance:
+            return ("same worker process lifetime (instance %s; uptime %s -> %s)"
+                    % (prior_instance[:12], prior_label, current_label))
+        return ("same worker process lifetime (uptime %s -> %s)"
+                % (prior_label, current_label))
+    return ("no uptime evidence (submit=%s current=%s)"
+            % (prior_label, current_label))
 
 
 # ---------------------------------------------------------------------------
