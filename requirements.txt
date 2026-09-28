@@ -1,0 +1,3 @@
+# Runtime-lab ephemeral runner (Render free tier).
+# Stdlib only on purpose: the runner HTTP service uses no third-party
+# dependencies so the Render build and minimal CI images stay reproducible.
