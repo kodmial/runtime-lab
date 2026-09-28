@@ -617,7 +617,7 @@ def build_create_service_payload(
     branch: str = PUBLIC_REPO_BRANCH,
     runtime: str = "python",
     build_command: str = "pip install -r requirements.txt && bash automation/install-opencode.sh",
-    start_command: str = "python -m automation.runner_server",
+    start_command: str = "RUNNER_ALLOW_RUNTIME_INSTALL=0 python -m automation.runner_server",
     health_check_path: str = "/health",
 ) -> dict[str, Any]:
     """Build the POST /v1/services body for an ephemeral free-tier worker.
@@ -628,7 +628,13 @@ def build_create_service_payload(
     pattern pinned to an explicit release (``curl -fsSL
     https://opencode.ai/install | bash -s -- --version <pinned>`` via
     automation/install-opencode.sh; the pin skips the installer's
-    unauthenticated api.github.com lookup) so every worker can execute jobs.
+    unauthenticated api.github.com lookup) and copies the binary into the
+    deterministic deploy artifact ``.opencode-bin/opencode`` so runtime
+    resolution never depends on build-time $HOME equaling runtime $HOME.
+    The start command disables runtime network installation
+    (``RUNNER_ALLOW_RUNTIME_INSTALL=0``): a worker whose deploy artifact
+    lacks an executable OpenCode binary fails readiness (/health 503)
+    instead of running curl|bash inside the job (issue #52).
     """
     if not name:
         raise ValueError("service name must not be empty")

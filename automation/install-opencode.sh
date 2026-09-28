@@ -31,3 +31,17 @@ done
 
 test -x "$HOME/.opencode/bin/opencode"
 echo "OpenCode CLI is ready."
+# Deterministic deploy artifact (issue #52): Render build-time $HOME is not
+# guaranteed to equal runtime $HOME, so copy the pinned binary into the
+# repo-relative deploy artifact that the runner resolves without HOME.
+# The runner checks .opencode-bin/opencode next to the source tree before
+# PATH/HOME, and production workers disable runtime installation entirely.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEPLOY_DIR="$REPO_ROOT/.opencode-bin"
+mkdir -p "$DEPLOY_DIR"
+cp -f "$HOME/.opencode/bin/opencode" "$DEPLOY_DIR/opencode"
+chmod 755 "$DEPLOY_DIR/opencode"
+test -x "$DEPLOY_DIR/opencode"
+"$DEPLOY_DIR/opencode" --version
+echo "OpenCode deploy artifact is ready at $DEPLOY_DIR/opencode."
