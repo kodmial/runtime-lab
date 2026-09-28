@@ -474,6 +474,55 @@ def test_memory_pressure_stall_surge_counts_within_instances_only():
     assert flat_evidence["stall_surge"] is False
 
 
+def test_memory_pressure_counts_transitions_across_gaps_and_events():
+    # Regression for run 36442675039: every live restart is separated
+    # by sampler gap samples (ok=false during the restart down-window)
+    # plus a job_resubmitted harness event marker, so a detector that
+    # resets continuity on gaps reports zero transitions live while the
+    # end-of-run summary (which preserves previous across gaps) counts
+    # ten. Transitions and surge groups must survive gaps/events.
+    samples = []
+    index = 0
+    for group, instance in enumerate(("live-a", "live-b", "live-c")):
+        for i in range(5):
+            samples.append(_pressure_sample(
+                index, instance, stalls=group * 20000 + i * 1000))
+            index += 1
+        samples.append(error_sample(float(index), "health poll failed: 502"))
+        index += 1
+        samples.append({"type": "event", "timestamp": float(index),
+                        "name": "job_resubmitted", "detail": "lost=x"})
+        index += 1
+    evidence = memory_pressure_evidence(samples)
+    assert evidence["pinned_at_limit"] is True
+    assert evidence["restart_transitions"] == 2
+    assert detect_memory_pressure(samples) is True
+    # Same interleaved shape through the file helper (live path).
+    import tempfile
+    import os
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "live.jsonl")
+        with open(path, "w", encoding="utf-8") as handle:
+            for entry in samples:
+                handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        assert detect_memory_pressure_file(path) is True
+
+
+def test_memory_pressure_surge_survives_gaps_within_instance():
+    # A gap inside one instance lifetime must not split its stall
+    # surge: the group stays open across ok=false samples.
+    samples = [
+        _pressure_sample(0, "same-inst", stalls=0),
+        _pressure_sample(1, "same-inst", stalls=5000),
+        error_sample(2.0, "health poll failed: 502"),
+        _pressure_sample(3, "same-inst", stalls=60000),
+    ]
+    evidence = memory_pressure_evidence(samples)
+    assert evidence["restart_transitions"] == 0
+    assert evidence["max_stall_surge_delta"] == 60000
+    assert evidence["stall_surge"] is True
+
+
 def test_memory_pressure_file_helper_fails_open(tmp_path):
     assert detect_memory_pressure_file(str(tmp_path / "missing.jsonl")) is False
     bad = tmp_path / "bad.jsonl"
