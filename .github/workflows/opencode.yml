@@ -244,6 +244,13 @@ jobs:
           git add -A
           git commit -m "fix: repair CI for PR #${PR_NUMBER}"
           git push origin "HEAD:$HEAD_REF"
+
+          # A GITHUB_TOKEN push may not emit pull_request_target/synchronize,
+          # so clear the per-head repair lock explicitly before validating the new head.
+          gh api --method DELETE \
+            "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/opencode-ci-repair" \
+            >/dev/null 2>&1 || true
+
           gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref main -f "pr_number=$PR_NUMBER"
 
       - name: Clear conflict repair lock
