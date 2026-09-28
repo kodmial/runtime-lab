@@ -1,0 +1,171 @@
+{
+  "base_commit": "ceab65eb3a4c8b08ea99737e291d382b8c8eb2d9",
+  "budget": {
+    "fits_512m": true,
+    "measured_peak_kb": 195636,
+    "pass_threshold_kb": 524288,
+    "recommended_headroom_kb": 131072
+  },
+  "constraint": {
+    "cpu": "0.1",
+    "ram_mb": 512,
+    "swap": "none assumed"
+  },
+  "deterministic": {
+    "git_phase": {
+      "checkout": {
+        "exit_code": 0,
+        "peak_main_kb": 5380,
+        "peak_tree_kb": 5380
+      },
+      "clone": {
+        "exit_code": 0,
+        "max_family_size": 1,
+        "peak_main_kb": 4908,
+        "peak_tree_kb": 4908,
+        "time_v": {
+          "available": true,
+          "exit_code": 0,
+          "max_rss_kb": 8268
+        },
+        "timed_out": false,
+        "wall_seconds": 0.16
+      },
+      "status_exit": 0
+    },
+    "python_idle": {
+      "bare_python_sleep_peak_tree_kb": 10272,
+      "health_resources": {
+        "cgroup": {
+          "cgroup_path": "/sys/fs/cgroup/system.slice/hosted-compute-agent.service",
+          "cgroup_version": "v2",
+          "cpu_max": "max 100000",
+          "cpu_stat": {
+            "burst_usec": 0,
+            "core_sched.force_idle_usec": 0,
+            "nice_usec": 0,
+            "nr_bursts": 0,
+            "nr_periods": 0,
+            "nr_throttled": 0,
+            "system_usec": 5298355,
+            "throttled_usec": 0,
+            "usage_usec": 38572110,
+            "user_usec": 33273754
+          },
+          "memory_current_bytes": 1413025792,
+          "memory_current_mb": 1347.57,
+          "memory_events": {
+            "high": 0,
+            "low": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_group_kill": 0,
+            "oom_kill": 0
+          },
+          "memory_limit_bytes": null,
+          "memory_peak_bytes": 1639460864,
+          "memory_usage_percent": null,
+          "swap_current_bytes": 0,
+          "swap_max_bytes": null
+        },
+        "loadavg_1m": "0.05",
+        "peak_rss_kb": 25836,
+        "proc_threads": 1,
+        "rss_kb": 25836,
+        "threads": 1
+      },
+      "jobmanager_construct_rss_delta_kb": 0,
+      "jobmanager_construct_rss_kb": 25836,
+      "pinned_version": "1.18.33",
+      "runner_server_process_hwm_kb": 22448,
+      "runner_server_process_rss_kb": 22448,
+      "runner_server_threads": 1,
+      "runner_server_tree_kb": 22448
+    },
+    "variant_a_python_controller": {
+      "concept": "python controller + subprocess agent (fake)",
+      "controller_plus_subprocess": {
+        "exit_code": 0,
+        "max_family_size": 3,
+        "peak_main_kb": 11620,
+        "peak_tree_kb": 17340
+      }
+    },
+    "variant_b_standalone": {
+      "binary_bytes": 185354368,
+      "concept": "standalone binary, no Python controller",
+      "file_type": "/home/runner/.opencode/bin/opencode: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, BuildID[sha1]=c30f169b1bef81",
+      "version": {
+        "exit_code": 0,
+        "max_family_size": 1,
+        "peak_main_kb": 195636,
+        "peak_tree_kb": 195636,
+        "stdout": "1.18.33\n",
+        "time_v": {
+          "available": true,
+          "exit_code": 0,
+          "max_rss_kb": 204704
+        },
+        "wall_seconds": 0.63
+      }
+    },
+    "variant_c_packages": {
+      "bun_available": false,
+      "bun_note": "bun not installed; Bun package launch not measurable here",
+      "concept": "npm/Node wrapper and Bun runtime (docs-listed forms only)",
+      "conclusion": "npm/bun/pnpm/yarn forms are install shims around the same standalone release binary; they add a Node/Bun runtime process instead of replacing the binary, so they cannot beat variant B.",
+      "node_available": true,
+      "node_version_peak_tree_kb": 2236,
+      "node_version_stdout": "v22.23.2\n",
+      "node_version_time_v": {
+        "available": true,
+        "exit_code": 0,
+        "max_rss_kb": 18488
+      },
+      "npm_package": "opencode-ai"
+    }
+  },
+  "host": {
+    "cgroup": {},
+    "python_version": "3.12.3"
+  },
+  "issue": 52,
+  "network_backed": {
+    "reason": "rerun with --include-network",
+    "status": "skipped"
+  },
+  "opencode_bin": "/home/runner/.opencode/bin/opencode",
+  "pinned_opencode_version": "1.18.33",
+  "run_id": "issue-79-step0",
+  "schema": "runtime-lab-memory-benchmark/v1",
+  "sources": {
+    "docs": "https://opencode.ai/docs/",
+    "installer": "https://opencode.ai/install",
+    "releases": "https://github.com/anomalyco/opencode/releases",
+    "render_free": "https://render.com/docs/free"
+  },
+  "stress_512m_no_swap": {
+    "ceiling_probe": {
+      "exit_code": 0,
+      "output": "536870912\n0\n"
+    },
+    "harness": "docker",
+    "hog_over_512m": {
+      "exit_code": 0,
+      "output": "exit=137\npeak=536870912\nlow 0\nhigh 0\nmax 53\noom 1\noom_kill 1\noom_group_kill 0\nbash: line 1:     7 Killed                  perl -e '$a = \"x\" x 700000000; sleep 5; print length($a)'\n"
+    },
+    "limits": [
+      "--memory=512m",
+      "--memory-swap=512m"
+    ],
+    "meaning": "equivalent to --memory=512m --memory-swap=512m",
+    "real_agent_under_512m": {
+      "reason": "rerun with --include-network for the live agent stress",
+      "status": "skipped"
+    },
+    "version_under_512m": {
+      "exit_code": 0,
+      "output": "1.18.33\nexit=0\npeak=130383872\nlow 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+    }
+  }
+}
