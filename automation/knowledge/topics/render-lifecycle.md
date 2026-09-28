@@ -42,6 +42,13 @@
 ## Open
 - Hard process termination can bypass in-process cleanup; stale-worker reconciliation is being developed separately.
 
+## Headless fork inventory (issue #77)
+
+- Fork baseline: `kodmial/opencode` main `9000e7f` = upstream `sst/opencode` `ad6c72c` ("chore: generate") plus one Continuum wiring commit; #76 still OPEN so rebase drift is possible. Full trace and removal plan: `automation/audits/issue-77-opencode-headless-inventory.md`. Evidence: `../experiments/issue-77-run-36451501224.md`.
+- Every non-interactive `opencode run` pays `InstanceBootstrap.run` (config + plugin, then lsp/shareNext/format/vcs/snapshot/project init); there is no skip-bootstrap CLI flag except `--attach`, which changes the execution model. `run` uses an in-process server (`Server.Default().app.fetch`); TCP/`listen()` and mDNS are never used.
+- Config-only levers (no source change): `--pure`/`OPENCODE_PURE`, `OPENCODE_DISABLE_DEFAULT_PLUGINS`, `OPENCODE_DISABLE_EXTERNAL_SKILLS`, empty `mcp`/`lsp` maps + `OPENCODE_DISABLE_LSP_DOWNLOAD`, `formatter:false`, `OPENCODE_DISABLE_SHARE=1`, `snapshot:false` (unverified — processor calls `snapshot.track/patch` unconditionally), `autoupdate:false`, `enabled_providers` allowlist, `OPENCODE_DISABLE_MODELS_FETCH`.
+- Bundle-size levers are static-import edges only: `src/index.ts` command table, `src/effect/app-runtime.ts` layer graph, `src/server/routes/instance/httpapi/server.ts` route imports, `src/tool/registry.ts` builtin imports, `src/plugin/index.ts` internal plugins. Removal order: lazy subcommands -> bootstrap laziness -> registry/route laziness -> dependency pruning, each benchmarked with `memory_benchmark.py` plus Docker 512 MB real-agent trials.
+
 ## Provider fleet (issue #64)
 
 - The persistent controller also serves the vendor-independent provider fleet control plane (`automation/provider_routes.py`): `GET /v1/provider-routes/{pool}` publishes active `base_url`/generation/readiness, `POST /v1/provider-routes/{pool}/rotate` rotates single-flight on client-observed 307 exhaustion. The controller carries only control/metadata traffic; prompts/completions never flow through it.
