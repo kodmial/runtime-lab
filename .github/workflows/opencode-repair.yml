@@ -58,7 +58,7 @@ jobs:
             if (
               pr.state !== 'open' ||
               pr.head.repo?.full_name !== `${owner}/${repo}` ||
-              !pr.head.ref.startsWith('opencode/')
+              !/^opencode\/issue\d+-/.test(pr.head.ref)
             ) {
               core.info(`PR #${prNumber} is not an open same-repository OpenCode PR.`);
               return;
