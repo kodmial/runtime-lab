@@ -1,0 +1,43 @@
+name: Sync knowledge ledger
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "automation/knowledge/experiments/**"
+      - "automation/knowledge/topics/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-lab-knowledge-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Runtime Lab
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+
+      - name: Sync Runtime Lab knowledge to private ledger
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::TAP_PAT is required to write kodmial/agent-knowledge"
+            exit 1
+          fi
+
+          python3 automation/knowledge_sync.py \
+            --project runtime-lab \
+            --source-repo "$GITHUB_REPOSITORY" \
+            --source-commit "$(git rev-parse HEAD)"
