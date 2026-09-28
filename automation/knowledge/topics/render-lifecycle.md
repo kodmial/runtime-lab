@@ -10,7 +10,9 @@
 
 - Runner jobs live in worker process memory, so a worker restart turns a submitted job id into a permanent unknown-job 404. The controller poll loop must classify each poll from (HTTP status + parsed status): only queued/running on HTTP 2xx is pending; persistent 404/410 fails fast as job loss; transport failures retry within budget with periodic /health re-probes and diagnostic errors. Empty poll responses must never be treated as proof the job is still working. Evidence: `../experiments/issue-31-run-36408413138.md`.
 
-- Render may restart a Free web service at any time (vendor contract: `https://render.com/docs/free`), so one transient restart must not fail the whole attempt: on proven job loss (persistent unknown-job with a healthy runner) the controller resubmits the identical payload at most once on the SAME worker (never a second service) within the unchanged poll budget; a second consecutive loss still fails fast. Submit-time vs loss-time `/health` uptime comparison states whether a restart was observed. Evidence: `../experiments/issue-33-run-36409578168.md`.
+- Render may restart a Free web service at any time (vendor contract: `https://render.com/docs/free`), so one transient restart must not fail the whole attempt: on proven job loss (persistent unknown-job with a healthy runner) the controller resubmits the identical payload at most once on the SAME worker (never a second service) within the unchanged poll budget; a second consecutive loss still fails fast. Restart evidence prefers the runner process instance id, then wall-clock-vs-uptime drift; uptime order alone is never proof of identity. Evidence: `../experiments/issue-33-run-36409578168.md`, `../experiments/issue-41-run-36416327622.md`.
+
+- Every runner process owns a unique `instance_id` (uuid at manager startup) exposed in `GET /health` alongside `pid`, `started_at`, `uptime_seconds`, and lightweight resource signals, and stamped into each submitted job's metadata/status. A changed instance id across a job loss proves a restart/replacement directly, even when the new uptime is numerically greater than the old snapshot (run `36410676408` advanced minutes of wall-clock with only `25.9 -> 48.9 -> 60.3` uptime deltas, which the old `current < prior` check misread as "same worker process lifetime"). OpenCode CLI provisioning is serialized behind an install lock so concurrent jobs never run concurrent heavyweight installers on the small free worker. Evidence: `../experiments/issue-41-run-36416327622.md`.
 
 - A stale-worker watchdog now exists as a second cleanup line for orphaned automation-owned workers. It fail-closes on ambiguous names/timestamps, excludes the persistent controller, supports active-lease protection and dry-run planning, and never provisions a replacement worker. Evidence: `../experiments/issue-27-run-36405661952.md`.
 - An offline lifecycle fault-injection matrix now covers failures across provisioning, deploy, health, job execution, fallback, cleanup and GitHub write-back. Evidence: `../experiments/issue-28-run-36405666089.md`.
@@ -20,6 +22,7 @@
 - Do not use an outer poll timeout shorter than the runner timeout.
 - Do not treat an empty/unparsable job poll as queued/running.
 - Do not create a second service for model fallback or polling retry (same-worker resubmission reuses the existing worker).
+- Do not infer worker process identity from `current_uptime < prior_uptime` alone; a replacement process can report a larger uptime than the old snapshot. Compare instance ids first, then wall-clock elapsed vs uptime delta.
 
 ## Open
 - Hard process termination can bypass in-process cleanup; stale-worker reconciliation is being developed separately.

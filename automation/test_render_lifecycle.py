@@ -51,6 +51,7 @@ from render_lifecycle import (  # noqa: E402
     RUNNER_SUBMIT_JOB_PATH,
     SUSPEND_FALLBACK_MAX_ATTEMPTS,
     SUSPEND_IS_PRIMARY_CLEANUP,
+    WORKER_RESTART_WALL_SKEW_TOLERANCE_SECONDS,
     BurnBudget,
     ExecutionMetadata,
     JobRequest,
@@ -64,6 +65,7 @@ from render_lifecycle import (  # noqa: E402
     deletion_succeeded,
     detect_worker_restart,
     extract_owner_id,
+    format_restart_evidence,
     get_service_url,
     healthy_service_response,
     is_deletion_verified,
@@ -431,6 +433,59 @@ def test_worker_restart_discriminator_uses_health_uptime():
     assert detect_worker_restart(None, None) is None
     assert detect_worker_restart("bogus", "12.3") is None
     assert detect_worker_restart("300.5", "bogus") is None
+
+
+def test_worker_restart_instance_id_proves_replacement_despite_greater_uptime():
+    # Regression for run 36410676408 (issue #41): wall-clock advanced
+    # several minutes while uptime moved only 25.9 -> 48.9 -> 60.3. The
+    # legacy "current < prior" check reported "same worker process
+    # lifetime" merely because the later uptime was greater, even though
+    # a replacement process can report a larger uptime than the old
+    # snapshot. A changed instance id proves the restart directly.
+    assert detect_worker_restart("25.9", "48.9", "instance-a", "instance-b") is True
+    assert detect_worker_restart("48.9", "60.3", "instance-b", "instance-c") is True
+    assert detect_worker_restart("25.9", "48.9", "same-id", "same-id") is False
+    # Missing instance ids fall back to the legacy uptime comparison.
+    assert detect_worker_restart("25.9", "48.9", "", "") is False
+    assert detect_worker_restart("25.9", "48.9", None, None) is False
+    assert detect_worker_restart("48.9", "25.9", None, None) is True
+    # One-sided instance readings carry no identity evidence; uptime
+    # order alone decides only the classic shrinking-clock case.
+    assert detect_worker_restart("25.9", "48.9", "only-prior", "") is False
+    assert detect_worker_restart("25.9", "48.9", "", "only-current") is False
+
+
+def test_worker_restart_wall_clock_drift_proves_replacement_without_instance():
+    # Same run 36410676408 signature without instance ids: minutes of
+    # wall-clock elapsed with only seconds of uptime advance proves a
+    # replacement, even though current uptime > prior uptime.
+    assert detect_worker_restart("25.9", "48.9", None, None, 1000, 1300) is True
+    assert detect_worker_restart("48.9", "60.3", None, None, 1300, 1600) is True
+    # Normal advance (wall elapsed matches uptime delta within tolerance)
+    # stays "same process lifetime".
+    assert detect_worker_restart("25.9", "48.9", None, None, 1000, 1025) is False
+    assert detect_worker_restart("100", "110", None, None, 5000, 5012) is False
+    # Skew tolerance absorbs poll/health timing jitter.
+    assert WORKER_RESTART_WALL_SKEW_TOLERANCE_SECONDS >= 30
+    # Backward wall-clock carries no evidence.
+    assert detect_worker_restart("25.9", "48.9", None, None, 2000, 1000) is None
+    # Instance identity takes precedence over wall-clock readings.
+    assert detect_worker_restart("25.9", "48.9", "a", "a", 1000, 1300) is False
+    assert detect_worker_restart("25.9", "48.9", "a", "b", 1000, 1025) is True
+
+
+def test_restart_evidence_messages_distinguish_proven_from_same_lifetime():
+    proven_instance = format_restart_evidence("25.9", "48.9", "aaa", "bbb")
+    assert "worker restart observed" in proven_instance
+    assert "instance" in proven_instance
+    assert "same worker process lifetime" not in proven_instance
+    proven_drift = format_restart_evidence("25.9", "48.9", None, None, 1000, 1300)
+    assert "worker restart observed" in proven_drift
+    assert "same worker process lifetime" not in proven_drift
+    same = format_restart_evidence("25.9", "48.9", "same", "same", 1000, 1025)
+    assert "same worker process lifetime" in same
+    unknown = format_restart_evidence("", "48.9")
+    assert "no uptime evidence" in unknown
 
 
 def test_shell_scripts_exist_and_reference_key_only_via_env():

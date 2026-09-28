@@ -454,9 +454,16 @@ PY
 [[ "$POLL_MAX_RESUBMITS" =~ ^[0-9]+$ ]] || POLL_MAX_RESUBMITS=1
 # Submit-time runner health snapshot (best-effort restart-evidence
 # baseline; never fails the attempt when the body is unavailable).
+# Issue #41: capture the unique process instance id plus the wall-clock
+# time alongside uptime_seconds. Uptime order alone cannot prove identity
+# (run 36410676408 advanced minutes of wall-clock with only ~23s/~11s
+# uptime deltas, so a replacement process can report a larger uptime than
+# the old snapshot and still be a different process).
 SUBMIT_HEALTH_JSON="$(curl -sS --max-time 10 "$SERVICE_URL/health" \
   -H "Accept: application/json" 2>/dev/null || true)"
 SUBMIT_UPTIME="$(jq -r '.uptime_seconds // empty' <<<"$SUBMIT_HEALTH_JSON" 2>/dev/null || true)"
+SUBMIT_INSTANCE="$(jq -r '.instance_id // .runner_instance_id // empty' <<<"$SUBMIT_HEALTH_JSON" 2>/dev/null || true)"
+SUBMIT_WALL="$(date +%s 2>/dev/null || true)"
 for ((i = 1; i <= 140; i++)); do
   POLL_BODY_FILE="$(mktemp)"
   POLL_LAST_CODE="$(curl -sS -o "$POLL_BODY_FILE" -w '%{http_code}' --max-time 30 \
@@ -530,19 +537,16 @@ PY
           RUNNER_HEALTH="unreachable"
         fi
         CURRENT_UPTIME="$(jq -r '.uptime_seconds // empty' <<<"$CURRENT_HEALTH_JSON" 2>/dev/null || true)"
-        RESTART_EVIDENCE="$(python3 - "$SUBMIT_UPTIME" "$CURRENT_UPTIME" <<'PY'
+        CURRENT_INSTANCE="$(jq -r '.instance_id // .runner_instance_id // empty' <<<"$CURRENT_HEALTH_JSON" 2>/dev/null || true)"
+        CURRENT_WALL="$(date +%s 2>/dev/null || true)"
+        RESTART_EVIDENCE="$(python3 - "$SUBMIT_UPTIME" "$CURRENT_UPTIME" "$SUBMIT_INSTANCE" "$CURRENT_INSTANCE" "$SUBMIT_WALL" "$CURRENT_WALL" <<'PY'
 import sys
 sys.path.insert(0, "automation")
-from render_lifecycle import detect_worker_restart
-prior, current = sys.argv[1], sys.argv[2]
-result = detect_worker_restart(prior, current)
-if result is True:
-    print("worker restart observed (uptime %s -> %s)" % (prior, current))
-elif result is False:
-    print("same worker process lifetime (uptime %s -> %s)" % (prior, current))
-else:
-    print("no uptime evidence (submit=%s current=%s)"
-          % (prior or "?", current or "?"))
+from render_lifecycle import format_restart_evidence
+prior, current, prior_inst, current_inst, prior_wall, current_wall = (
+    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+)
+print(format_restart_evidence(prior, current, prior_inst, current_inst, prior_wall, current_wall))
 PY
 )"
         # Same-worker resubmission (regression for run 36409152332): the
@@ -566,6 +570,8 @@ PY
           POLL_UNKNOWN_COUNT=0
           POLL_EMPTY_COUNT=0
           SUBMIT_UPTIME="$CURRENT_UPTIME"
+          SUBMIT_INSTANCE="$CURRENT_INSTANCE"
+          SUBMIT_WALL="$CURRENT_WALL"
           continue
         fi
         echo "::error::Runner no longer knows job $JOB_ID (HTTP $POLL_LAST_CODE on $POLL_UNKNOWN_COUNT consecutive polls; runner health: $RUNNER_HEALTH; resubmissions used: $POLL_RESUBMITS/$POLL_MAX_RESUBMITS; $RESTART_EVIDENCE). Jobs live in worker process memory, so a worker restart loses the job permanently; failing fast instead of waiting out the full poll budget." >&2

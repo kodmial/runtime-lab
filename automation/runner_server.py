@@ -326,6 +326,44 @@ def resolve_opencode_bin(raw: str | None) -> str:
     return found or "opencode"
 
 
+def read_resource_diagnostics() -> dict[str, Any]:
+    """Best-effort lightweight process/resource signals (never secrets).
+
+    Reads Linux /proc signals available on Render workers (VmRSS/VmHWM
+    from /proc/self/status, load average) plus the live thread count.
+    Returns {} entries only for signals that could be read; never raises,
+    so /health stays available under pressure.
+    """
+    diagnostics: dict[str, Any] = {}
+    try:
+        diagnostics["threads"] = threading.active_count()
+    except Exception:
+        pass
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        diagnostics["rss_kb"] = int(parts[1])
+                elif line.startswith("VmHWM:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        diagnostics["peak_rss_kb"] = int(parts[1])
+                elif line.startswith("Threads:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        diagnostics["proc_threads"] = int(parts[1])
+    except (OSError, ValueError):
+        pass
+    try:
+        with open("/proc/loadavg", "r", encoding="utf-8") as handle:
+            diagnostics["loadavg_1m"] = handle.read().strip().split()[0]
+    except (OSError, ValueError, IndexError):
+        pass
+    return diagnostics
+
+
 # ---------------------------------------------------------------------------
 # Job state machine + manager.
 # ---------------------------------------------------------------------------
@@ -381,6 +419,8 @@ class JobManager:
         command_builder: Callable[[Mapping[str, Any], str], Sequence[str]] = default_command_for_job,
         start_time: Optional[float] = None,
         opencode_bin: Optional[str] = None,
+        instance_id: Optional[str] = None,
+        pid: Optional[int] = None,
     ) -> None:
         if job_timeout_seconds <= 0:
             raise ValueError("job_timeout_seconds must be positive")
@@ -399,8 +439,21 @@ class JobManager:
             opencode_bin or os.environ.get(ENV_OPENCODE_BIN)
         )
         self.start_time = start_time if start_time is not None else time.time()
+        # Unique process/manager identity (issue #41): a fresh uuid per
+        # manager startup proves a restart/replacement directly, even when
+        # the new process uptime is numerically greater than the old
+        # snapshot. Wall-clock drift alone was ambiguous; this is not.
+        raw_instance = (instance_id or "").strip() if instance_id else ""
+        self.instance_id = raw_instance or uuid.uuid4().hex
+        self.pid = int(pid) if pid is not None else os.getpid()
+        self.started_at = float(self.start_time)
         self.ready = True
         self._lock = threading.Lock()
+        # Serializes OpenCode CLI provisioning (curl|bash installer) so
+        # concurrent jobs never run concurrent heavyweight installers on
+        # the 0.1 CPU / 512 MB free worker (issue #41: peak-pressure
+        # reduction; execution itself stays concurrent for isolation).
+        self._install_lock = threading.Lock()
         self._jobs: dict[str, JobRecord] = {}
         self._idempotency: dict[str, str] = {}
         # Confine every OpenCode subprocess to read-only git inspection.
@@ -411,6 +464,30 @@ class JobManager:
         os.environ.setdefault("GIT_TERMINAL_PROMPT", "0")
 
     # -- introspection ----------------------------------------------------
+
+    def uptime_seconds(self, now: Optional[float] = None) -> float:
+        """Seconds since this manager process started."""
+        return max(0.0, (now if now is not None else time.time()) - self.started_at)
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Process-identity + readiness snapshot for GET /health."""
+        counts = self.job_counts()
+        return {
+            "status": "ok",
+            "ready": bool(self.ready),
+            "service": SERVICE_NAME,
+            "version": SERVICE_VERSION,
+            "region": self.region,
+            "default_model": self.default_model,
+            "fallback_model": FALLBACK_MODEL,
+            "instance_id": self.instance_id,
+            "pid": self.pid,
+            "started_at": self.started_at,
+            "uptime_seconds": round(self.uptime_seconds(), 1),
+            "jobs": counts,
+            "job_timeout_seconds": self.job_timeout_seconds,
+            "resources": read_resource_diagnostics(),
+        }
 
     def job_counts(self) -> dict[str, int]:
         with self._lock:
@@ -659,6 +736,12 @@ class JobManager:
         metadata["executed_model"] = model
         metadata["timeout_seconds"] = timeout
         metadata["service"] = SERVICE_NAME
+        # Process identity on every job (issue #41): the controller can
+        # prove which worker process accepted the job, and a changed
+        # instance id on the next /health proves a restart directly.
+        metadata["runner_instance_id"] = self.instance_id
+        metadata["runner_pid"] = self.pid
+        metadata["runner_started_at"] = self.started_at
         if repository_url:
             metadata["repository_url"] = repository_url
         if base_ref:
@@ -766,35 +849,43 @@ class JobManager:
         found = find_opencode_binary()
         if found:
             return found
-        last_error = "opencode CLI not found"
-        attempts = max(1, int(OPENCODE_INSTALL_MAX_ATTEMPTS))
-        for attempt in range(1, attempts + 1):
-            try:
-                result = self.command_runner.run(
-                    ["sh", "-c", OPENCODE_INSTALL_COMMAND],
-                    cwd=cwd,
-                    timeout=timeout,
-                )
-            except Exception as exc:
-                last_error = "opencode install failed: %s" % exc
-                continue
-            if result.timed_out:
-                last_error = "opencode install timed out"
-                break
-            if result.returncode == 0:
-                found = find_opencode_binary()
-                if found:
-                    return found
-                last_error = "opencode installer succeeded but no binary found"
-            else:
-                detail = (result.stderr.strip() or result.stdout.strip() or "installer failed")
-                last_error = "opencode install failed (code %d): %s" % (
-                    result.returncode, sanitize_output(detail)[:500],
-                )
-        raise FileNotFoundError(
-            "%s; provision via automation/install-opencode.sh "
-            "(curl -fsSL https://opencode.ai/install | bash)" % last_error
-        )
+        # Serialize provisioning: concurrent jobs must not run concurrent
+        # curl|bash installers on the small free worker (issue #41 peak
+        # memory/process pressure reduction). Re-check inside the lock so
+        # only the first waiter actually installs.
+        with self._install_lock:
+            found = find_opencode_binary()
+            if found:
+                return found
+            last_error = "opencode CLI not found"
+            attempts = max(1, int(OPENCODE_INSTALL_MAX_ATTEMPTS))
+            for attempt in range(1, attempts + 1):
+                try:
+                    result = self.command_runner.run(
+                        ["sh", "-c", OPENCODE_INSTALL_COMMAND],
+                        cwd=cwd,
+                        timeout=timeout,
+                    )
+                except Exception as exc:
+                    last_error = "opencode install failed: %s" % exc
+                    continue
+                if result.timed_out:
+                    last_error = "opencode install timed out"
+                    break
+                if result.returncode == 0:
+                    found = find_opencode_binary()
+                    if found:
+                        return found
+                    last_error = "opencode installer succeeded but no binary found"
+                else:
+                    detail = (result.stderr.strip() or result.stdout.strip() or "installer failed")
+                    last_error = "opencode install failed (code %d): %s" % (
+                        result.returncode, sanitize_output(detail)[:500],
+                    )
+            raise FileNotFoundError(
+                "%s; provision via automation/install-opencode.sh "
+                "(curl -fsSL https://opencode.ai/install | bash)" % last_error
+            )
 
     def _execute_opencode(self, job_id: str, payload: dict[str, Any], timeout: float) -> None:
         """Clone, checkout, run OpenCode (with same-worker fallback), diff."""
@@ -1143,6 +1234,9 @@ class JobManager:
             "repository_url": record.repository_url,
             "base_ref": record.base_ref,
             "base_sha": record.base_sha,
+            # Top-level process identity mirrors the metadata copy so
+            # controllers need not dig into metadata to prove restarts.
+            "runner_instance_id": str(record.metadata.get("runner_instance_id", "")),
         }
 
 
@@ -1215,22 +1309,7 @@ class RunnerHandler(BaseHTTPRequestHandler):
             if manager is None or not manager.ready:
                 self._send_json(503, {"status": "starting", "ready": False, "service": SERVICE_NAME})
                 return
-            counts = manager.job_counts()
-            self._send_json(
-                200,
-                {
-                    "status": "ok",
-                    "ready": True,
-                    "service": SERVICE_NAME,
-                    "version": SERVICE_VERSION,
-                    "region": manager.region,
-                    "default_model": manager.default_model,
-                    "fallback_model": FALLBACK_MODEL,
-                    "uptime_seconds": round(time.time() - manager.start_time, 1),
-                    "jobs": counts,
-                    "job_timeout_seconds": manager.job_timeout_seconds,
-                },
-            )
+            self._send_json(200, manager.health_snapshot())
             return
         if path.startswith("/v1/jobs/"):
             job_id = path[len("/v1/jobs/"):]
