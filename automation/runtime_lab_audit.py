@@ -66,9 +66,22 @@ def is_allowed_model(model: str | None) -> bool:
 
 
 def scheduler_wip_default(text: str) -> str | None:
-    """Extract the AUTOMATION_WIP_LIMIT fallback from scheduler text."""
+    """Extract the WIP limit default from scheduler text.
+
+    Supports the legacy ``vars.AUTOMATION_WIP_LIMIT || '4'`` form as well
+    as the hardcoded ``WIP_LIMIT: '6'`` env form (with the
+    ``positiveInt('WIP_LIMIT', 6)`` fallback as secondary evidence).
+    """
     match = re.search(
         r"AUTOMATION_WIP_LIMIT\s*\|\|\s*['\"]([^'\"]+)['\"]", text
+    )
+    if match:
+        return match.group(1)
+    match = re.search(r"WIP_LIMIT:\s*['\"]([^'\"]+)['\"]", text)
+    if match:
+        return match.group(1)
+    match = re.search(
+        r"positiveInt\(\s*['\"]WIP_LIMIT['\"]\s*,\s*(\d+)", text
     )
     return match.group(1) if match else None
 
