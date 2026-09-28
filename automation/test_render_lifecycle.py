@@ -404,7 +404,7 @@ def test_job_poll_fail_fast_thresholds():
     assert should_probe_runner_health(JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY + 1) is False
 
 
-def test_job_loss_resubmission_is_bounded_to_three_same_worker_retries():
+def test_job_loss_resubmission_is_bounded_to_four_same_worker_retries():
     # Regression for run 36409152332: a submitted job polled as pending
     # for ~2 minutes, then turned into a permanent unknown-job 404 while
     # the runner stayed healthy (documented anytime-restart of Free
@@ -415,14 +415,19 @@ def test_job_loss_resubmission_is_bounded_to_three_same_worker_retries():
     # same-worker resubmissions. Run 36422228148 then lost the original
     # plus both resubmissions to three consecutive proven restarts
     # (instances 67de372e1e5f -> 5a3329272140 -> 81873f2a0598 ->
-    # 3133df580cc1), so the bound is three same-worker resubmissions;
-    # a fourth consecutive loss still fails fast.
-    assert JOB_POLL_MAX_JOB_RESUBMITS == 3
+    # 3133df580cc1), so the bound became three same-worker
+    # resubmissions. Run 36425019190 then lost the original plus all
+    # three resubmissions to four consecutive proven restarts
+    # (instances cf0ce0e1fd5b -> 3b567ebafa1a -> 57c5fc5fe6d1 ->
+    # e0e82704a45d -> 9838a60f9feb), so the bound is four
+    # same-worker resubmissions; a fifth consecutive loss still fails fast.
+    assert JOB_POLL_MAX_JOB_RESUBMITS == 4
     assert should_resubmit_after_job_loss(0) is True
     assert should_resubmit_after_job_loss(1) is True
     assert should_resubmit_after_job_loss(2) is True
-    assert should_resubmit_after_job_loss(3) is False
+    assert should_resubmit_after_job_loss(3) is True
     assert should_resubmit_after_job_loss(4) is False
+    assert should_resubmit_after_job_loss(5) is False
     assert should_resubmit_after_job_loss("bogus") is False
     assert should_resubmit_after_job_loss(None) is False
 
