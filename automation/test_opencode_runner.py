@@ -27,17 +27,20 @@ from opencode_runner import (  # noqa: E402
     CHECKOUT_SUBDIR,
     OPENCODE_CONFIG_CONTENT,
     OPENCODE_INSTALL_COMMAND,
+    OPENCODE_PINNED_VERSION,
     assert_public_clone_url,
     build_changes,
     build_checkout_command,
     build_clone_command,
     build_opencode_command,
+    build_opencode_install_command,
     build_rev_parse_command,
     build_status_command,
     decode_change_content,
     is_model_unavailable_error,
     opencode_install_shell_snippet,
     parse_git_status_porcelain,
+    resolve_opencode_version,
     sanitize_output,
     summarize_changes,
 )
@@ -196,18 +199,54 @@ def test_clone_checkout_status_commands_are_credential_free():
 
 
 def test_install_uses_known_good_nanodictate_pattern():
-    assert opencode_install_shell_snippet() == "curl -fsSL https://opencode.ai/install | bash"
+    # Default provisioning pins an explicit release so the installer's
+    # unauthenticated api.github.com latest-version lookup (live failure
+    # "Failed to fetch version information", run 36421205678) is skipped.
+    pinned = "curl -fsSL https://opencode.ai/install | bash -s -- --version %s" % OPENCODE_PINNED_VERSION
+    assert opencode_install_shell_snippet() == pinned
+    assert build_opencode_install_command() == pinned
     assert OPENCODE_INSTALL_COMMAND == "curl -fsSL https://opencode.ai/install | bash"
+    assert build_opencode_install_command("") == OPENCODE_INSTALL_COMMAND
+    assert opencode_install_shell_snippet("") == OPENCODE_INSTALL_COMMAND
     script = REPO_ROOT / "automation" / "install-opencode.sh"
     assert script.is_file()
     text = script.read_text(encoding="utf-8")
-    assert "curl -fsSL https://opencode.ai/install | bash" in text
+    assert "curl -fsSL https://opencode.ai/install | bash -s -- --version" in text
+    assert "OPENCODE_VERSION" in text
+    assert OPENCODE_PINNED_VERSION in text
     assert "test -x" in text and ".opencode/bin/opencode" in text
     lowered = text.lower()
     assert "coderabbit --" not in lowered and "coderabbitai" not in lowered
     assert "OPENCODE_API_KEY" not in text
     payload = build_create_service_payload(name="n", owner_id="o")
     assert "automation/install-opencode.sh" in payload["serviceDetails"]["envSpecificDetails"]["buildCommand"]
+
+
+def test_resolve_opencode_version_defaults_to_pin_and_validates(monkeypatch):
+    monkeypatch.delenv("OPENCODE_VERSION", raising=False)
+    assert resolve_opencode_version() == OPENCODE_PINNED_VERSION
+    assert resolve_opencode_version("v1.18.33") == "1.18.33"
+    assert resolve_opencode_version("  1.18.33  ") == "1.18.33"
+    monkeypatch.setenv("OPENCODE_VERSION", "v1.18.34")
+    assert resolve_opencode_version() == "1.18.34"
+    for bad in ("latest", "v1.2", "1.2.3.4", "abc", "--version 1.2.3; rm -rf /"):
+        with pytest.raises(ValueError):
+            resolve_opencode_version(bad)
+    # Empty/unset means "not provided": falls back to env, then the pin.
+    monkeypatch.delenv("OPENCODE_VERSION", raising=False)
+    assert resolve_opencode_version("") == OPENCODE_PINNED_VERSION
+
+
+def test_install_command_pins_version_and_env_override(monkeypatch):
+    monkeypatch.delenv("OPENCODE_VERSION", raising=False)
+    assert "--version %s" % OPENCODE_PINNED_VERSION in build_opencode_install_command()
+    assert build_opencode_install_command("2.0.0") == (
+        "curl -fsSL https://opencode.ai/install | bash -s -- --version 2.0.0"
+    )
+    monkeypatch.setenv("OPENCODE_VERSION", "v9.9.9")
+    assert build_opencode_install_command() == (
+        "curl -fsSL https://opencode.ai/install | bash -s -- --version 9.9.9"
+    )
 
 
 def test_opencode_config_denies_git_writes():
@@ -472,7 +511,11 @@ def test_missing_opencode_cli_fails_with_provisioning_hint(tmp_path, monkeypatch
 
     # Hermetic even where a real opencode binary exists on PATH: force the
     # discovery to miss so the bounded install attempts run and fail.
+    # Zero the backoff so the failing test stays fast.
     monkeypatch.setattr(runner_server_module, "find_opencode_binary", lambda: None)
+    monkeypatch.setattr(
+        runner_server_module, "OPENCODE_INSTALL_RETRY_DELAYS", (0.0, 0.0)
+    )
     runner = ScriptRunner(fixture_src=_fixture_src(str(tmp_path)))
     manager = JobManager(
         workspace_root=str(tmp_path / "ws"),
@@ -485,6 +528,83 @@ def test_missing_opencode_cli_fails_with_provisioning_hint(tmp_path, monkeypatch
     assert final.status == "failed"
     assert final.exit_code == 127
     assert "install-opencode.sh" in final.error or "opencode.ai/install" in final.error
+
+
+def test_lazy_provisioning_pins_version_and_retries_version_lookup(
+    tmp_path, monkeypatch
+):
+    """Pinned --version skips the api.github.com lookup; a transient
+    "Failed to fetch version information" is retried, not terminal."""
+    import runner_server as runner_server_module
+    from opencode_runner import OPENCODE_PINNED_VERSION as PIN
+
+    monkeypatch.setattr(
+        runner_server_module, "OPENCODE_INSTALL_RETRY_DELAYS", (0.0, 0.0)
+    )
+    monkeypatch.delenv("OPENCODE_VERSION", raising=False)
+
+    install_cmds: list[str] = []
+    state = {"installed": False}
+
+    class FlakyInstallRunner(ScriptRunner):
+        def run(self, cmd, cwd, timeout):
+            if cmd[:2] == ["sh", "-c"] and "opencode.ai/install" in cmd[2]:
+                install_cmds.append(cmd[2])
+                if not install_cmds or len(install_cmds) == 1:
+                    return CommandResult(
+                        returncode=1,
+                        stdout="",
+                        stderr="Failed to fetch version information",
+                    )
+                state["installed"] = True
+                return CommandResult(returncode=0, stdout="ok", stderr="")
+            return super().run(cmd, cwd, timeout)
+
+    def fake_find():
+        return "/fake/bin/opencode" if state["installed"] else None
+
+    monkeypatch.setattr(runner_server_module, "find_opencode_binary", fake_find)
+    runner = FlakyInstallRunner(fixture_src=_fixture_src(str(tmp_path)))
+    runner.on_opencode = lambda cmd, cwd, timeout: CommandResult(0, "did it", "")
+    runner.status_stdout = ""
+    manager = JobManager(
+        workspace_root=str(tmp_path / "ws"),
+        job_timeout_seconds=30.0,
+        command_runner=runner,
+        opencode_bin="opencode",
+    )
+    record, _ = manager.submit(_payload())
+    final = _wait_terminal(manager, record.job_id)
+    assert final.status == "succeeded"
+    assert len(install_cmds) == 2
+    for cmd in install_cmds:
+        assert "--version %s" % PIN in cmd
+        assert "api.github.com" not in cmd
+
+
+def test_install_backoff_sleeps_between_attempts_only(tmp_path, monkeypatch):
+    import runner_server as runner_server_module
+
+    monkeypatch.setattr(
+        runner_server_module, "OPENCODE_INSTALL_RETRY_DELAYS", (5.0, 10.0)
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        runner_server_module.time, "sleep", lambda seconds: sleeps.append(seconds)
+    )
+    manager = JobManager(
+        workspace_root=str(tmp_path / "ws"),
+        job_timeout_seconds=30.0,
+        command_runner=ScriptRunner(),
+        opencode_bin="/fake/opencode",
+    )
+    manager._sleep_between_install_attempts(1, 30.0)
+    manager._sleep_between_install_attempts(2, 30.0)
+    manager._sleep_between_install_attempts(3, 30.0)  # last: no sleep
+    assert sleeps == [5.0, 10.0]
+    # Sleep never exceeds the remaining job budget.
+    manager._sleep_between_install_attempts(1, 3.0)
+    assert sleeps[-1] == 3.0
 
 
 def test_secrets_never_logged_in_result(tmp_path, monkeypatch):
