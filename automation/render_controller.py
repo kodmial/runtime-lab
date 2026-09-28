@@ -1197,7 +1197,7 @@ def execute_issue_attempt(
         if last_error is not None:
             raise RuntimeError("runner health check failed: %s" % last_error)
 
-        task_text = resolve_task_text(issue_number, execution_mode, title=title, body=body)
+        task_text = resolve_task_text(issue_number, execution_mode, title=title, body=body, run_id=label_run)
         metadata = ExecutionMetadata(
             issue_number=issue_number,
             attempt=1,
@@ -1312,6 +1312,24 @@ def _redact_controller_error(exc: BaseException) -> str:
         if isinstance(value, str) and len(value) >= 4 and value in redacted:
             redacted = redacted.replace(value, "[redacted]")
     return redacted[:500]
+
+
+def _redact_text(text: str) -> str:
+    """Redact secret material from an arbitrary diagnostic string."""
+    try:  # pragma: no cover - import path depends on entrypoint
+        from automation.github_app import redact_secrets as _redact
+    except ImportError:
+        try:
+            from github_app import redact_secrets as _redact  # type: ignore[no-redef]
+        except ImportError:
+            _redact = None  # type: ignore[assignment]
+    raw = str(text or "")
+    if _redact is not None:
+        try:
+            return _redact(raw)[:500]
+        except Exception:
+            pass
+    return _redact_controller_error(RuntimeError(raw))[:500]
 
 
 def _best_effort_reserve(github_api: Any | None, issue: int) -> None:
@@ -1664,6 +1682,7 @@ class Controller:
             # OpenCode result must never be materialized into GitHub while
             # its ephemeral Render worker may still exist.
             if not result.cleanup_verified:
+                redacted_detail = _redact_text(result.reason)
                 if delivery:
                     self.store.update(
                         delivery,
@@ -1672,7 +1691,7 @@ class Controller:
                         job_id=result.job_id,
                         execution_mode=result.execution_mode,
                         reason="mandatory worker cleanup was not verified: %s"
-                        % result.reason,
+                        % redacted_detail,
                     )
                 _best_effort_release(self.github_api, issue)
                 return {"delivery_id": delivery, "processed": True,
@@ -1806,12 +1825,13 @@ class Controller:
                         worker_service_id=result.worker_service_id,
                         job_id=result.job_id)}
         except Exception as exc:
+            redacted = _redact_controller_error(exc)
             if delivery:
                 self.store.update(delivery, status="failed",
-                                  reason="dispatch failed: %s" % exc,
+                                  reason="dispatch failed: %s" % redacted,
                                   execution_mode=decision.execution_mode)
             return {"delivery_id": delivery, "processed": True,
-                    "dispatched": False, "reason": "dispatch failed: %s" % exc}
+                    "dispatched": False, "reason": "dispatch failed: %s" % redacted}
         finally:
             with self._lock:
                 self._in_flight_issues.pop(issue, None)

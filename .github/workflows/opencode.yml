@@ -123,6 +123,10 @@ jobs:
           Requirements:
           - Treat the issue body and Definition of Done as authoritative.
           - Inspect the existing repository before changing code.
+          - Repository knowledge handoff is mandatory: before changing code, read automation/knowledge/PROTOCOL.md, then the relevant automation/knowledge/topics/*.md notes and prior automation/knowledge/experiments/ records for this issue/topic.
+          - Do not repeat a previously failed experiment unless a material premise changed; record that changed premise.
+          - Before finishing, write exactly one run record at automation/knowledge/experiments/issue-${ISSUE_NUMBER}-run-${GITHUB_RUN_ID}.md following the protocol. Never include secrets.
+          - Promote only validated reusable facts to the relevant topic note; preserve superseded history rather than silently rewriting it.
           - Implement the complete task, not a partial sketch.
           - Add or update automated tests when appropriate.
           - Run the relevant local checks when practical.

@@ -37,6 +37,32 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+KNOWLEDGE_PROTOCOL_PATH = "automation/knowledge/PROTOCOL.md"
+KNOWLEDGE_TOPICS_DIR = "automation/knowledge/topics"
+KNOWLEDGE_EXPERIMENTS_DIR = "automation/knowledge/experiments"
+
+def experiment_record_path(issue_number: int, run_id: object = "") -> str:
+    """Return the unique repository path for one automation run record."""
+    if not isinstance(issue_number, int) or issue_number <= 0:
+        raise ValueError("issue_number must be a positive integer")
+    raw = str(run_id or "unknown").strip() or "unknown"
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in raw)
+    safe = safe.strip("-.")[:96] or "unknown"
+    return "%s/issue-%d-run-%s.md" % (KNOWLEDGE_EXPERIMENTS_DIR, issue_number, safe)
+
+def knowledge_handoff_instructions(issue_number: int, run_id: object = "") -> str:
+    """Build mandatory repository-memory handoff instructions for an agent."""
+    record = experiment_record_path(issue_number, run_id)
+    return (
+        "Repository knowledge handoff (mandatory):\n"
+        "1. Read %s before changing code.\n"
+        "2. Read relevant topic notes under %s and prior records under %s for this issue/topic.\n"
+        "3. Do not repeat a known failed experiment unless a material premise changed; state that changed premise.\n"
+        "4. Before finishing, write exactly one run record at %s. Separate observations, interpretation, and decisions; include evidence/tests and unresolved questions; never include secrets.\n"
+        "5. Promote only validated reusable facts into the relevant topic note; preserve superseded history."
+        % (KNOWLEDGE_PROTOCOL_PATH, KNOWLEDGE_TOPICS_DIR, KNOWLEDGE_EXPERIMENTS_DIR, record)
+    )
+
 # ---------------------------------------------------------------------------
 # Official Render API references (exact documentation used).
 # ---------------------------------------------------------------------------
@@ -343,30 +369,25 @@ def validate_model_name(model: str) -> str:
 
 
 def resolve_task_text(issue_number: int, execution_mode: str,
-                      title: str = "", body: str = "") -> str:
-    """Build the runner task text for an issue execution.
-
-    Uses the real issue title/body when provided (read-only resolution on
-    the Actions side), otherwise falls back to a deterministic placeholder
-    so offline tests and local runs still produce a valid job payload.
-    Pure helper: no network access, reusable by the future controller.
-    """
+                      title: str = "", body: str = "",
+                      run_id: object = "") -> str:
+    """Build runner task text plus mandatory repository-memory handoff."""
     if not isinstance(issue_number, int) or issue_number <= 0:
         raise ValueError("issue_number must be a positive integer")
     validate_execution_mode(execution_mode)
     title = (title or "").strip()
     body_text = (body or "").strip()
-    if not title and not body_text:
-        return "Execute issue #%d in %s mode." % (issue_number, execution_mode)
     if len(body_text) > MAX_TASK_BODY_CHARS:
         body_text = body_text[:MAX_TASK_BODY_CHARS] + "...[truncated]"
     if title and body_text:
-        return ("Issue #%d [%s]: %s\n\n%s"
-                % (issue_number, execution_mode, title, body_text))
-    if title:
-        return "Issue #%d [%s]: %s" % (issue_number, execution_mode, title)
-    return "Issue #%d [%s]:\n\n%s" % (issue_number, execution_mode, body_text)
-
+        task = ("Issue #%d [%s]: %s\n\n%s" % (issue_number, execution_mode, title, body_text))
+    elif title:
+        task = "Issue #%d [%s]: %s" % (issue_number, execution_mode, title)
+    elif body_text:
+        task = "Issue #%d [%s]:\n\n%s" % (issue_number, execution_mode, body_text)
+    else:
+        task = "Execute issue #%d in %s mode." % (issue_number, execution_mode)
+    return task + "\n\n" + knowledge_handoff_instructions(issue_number, run_id)
 
 def select_base_sha(*candidates: object) -> str:
     """Return the first non-empty candidate SHA (exact base revision).

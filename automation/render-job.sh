@@ -177,13 +177,14 @@ from render_lifecycle import select_base_sha
 print(select_base_sha(sys.argv[1], sys.argv[2]))
 PY
 )"
-TASK_TEXT="$(ISSUE_TITLE="$ISSUE_TITLE" ISSUE_BODY_TEXT="$ISSUE_BODY_TEXT" python3 - "$ISSUE_NUMBER" "$EXECUTION_MODE" <<'PY'
+TASK_TEXT="$(ISSUE_TITLE="$ISSUE_TITLE" ISSUE_BODY_TEXT="$ISSUE_BODY_TEXT" python3 - "$ISSUE_NUMBER" "$EXECUTION_MODE" "${GITHUB_RUN_ID:-}" <<'PY'
 import os, sys
 sys.path.insert(0, "automation")
 from render_lifecycle import resolve_task_text
 print(resolve_task_text(int(sys.argv[1]), sys.argv[2],
       title=os.environ.get("ISSUE_TITLE", ""),
-      body=os.environ.get("ISSUE_BODY_TEXT", "")))
+      body=os.environ.get("ISSUE_BODY_TEXT", ""),
+      run_id=sys.argv[3]))
 PY
 )"
 

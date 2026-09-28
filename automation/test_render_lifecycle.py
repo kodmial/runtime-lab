@@ -61,6 +61,9 @@ from render_lifecycle import (  # noqa: E402
     healthy_service_response,
     is_deletion_verified,
     is_terminal_job_status,
+    experiment_record_path,
+    knowledge_handoff_instructions,
+    resolve_task_text,
     parse_job_result,
     render_path,
     render_url,
@@ -90,6 +93,17 @@ def test_render_workspace_owner_response_shape():
         extract_owner_id([])
     with pytest.raises(ValueError):
         extract_owner_id([{"owner": {}}])
+
+
+def test_agent_knowledge_handoff_is_stable_and_unique_per_run():
+    assert experiment_record_path(9, "36402447309") == "automation/knowledge/experiments/issue-9-run-36402447309.md"
+    instructions = knowledge_handoff_instructions(9, "run/with spaces")
+    assert "automation/knowledge/PROTOCOL.md" in instructions
+    assert "issue-9-run-run-with-spaces.md" in instructions
+    assert "Do not repeat a known failed experiment" in instructions
+    task = resolve_task_text(9, "smoke", title="Render smoke", body="Prove cleanup", run_id="abc-123")
+    assert "Repository knowledge handoff (mandatory)" in task
+    assert "issue-9-run-abc-123.md" in task
 
 def test_render_operations_represented():
     assert RENDER_API_BASE == "https://api.render.com/v1"
