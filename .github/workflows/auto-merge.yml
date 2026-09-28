@@ -133,11 +133,28 @@ jobs:
                   expected_head_sha: oldHead,
                 });
               } catch (err) {
-                if (err.status === 422 || err.status === 409) {
-                  await dispatchConflictRepair(pr);
-                  return {updated: false, conflict: true};
+                if (err.status !== 422 && err.status !== 409) throw err;
+
+                core.info(
+                  `PR #${pr.number}: updateBranch unavailable/refused; ` +
+                  'falling back to merging current main into the PR branch.'
+                );
+
+                try {
+                  await github.rest.repos.merge({
+                    owner,
+                    repo,
+                    base: pr.head.ref,
+                    head: 'main',
+                    commit_message: `chore: sync main into PR #${pr.number}`,
+                  });
+                } catch (mergeErr) {
+                  if (mergeErr.status === 409 || mergeErr.status === 422) {
+                    await dispatchConflictRepair(pr);
+                    return {updated: false, conflict: true};
+                  }
+                  throw mergeErr;
                 }
-                throw err;
               }
 
               let fresh = pr;
