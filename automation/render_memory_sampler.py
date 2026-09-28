@@ -419,8 +419,11 @@ def memory_pressure_evidence(
     limit (>= ``usage_ratio``), how many instance replacements were
     observed, and the largest same-instance memory.events max-counter
     surge. Gaps (ok=false), event markers, and samples without numeric
-    cgroup fields are ignored. Per-instance grouping matters because
-    per-container event counters reset on every replacement.
+    cgroup fields are ignored without breaking continuity: transition
+    and surge groups survive restart down-windows, matching
+    summarize_samples (which preserves the previous instance across
+    gaps). Per-instance grouping matters because per-container event
+    counters reset on every replacement.
     """
     evidence: dict[str, Any] = {
         "samples_considered": 0,
@@ -439,35 +442,26 @@ def memory_pressure_evidence(
         transitions = 0
         previous: Optional[str] = None
         # Same-instance max-counter tracking for the stall surge: reset
-        # whenever the instance id changes or a gap breaks the sequence.
+        # only when the instance id changes. Gaps (ok=false), event
+        # markers, and samples without numeric cgroup fields preserve
+        # the open group so a restart down-window never splits a surge
+        # or hides a replacement (run 36442675039: every live restart
+        # is separated by gap samples plus a job_resubmitted event
+        # marker, so resetting on gaps reported zero transitions live
+        # while the end-of-run summary counted ten).
         group_first: Optional[int] = None
         group_last: Optional[int] = None
         max_surge = 0
         for sample in samples:
             if not isinstance(sample, Mapping):
                 continue
-            if sample.get("type", "sample") != "sample" or not sample.get("ok"):
-                group_first = None
-                group_last = None
-                previous = None
+            if sample.get("type", "sample") != "sample":
                 continue
-            current = sample.get("memory_current_bytes")
-            if isinstance(current, bool):
-                current = None
-            sample_limit = sample.get("memory_limit_bytes")
-            if isinstance(sample_limit, bool):
-                sample_limit = None
-            if not isinstance(sample_limit, int) or not isinstance(current, int):
-                group_first = None
-                group_last = None
+            if not sample.get("ok"):
                 continue
-            if limit is None:
-                limit = sample_limit
-            considered += 1
-            if current > peak:
-                peak = current
-            instance = sample.get("instance_id")
-            if isinstance(instance, str) and instance:
+            raw_instance = sample.get("instance_id")
+            instance = raw_instance if isinstance(raw_instance, str) and raw_instance else ""
+            if instance:
                 if instance not in instances:
                     instances.append(instance)
                 if previous is not None and instance != previous:
@@ -479,6 +473,19 @@ def memory_pressure_evidence(
                     group_first = None
                     group_last = None
                 previous = instance
+            current = sample.get("memory_current_bytes")
+            if isinstance(current, bool):
+                current = None
+            sample_limit = sample.get("memory_limit_bytes")
+            if isinstance(sample_limit, bool):
+                sample_limit = None
+            if not isinstance(sample_limit, int) or not isinstance(current, int):
+                continue
+            if limit is None:
+                limit = sample_limit
+            considered += 1
+            if current > peak:
+                peak = current
             events = sample.get("memory_events")
             stalls = events.get("max") if isinstance(events, Mapping) else None
             if isinstance(stalls, bool):
