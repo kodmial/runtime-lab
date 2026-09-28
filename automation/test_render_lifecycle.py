@@ -53,6 +53,7 @@ from render_lifecycle import (  # noqa: E402
     build_create_service_payload,
     classify_deploy_status,
     deletion_succeeded,
+    extract_owner_id,
     get_service_url,
     healthy_service_response,
     is_deletion_verified,
@@ -75,7 +76,17 @@ def test_exact_render_docs_referenced():
     assert "https://api-docs.render.com/reference/rate-limiting" in RENDER_DOC_URLS
     assert "https://api-docs.render.com/reference/retrieve-service" in RENDER_DOC_URLS
     assert "https://api-docs.render.com/reference/retrieve-deploy" in RENDER_DOC_URLS
+    assert "https://api-docs.render.com/reference/list-owners" in RENDER_DOC_URLS
 
+
+def test_render_workspace_owner_response_shape():
+    documented = [{"owner": {"id": "tea-123", "name": "workspace"}, "cursor": "next"}]
+    assert extract_owner_id(documented) == "tea-123"
+    assert extract_owner_id([{"id": "legacy-owner"}]) == "legacy-owner"
+    with pytest.raises(ValueError):
+        extract_owner_id([])
+    with pytest.raises(ValueError):
+        extract_owner_id([{"owner": {}}])
 
 def test_render_operations_represented():
     assert RENDER_API_BASE == "https://api.render.com/v1"
