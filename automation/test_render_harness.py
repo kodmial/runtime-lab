@@ -1906,3 +1906,84 @@ def test_cleanup_deletes_and_verifies_with_mock(tmp_path):
     assert "DELETE https://api.render.com/v1/services/srv-del" in calls
     # Suspension is only a fallback: a clean delete+verify never suspends.
     assert "suspend" not in calls
+
+
+def _write_exact_artifact_bin(directory, curl_log):
+    """Fake bin whose issue declares an exact workflow-artifact contract.
+
+    Reproduces the issue #106 shape behind run 36495681860 (issue
+    #115): the body pins one numeric Actions artifact id, its source
+    # workflow run, and a sha256 archive digest with a no-substitution
+    # rule. The Render path cannot deliver workflow artifacts, so the
+    # pre-creation gate must refuse the attempt.
+    """
+    bin_dir = Path(directory) / "bin-artifact"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'LOG="%s"\n' % curl_log +
+        'echo "GET $*" >> "$LOG"\n'
+        'printf "%s" "{}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    sleep = bin_dir / "sleep"
+    sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    sleep.chmod(0o755)
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "issue" && "$2" == "view" ]]; then\n'
+        "  printf '%s' "
+        "'{\"title\":\"Qualify the same OpenCode PR artifact on Render\","
+        "\"body\":\"Exact artifact under test. Do not rebuild OpenCode. "
+        "Workflow run: 36492639568. "
+        "Artifact name: opencode-coding-linux-x64. "
+        "Artifact ID: 11001896223. "
+        "Artifact archive digest: "
+        "sha256:8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df. "
+        "Download artifact ID 11001896223 from source workflow run 36492639568. "
+        "Verify before launch. "
+        "Never silently fall back to another OpenCode binary.\"}'\n"
+        "  exit 0\n"
+        "fi\n"
+        'echo "unexpected gh call: $*" >&2\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    return str(bin_dir)
+
+
+def test_job_gate_references_exact_artifact_helpers_before_creation():
+    # Static placement: the exact-artifact gate must decide before any
+    # Render service can be created, so a blocked attempt costs nothing.
+    job = _read("render-job.sh")
+    assert "parse_exact_workflow_artifact_requirement" in job
+    assert "exact_workflow_artifact_blocker" in job
+    assert "EXACT_ARTIFACT_BLOCKER" in job
+    assert job.index("EXACT_ARTIFACT_BLOCKER") < job.index(
+        "One service creation per attempt")
+
+
+def test_job_refuses_exact_workflow_artifact_before_creation(tmp_path):
+    # Regression for run 36495681860 (issue #115): without the gate the
+    # worker silently substituted the baseline binary, whose ~600 MB
+    # agent OOM-restarted four times and storm-aborted after ~13
+    # minutes on a run that never tested the required artifact. With
+    # the gate the attempt fails closed before any Render call.
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-artifact.log"
+    env["PATH"] = _write_exact_artifact_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, combined
+    assert "infrastructure-blocked" in combined
+    assert "11001896223" in combined
+    assert "baseline binary" in combined
+    # No Render service was created and no state was recorded.
+    assert not log.exists() or "api.render.com/v1/services" not in log.read_text()
+    assert not state.exists() or "srv-" not in state.read_text()
+    assert not result.exists() or result.read_text().strip() == ""

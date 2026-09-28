@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
+import re
 
 KNOWLEDGE_PROTOCOL_PATH = "automation/knowledge/PROTOCOL.md"
 KNOWLEDGE_TOPICS_DIR = "automation/knowledge/topics"
@@ -467,6 +468,119 @@ def select_base_sha(*candidates: object) -> str:
         if isinstance(candidate, str) and candidate.strip():
             return candidate.strip()
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Exact GitHub Actions workflow-artifact requirements (issue #115).
+# ---------------------------------------------------------------------------
+
+# GitHub's artifact download endpoint requires an OAuth/PAT credential
+# (current contract https://docs.github.com/en/rest/actions/artifacts,
+# re-verified 2026-09-28: "Download an artifact" needs an OAuth or
+# personal access token). The ephemeral Render worker carries no GitHub
+# credential: the start command provisions no token, and the OpenCode
+# child environment is credential-scrubbed (issue #39), so neither the
+# runner nor the agent can fetch a workflow artifact at runtime.
+GITHUB_ARTIFACT_DOWNLOAD_DOC = (
+    "https://docs.github.com/en/rest/actions/artifacts"
+)
+
+# An exact workflow-artifact contract is the conjunction of a numeric
+# Actions artifact id, the numeric source workflow run that produced it,
+# and a sha256 archive/checksum identity. All three must be present:
+# bodies that merely mention "artifact" in passing (design notes, the
+# issue #86 release-fingerprint vocabulary with opencode-<track>-<sha12>
+# ids and github-release: refs) must never trip this gate.
+EXACT_WORKFLOW_ARTIFACT_ID_RE = re.compile(
+    r"artifact\s+id\s*[:=]?\s*`?(\d{5,})`?", re.IGNORECASE
+)
+EXACT_WORKFLOW_ARTIFACT_RUN_RE = re.compile(
+    r"(?:source\s+)?workflow\s+run\s*[:=]?\s*`?(\d{5,})`?",
+    re.IGNORECASE,
+)
+EXACT_WORKFLOW_ARTIFACT_DIGEST_RE = re.compile(
+    r"sha256:([0-9a-fA-F]{64})"
+)
+EXACT_WORKFLOW_ARTIFACT_NAME_RE = re.compile(
+    r"artifact\s+name\s*:\s*`?([A-Za-z0-9_.\-]+)`?", re.IGNORECASE
+)
+EXACT_WORKFLOW_ARTIFACT_SOURCE_SHA_RE = re.compile(
+    r"source\s+sha\s*:\s*`?([0-9a-fA-F]{40})`?", re.IGNORECASE
+)
+
+
+def parse_exact_workflow_artifact_requirement(
+    title: object = "", body: object = ""
+) -> dict[str, Any] | None:
+    """Return the exact workflow-artifact contract in an issue, if any.
+
+    Matches only the strong conjunction used by artifact-qualification
+    issues (e.g. issue #106): a numeric Actions artifact id plus the
+    numeric source workflow run plus a sha256 archive/checksum digest.
+    Returns a small evidence dict (artifact_id, artifact_name or "",
+    source_run_id, archive_sha256, source_sha or "") or None when the
+    issue carries no such contract. Never raises: unparsable input
+    means "no contract", never a gate trip.
+    """
+    try:
+        text = "%s\n%s" % (title or "", body or "")
+        id_match = EXACT_WORKFLOW_ARTIFACT_ID_RE.search(text)
+        run_match = EXACT_WORKFLOW_ARTIFACT_RUN_RE.search(text)
+        digest_match = EXACT_WORKFLOW_ARTIFACT_DIGEST_RE.search(text)
+        if id_match is None or run_match is None or digest_match is None:
+            return None
+        name_match = EXACT_WORKFLOW_ARTIFACT_NAME_RE.search(text)
+        sha_match = EXACT_WORKFLOW_ARTIFACT_SOURCE_SHA_RE.search(text)
+        return {
+            "artifact_id": id_match.group(1),
+            "artifact_name": name_match.group(1) if name_match else "",
+            "source_run_id": run_match.group(1),
+            "archive_sha256": digest_match.group(1).lower(),
+            "source_sha": sha_match.group(1).lower() if sha_match else "",
+        }
+    except Exception:
+        return None
+
+
+def exact_workflow_artifact_blocker(requirement: Mapping[str, Any]) -> str:
+    """Explain why an exact workflow artifact cannot run on Render (issue #115).
+
+    Single choke point for the capability gap: the Render execution
+    path has no delivery mechanism for GitHub Actions workflow
+    artifacts (the submit-job payload carries no artifact selection,
+    the worker boots with no OPENCODE_ARTIFACT_ID/SHA256 for workflow
+    artifacts, and the worker holds no GitHub credential to download
+    one). Substituting the baseline binary would violate the
+    contract's own no-rebuild/no-substitution rule, so the only honest
+    behavior is to refuse the attempt before any worker exists. When a
+    delivery mechanism lands, update this function (and only this
+    function) to recognize the new capability.
+    """
+    try:
+        artifact = str(requirement.get("artifact_id", "") or "").strip() or "unknown"
+        run = str(requirement.get("source_run_id", "") or "").strip() or "unknown"
+        name = str(requirement.get("artifact_name", "") or "").strip()
+        digest = str(requirement.get("archive_sha256", "") or "").strip()
+    except Exception:
+        artifact, run, name, digest = "unknown", "unknown", "", ""
+    label = "artifact %s (workflow run %s)" % (artifact, run)
+    if name:
+        label = "%s %s (workflow run %s)" % (name, artifact, run)
+    reason = (
+        "infrastructure-blocked: this issue requires the exact GitHub "
+        "Actions %s checksum-verified before execution with no rebuild "
+        "and no binary substitution, but the Render execution path "
+        "cannot deliver workflow artifacts to the ephemeral worker "
+        "(no credentialed artifact fetch on the worker, no artifact "
+        "selection in the submit-job payload, OpenCode child env is "
+        "credential-scrubbed; see %s). Refusing to substitute the "
+        "baseline binary and refusing to burn a worker on a run that "
+        "cannot test what the issue asks."
+        % (label, GITHUB_ARTIFACT_DOWNLOAD_DOC)
+    )
+    if digest:
+        reason += " Expected archive digest sha256:%s." % digest
+    return reason
 
 
 # ---------------------------------------------------------------------------
