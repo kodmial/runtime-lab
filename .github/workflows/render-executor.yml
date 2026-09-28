@@ -30,8 +30,8 @@ jobs:
     env:
       ISSUE_NUMBER: ${{ inputs.issue_number }}
       EXECUTION_MODE: ${{ inputs.mode }}
-      RENDER_STATE_FILE: ${{ runner.temp }}/runtime-lab-render-state.json
-      RENDER_RESULT_FILE: ${{ runner.temp }}/runtime-lab-render-result.json
+      RENDER_STATE_FILE: /tmp/runtime-lab-render-state.json
+      RENDER_RESULT_FILE: /tmp/runtime-lab-render-result.json
 
     steps:
       - name: Checkout trusted controller
