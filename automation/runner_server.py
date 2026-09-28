@@ -180,6 +180,44 @@ except ImportError:  # pytest inserts automation/ on sys.path
     )
 
 try:  # pragma: no cover - import path depends on entrypoint
+    from automation.opencode_artifacts import (
+        ENV_ARTIFACT_ID,
+        ENV_ARTIFACT_REF,
+        ENV_ARTIFACT_SHA256,
+        artifact_binary_candidates,
+        check_artifact_readiness,
+        resolve_requested_artifact,
+        verify_binary_checksum,
+    )
+except ImportError:  # pytest inserts automation/ on sys.path
+    try:
+        from opencode_artifacts import (  # type: ignore[no-redef]
+            ENV_ARTIFACT_ID,
+            ENV_ARTIFACT_REF,
+            ENV_ARTIFACT_SHA256,
+            artifact_binary_candidates,
+            check_artifact_readiness,
+            resolve_requested_artifact,
+            verify_binary_checksum,
+        )
+    except ImportError:  # last resort: baseline-only mode, no artifacts
+        ENV_ARTIFACT_ID = "OPENCODE_ARTIFACT_ID"
+        ENV_ARTIFACT_REF = "OPENCODE_ARTIFACT_REF"
+        ENV_ARTIFACT_SHA256 = "OPENCODE_ARTIFACT_SHA256"
+
+        def artifact_binary_candidates(repo_root, artifact_id):  # type: ignore[misc]
+            return []
+
+        def check_artifact_readiness(binary_path, expected_sha256):  # type: ignore[misc]
+            return False, binary_path or "", "artifact support unavailable"
+
+        def resolve_requested_artifact(env=None):  # type: ignore[misc]
+            return None
+
+        def verify_binary_checksum(path, expected_sha256):  # type: ignore[misc]
+            raise ValueError("artifact support unavailable")
+
+try:  # pragma: no cover - import path depends on entrypoint
     from automation.bounded_output import (
         resolve_max_retained_jobs,
         resolve_output_max_chars,
@@ -225,6 +263,10 @@ ENV_REGION_ALT = "WORKER_REGION"
 ENV_DEFAULT_MODEL = "RUNNER_DEFAULT_MODEL"
 ENV_OPENCODE_BIN = "RUNNER_OPENCODE_BIN"
 ENV_ALLOW_RUNTIME_INSTALL = "RUNNER_ALLOW_RUNTIME_INSTALL"
+# Optional exact-version pin for a requested experiment artifact (issue #86):
+# when set alongside OPENCODE_ARTIFACT_ID/SHA256, readiness additionally
+# requires the running artifact binary to report this version string.
+ENV_EXPECTED_ARTIFACT_VERSION = "OPENCODE_ARTIFACT_VERSION"
 
 ALLOWED_MODELS = frozenset({PREFERRED_MODEL, FALLBACK_MODEL})
 
@@ -619,6 +661,8 @@ class JobManager:
         pid: Optional[int] = None,
         allow_runtime_install: Optional[bool] = None,
         max_retained_jobs: Optional[int] = None,
+        requested_artifact: Optional[Mapping[str, str]] = None,
+        requested_artifact_version: Optional[str] = None,
     ) -> None:
         if job_timeout_seconds <= 0:
             raise ValueError("job_timeout_seconds must be positive")
@@ -652,6 +696,34 @@ class JobManager:
             )
         else:
             self.allow_runtime_install = bool(allow_runtime_install)
+        # Explicit experiment-artifact selection (issue #86): an artifact
+        # id plus SHA-256 selects that exact binary. ``None`` (no env
+        # selection either) keeps the upstream-baseline mode unchanged.
+        # Partial configuration fails closed here, never as a silent
+        # baseline at job time.
+        if requested_artifact is not None:
+            if not isinstance(requested_artifact, Mapping):
+                raise ValueError("requested_artifact must be a mapping")
+            selection = {
+                "artifact_id": str(requested_artifact.get("artifact_id", "") or "").strip(),
+                "artifact_sha256": str(
+                    requested_artifact.get("artifact_sha256", "") or ""
+                ).strip().lower(),
+                "artifact_ref": str(requested_artifact.get("artifact_ref", "") or "").strip(),
+            }
+            if not selection["artifact_id"] or not selection["artifact_sha256"]:
+                raise ValueError(
+                    "requested_artifact must carry artifact_id and artifact_sha256"
+                )
+            self.requested_artifact: Optional[dict[str, str]] = selection
+        else:
+            self.requested_artifact = resolve_requested_artifact()
+        if requested_artifact_version is not None:
+            self.requested_artifact_version = str(requested_artifact_version).strip()
+        else:
+            self.requested_artifact_version = str(
+                os.environ.get(ENV_EXPECTED_ARTIFACT_VERSION, "") or ""
+            ).strip()
         self.start_time = start_time if start_time is not None else time.time()
         # Unique process/manager identity (issue #41): a fresh uuid per
         # manager startup proves a restart/replacement directly, even when
@@ -667,26 +739,37 @@ class JobManager:
         # checks fail fast instead of accepting jobs that can only fail.
         # The resolved path/version are logged by main() and exposed in
         # /health; no secrets are ever included.
-        explicit_override = resolve_opencode_bin_override()
-        probe_target = (
-            self.opencode_bin
-            if self.opencode_bin and self.opencode_bin != "opencode"
-            else (explicit_override or find_opencode_binary() or None)
-        )
-        ready, resolved_path, version_detail = probe_opencode_readiness(
-            probe_target if (probe_target and os.path.isabs(probe_target)) else None
-        )
-        self.opencode_resolved_bin = resolved_path
-        self.opencode_version = version_detail if ready else ""
-        self.opencode_ready_detail = (
-            version_detail if ready else ("not ready: %s" % version_detail)
-        )
-        if self.allow_runtime_install:
-            self.ready = True
+        #
+        # Experiment-artifact mode (issue #86) is stricter still: a
+        # requested artifact must be present with a matching SHA-256 (and,
+        # when pinned, the requested version) or the worker is not ready.
+        # There is no fallback to the upstream baseline and no network
+        # installer inside this path.
+        if self.requested_artifact is not None:
+            self._init_artifact_readiness()
         else:
-            self.ready = bool(ready)
-            if not ready:
-                self.opencode_bin = resolved_path or self.opencode_bin
+            explicit_override = resolve_opencode_bin_override()
+            probe_target = (
+                self.opencode_bin
+                if self.opencode_bin and self.opencode_bin != "opencode"
+                else (explicit_override or find_opencode_binary() or None)
+            )
+            ready, resolved_path, version_detail = probe_opencode_readiness(
+                probe_target if (probe_target and os.path.isabs(probe_target)) else None
+            )
+            self.opencode_resolved_bin = resolved_path
+            self.opencode_version = version_detail if ready else ""
+            self.opencode_ready_detail = (
+                version_detail if ready else ("not ready: %s" % version_detail)
+            )
+            self.artifact_ready = False
+            self.artifact_detail = "baseline mode: no experiment artifact requested"
+            if self.allow_runtime_install:
+                self.ready = True
+            else:
+                self.ready = bool(ready)
+                if not ready:
+                    self.opencode_bin = resolved_path or self.opencode_bin
         self._lock = threading.Lock()
         # Serializes OpenCode CLI provisioning (curl|bash installer) so
         # concurrent jobs never run concurrent heavyweight installers on
@@ -701,6 +784,93 @@ class JobManager:
         # concurrent jobs never race on global state.
         os.environ.setdefault("OPENCODE_CONFIG_CONTENT", OPENCODE_CONFIG_CONTENT)
         os.environ.setdefault("GIT_TERMINAL_PROMPT", "0")
+
+    # -- experiment artifacts (issue #86) -----------------------------------
+
+    def _resolve_artifact_binary(self) -> Optional[str]:
+        """Return the per-artifact binary path, or None when absent."""
+        selection = self.requested_artifact or {}
+        artifact_id = str(selection.get("artifact_id", "") or "").strip()
+        if not artifact_id:
+            return None
+        try:
+            candidates = artifact_binary_candidates(None, artifact_id)
+        except ValueError:
+            return None
+        for candidate in candidates:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return None
+
+    def _init_artifact_readiness(self) -> None:
+        """Strict readiness for one explicitly requested artifact.
+
+        Ready only when the exact per-artifact binary is present,
+        executable, checksum-identical to the requested fingerprint and
+        (when ``OPENCODE_ARTIFACT_VERSION`` pins one) version-identical to
+        the running binary. Never falls back to the upstream baseline and
+        never probes the network.
+        """
+        selection = self.requested_artifact or {}
+        expected_sha = str(selection.get("artifact_sha256", "") or "").strip().lower()
+        binary = self._resolve_artifact_binary()
+        ready, resolved, detail = check_artifact_readiness(binary or "", expected_sha)
+        version = ""
+        if ready:
+            probe_ok, _, probe_version = probe_opencode_readiness(resolved)
+            if not probe_ok:
+                ready = False
+                detail = "experiment artifact --version probe failed: %s" % probe_version
+            else:
+                version = probe_version
+                if self.requested_artifact_version and version != self.requested_artifact_version:
+                    ready = False
+                    detail = (
+                        "experiment artifact version mismatch: requested %r, running %r"
+                        % (self.requested_artifact_version, version)
+                    )
+        self.opencode_resolved_bin = resolved
+        self.opencode_version = version if ready else ""
+        if ready:
+            self.opencode_ready_detail = "artifact %s ready (%s)" % (
+                selection.get("artifact_id", ""),
+                version or detail,
+            )
+        else:
+            self.opencode_ready_detail = "artifact not ready: %s" % detail
+        self.opencode_bin = resolved or self.opencode_bin
+        self.artifact_ready = bool(ready)
+        self.artifact_detail = detail
+        self.ready = bool(ready)
+
+    def _ensure_artifact_binary(self) -> str:
+        """Resolve the requested artifact binary for a job (no fallback).
+
+        Raises ``FileNotFoundError`` when the artifact binary is absent and
+        ``ValueError`` on checksum mismatch. The network installer is never
+        consulted here: experiment artifacts come only from the immutable
+        per-artifact deploy path.
+        """
+        selection = self.requested_artifact or {}
+        artifact_id = str(selection.get("artifact_id", "") or "").strip()
+        expected_sha = str(selection.get("artifact_sha256", "") or "").strip().lower()
+        binary = self._resolve_artifact_binary()
+        if binary is None:
+            raise FileNotFoundError(
+                "experiment artifact %r not found under %s; experiment artifacts "
+                "are provisioned only via automation/build-opencode-artifact.sh "
+                "and never via the runtime network installer"
+                % (artifact_id, ".opencode-artifacts/<artifact-id>/opencode")
+            )
+        verify_binary_checksum(binary, expected_sha)
+        if self.requested_artifact_version:
+            probe_ok, _, probe_version = probe_opencode_readiness(binary)
+            if not probe_ok or probe_version != self.requested_artifact_version:
+                raise ValueError(
+                    "experiment artifact version mismatch: requested %r, running %r"
+                    % (self.requested_artifact_version, probe_version)
+                )
+        return binary
 
     # -- introspection ----------------------------------------------------
 
@@ -730,6 +900,20 @@ class JobManager:
             "opencode_version": getattr(self, "opencode_version", ""),
             "opencode_ready": bool(getattr(self, "opencode_version", "")),
             "opencode_detail": getattr(self, "opencode_ready_detail", ""),
+            "opencode_artifact_id": str(
+                (getattr(self, "requested_artifact", None) or {}).get("artifact_id", "")
+            ),
+            "opencode_artifact_sha256": str(
+                (getattr(self, "requested_artifact", None) or {}).get("artifact_sha256", "")
+            ),
+            "opencode_artifact_ref": str(
+                (getattr(self, "requested_artifact", None) or {}).get("artifact_ref", "")
+            ),
+            "opencode_expected_version": str(
+                getattr(self, "requested_artifact_version", "") or ""
+            ),
+            "opencode_artifact_ready": bool(getattr(self, "artifact_ready", False)),
+            "opencode_artifact_detail": str(getattr(self, "artifact_detail", "")),
             "allow_runtime_install": bool(
                 getattr(self, "allow_runtime_install", True)
             ),
@@ -1122,7 +1306,13 @@ class JobManager:
         (``.opencode-bin/opencode`` copied at build time by
         automation/install-opencode.sh) so build-time $HOME never needs
         to equal runtime $HOME.
+
+        Issue #86 experiment mode: when an explicit artifact was requested,
+        only that exact per-artifact binary is used (checksum-verified);
+        the baseline and the network installer are never consulted.
         """
+        if getattr(self, "requested_artifact", None) is not None:
+            return self._ensure_artifact_binary()
         override = (self.opencode_bin or "").strip()
         if override and override != "opencode":
             return override
@@ -1806,6 +1996,19 @@ def main() -> None:
         ),
         flush=True,
     )
+    if getattr(manager, "requested_artifact", None) is not None:
+        print(
+            "opencode artifact: id=%s sha256=%s ref=%s expected_version=%s ready=%s detail=%s"
+            % (
+                (manager.requested_artifact or {}).get("artifact_id", ""),
+                (manager.requested_artifact or {}).get("artifact_sha256", ""),
+                (manager.requested_artifact or {}).get("artifact_ref", ""),
+                getattr(manager, "requested_artifact_version", "") or "-",
+                getattr(manager, "artifact_ready", False),
+                getattr(manager, "artifact_detail", ""),
+            ),
+            flush=True,
+        )
     if not manager.ready and not getattr(manager, "allow_runtime_install", True):
         print(
             "WARNING: opencode binary is absent or non-executable and "

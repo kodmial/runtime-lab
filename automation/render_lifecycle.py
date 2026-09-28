@@ -627,6 +627,9 @@ def build_create_service_payload(
     build_command: str = "pip install -r requirements.txt && bash automation/install-opencode.sh",
     start_command: str = "RUNNER_ALLOW_RUNTIME_INSTALL=0 python -m automation.runner_server",
     health_check_path: str = "/health",
+    opencode_artifact_id: str | None = None,
+    opencode_artifact_sha256: str | None = None,
+    opencode_artifact_ref: str | None = None,
 ) -> dict[str, Any]:
     """Build the POST /v1/services body for an ephemeral free-tier worker.
 
@@ -643,6 +646,15 @@ def build_create_service_payload(
     (``RUNNER_ALLOW_RUNTIME_INSTALL=0``): a worker whose deploy artifact
     lacks an executable OpenCode binary fails readiness (/health 503)
     instead of running curl|bash inside the job (issue #52).
+
+    Experiment artifacts (issue #86): pass ``opencode_artifact_id`` plus
+    ``opencode_artifact_sha256`` (and optionally ``opencode_artifact_ref``)
+    to select one exact prebuilt fork artifact. The ids are exported on the
+    start command so the runner resolves only
+    ``.opencode-artifacts/<artifact-id>/opencode`` with a matching SHA-256
+    and fails readiness otherwise -- never the upstream baseline and never
+    a network installer. Omitting all three keeps the pinned-baseline
+    payload unchanged.
     """
     if not name:
         raise ValueError("service name must not be empty")
@@ -654,6 +666,12 @@ def build_create_service_payload(
             "development phase must deploy from %r, got %r"
             % (PUBLIC_REPO_URL, repo)
         )
+    start = _start_command_with_artifact(
+        start_command,
+        artifact_id=opencode_artifact_id,
+        artifact_sha256=opencode_artifact_sha256,
+        artifact_ref=opencode_artifact_ref,
+    )
     return {
         "type": REQUIRED_SERVICE_TYPE,
         "name": name,
@@ -669,10 +687,51 @@ def build_create_service_payload(
             "healthCheckPath": health_check_path,
             "envSpecificDetails": {
                 "buildCommand": build_command,
-                "startCommand": start_command,
+                "startCommand": start,
             },
         },
     }
+
+
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
+
+def _start_command_with_artifact(
+    start_command: str,
+    *,
+    artifact_id: str | None,
+    artifact_sha256: str | None,
+    artifact_ref: str | None,
+) -> str:
+    """Prefix a start command with explicit artifact selection (issue #86).
+
+    Returns ``start_command`` unchanged when no artifact field is set
+    (upstream-baseline mode). Fails closed on partial selection: an
+    artifact id without its SHA-256 (or vice versa) is a configuration
+    error, never a silent baseline.
+    """
+    raw_id = (artifact_id or "").strip()
+    raw_sha = (artifact_sha256 or "").strip().lower()
+    raw_ref = (artifact_ref or "").strip()
+    if not raw_id and not raw_sha and not raw_ref:
+        return start_command
+    if not raw_id or not raw_sha:
+        raise ValueError(
+            "partial artifact selection (id=%r sha=%r): an experiment worker "
+            "must set both OPENCODE_ARTIFACT_ID and OPENCODE_ARTIFACT_SHA256" % (raw_id, raw_sha)
+        )
+    if not raw_id.startswith("opencode-") or "/" in raw_id:
+        raise ValueError("invalid OPENCODE_ARTIFACT_ID: %r" % raw_id)
+    if len(raw_sha) != 64 or any(char not in _HEX_DIGITS for char in raw_sha):
+        raise ValueError("invalid OPENCODE_ARTIFACT_SHA256: must be 64 lowercase hex chars")
+    if raw_ref and "latest" in raw_ref.lower():
+        raise ValueError("artifact ref must never use 'latest'")
+    if not isinstance(start_command, str) or not start_command.strip():
+        raise ValueError("start_command must be a non-empty string")
+    prefix = "OPENCODE_ARTIFACT_ID=%s OPENCODE_ARTIFACT_SHA256=%s" % (raw_id, raw_sha)
+    if raw_ref:
+        prefix += " OPENCODE_ARTIFACT_REF=%s" % raw_ref
+    return "%s %s" % (prefix, start_command.strip())
 
 
 # ---------------------------------------------------------------------------

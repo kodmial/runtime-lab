@@ -55,6 +55,12 @@
 ## Open
 - Hard process termination can bypass in-process cleanup; stale-worker reconciliation is being developed separately.
 
+## Experiment artifacts (issue #86)
+
+- Parallel artifact pipeline: `automation/opencode_artifacts.py` (stdlib-only) is the shared contract that turns any explicit `kodmial/opencode` fork ref into an immutable runnable Linux artifact over the upstream-supported Bun compile path (`bun install --frozen-lockfile` + `bun run <build script>`, default `packages/opencode/script/build.ts`; additive `build-lite/coding/direct.ts` variants allow-listed). Builder: `automation/build-opencode-artifact.sh` (`build|verify|fingerprint`); spec: `automation/opencode-artifacts.spec.json`; tests: `automation/test_opencode_artifacts.py`; hermetic 3-track evidence: `automation/benchmark-results/opencode-artifacts-issue-86-run-36457063725.json`. Evidence: `../experiments/issue-86-run-36457063725.md`.
+- Fingerprint (schema `runtime-lab-opencode-artifact/v1`) records fork repo/ref/commit SHA, upstream base `75e1e7ae...`, toolchain, binary SHA-256, build identity, plus derived `artifact_id` (`opencode-<track>-<sha12>`), `artifact_tag` (`opencode-<sha12>-<arch>`) and immutable GitHub-backed `artifact_reference` (`github-release:kodmial/opencode@<tag>`). Mutable refs (`latest`/`main`/bare branch names) are rejected fail-closed at every entry point; no builder step consults `latest`.
+- Provisioning: each artifact lives under `.opencode-artifacts/<artifact-id>/opencode` (coexisting, never overwriting); `OPENCODE_ARTIFACT_ID/SHA256/REF` on the Render start command (via `render_lifecycle.build_create_service_payload(..., opencode_artifact_id=..., opencode_artifact_sha256=...)`, default unchanged) selects that exact binary; the runner verifies SHA-256 (plus `OPENCODE_ARTIFACT_VERSION` when pinned) and reports 503/not-ready on missing/non-executable/mismatch with no silent baseline fallback and no network installer. Baseline mode (no artifact env) is byte-for-byte the old behavior (`.opencode-bin/opencode`, pinned `1.18.33`).
+
 ## Headless fork inventory (issue #77)
 
 - Fork baseline: `kodmial/opencode` main `9000e7f` = upstream `sst/opencode` `ad6c72c` ("chore: generate") plus one Continuum wiring commit; #76 still OPEN so rebase drift is possible. Full trace and removal plan: `automation/audits/issue-77-opencode-headless-inventory.md`. Evidence: `../experiments/issue-77-run-36451501224.md`.

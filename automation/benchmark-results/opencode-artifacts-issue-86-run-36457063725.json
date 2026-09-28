@@ -1,0 +1,124 @@
+{
+  "artifacts": [
+    {
+      "binary_bytes": 92,
+      "builder_pins_explicit_sha": true,
+      "builder_steps": 9,
+      "checksum_verified": true,
+      "fingerprint": {
+        "arch": "linux-x64",
+        "artifact_id": "opencode-source-stripped-9000e7fc8d96",
+        "artifact_reference": "github-release:kodmial/opencode@opencode-9000e7fc8d96-linux-x64",
+        "artifact_tag": "opencode-9000e7fc8d96-linux-x64",
+        "binary_sha256": "a9f59422b8fa7df9c4389555bef0c01bef6698b494f0c7802b75c39af3f959d9",
+        "build_identity": {
+          "builder": "hermetic-evidence",
+          "run_id": "36457063725"
+        },
+        "build_script": "packages/opencode/script/build-coding.ts",
+        "build_toolchain": {
+          "build_command": "bun run packages/opencode/script/build-coding.ts",
+          "build_script": "packages/opencode/script/build-coding.ts",
+          "bun_version": "1.2.0-hermetic-stub"
+        },
+        "fork_commit_sha": "9000e7fc8d96c845512f7c73122431418a71d4e4",
+        "fork_ref": "exp/source-stripped",
+        "fork_repo": "kodmial/opencode",
+        "pinned_version": "1.18.33",
+        "schema": "runtime-lab-opencode-artifact/v1",
+        "upstream_base_commit": "75e1e7ae310dc36c86c920e8997d0e1181e24a88",
+        "upstream_tag": "v1.18.33"
+      },
+      "per_artifact_path": "/repo/.opencode-artifacts/opencode-source-stripped-9000e7fc8d96/opencode",
+      "readiness_ok": true,
+      "track": "source-stripped",
+      "wrong_sha_detail": "experiment artifact checksum mismatch: expected 0000000000000000000000000000000000000000000000000000000000000000, got a9f59422b8fa7df9c4389555bef0c01bef6698b494f0c7802b75c39af3f959d9",
+      "wrong_sha_ready": false
+    },
+    {
+      "binary_bytes": 91,
+      "builder_pins_explicit_sha": true,
+      "builder_steps": 9,
+      "checksum_verified": true,
+      "fingerprint": {
+        "arch": "linux-x64",
+        "artifact_id": "opencode-bounded-output-ae343e8f0000",
+        "artifact_reference": "github-release:kodmial/opencode@opencode-ae343e8f0000-linux-x64",
+        "artifact_tag": "opencode-ae343e8f0000-linux-x64",
+        "binary_sha256": "348dae03cd83d9169d2c76d770706a0d3f059e31434db6c6b6a5c44ecdc1d591",
+        "build_identity": {
+          "builder": "hermetic-evidence",
+          "run_id": "36457063725"
+        },
+        "build_script": "packages/opencode/script/build.ts",
+        "build_toolchain": {
+          "build_command": "bun run packages/opencode/script/build.ts",
+          "build_script": "packages/opencode/script/build.ts",
+          "bun_version": "1.2.0-hermetic-stub"
+        },
+        "fork_commit_sha": "ae343e8f00000000000000000000000000000000",
+        "fork_ref": "exp/bounded-output",
+        "fork_repo": "kodmial/opencode",
+        "pinned_version": "1.18.33",
+        "schema": "runtime-lab-opencode-artifact/v1",
+        "upstream_base_commit": "75e1e7ae310dc36c86c920e8997d0e1181e24a88",
+        "upstream_tag": "v1.18.33"
+      },
+      "per_artifact_path": "/repo/.opencode-artifacts/opencode-bounded-output-ae343e8f0000/opencode",
+      "readiness_ok": true,
+      "track": "bounded-output",
+      "wrong_sha_detail": "experiment artifact checksum mismatch: expected 0000000000000000000000000000000000000000000000000000000000000000, got 348dae03cd83d9169d2c76d770706a0d3f059e31434db6c6b6a5c44ecdc1d591",
+      "wrong_sha_ready": false
+    },
+    {
+      "binary_bytes": 92,
+      "builder_pins_explicit_sha": true,
+      "builder_steps": 9,
+      "checksum_verified": true,
+      "fingerprint": {
+        "arch": "linux-x64",
+        "artifact_id": "opencode-direct-headless-111111111111",
+        "artifact_reference": "github-release:kodmial/opencode@opencode-111111111111-linux-x64",
+        "artifact_tag": "opencode-111111111111-linux-x64",
+        "binary_sha256": "b4aa887928bb335e426843b5f0934588ddbab9f410156977e0f6f7acd12c011d",
+        "build_identity": {
+          "builder": "hermetic-evidence",
+          "run_id": "36457063725"
+        },
+        "build_script": "packages/opencode/script/build-direct.ts",
+        "build_toolchain": {
+          "build_command": "bun run packages/opencode/script/build-direct.ts",
+          "build_script": "packages/opencode/script/build-direct.ts",
+          "bun_version": "1.2.0-hermetic-stub"
+        },
+        "fork_commit_sha": "1111111111111111111111111111111111111111",
+        "fork_ref": "exp/direct-headless",
+        "fork_repo": "kodmial/opencode",
+        "pinned_version": "1.18.33",
+        "schema": "runtime-lab-opencode-artifact/v1",
+        "upstream_base_commit": "75e1e7ae310dc36c86c920e8997d0e1181e24a88",
+        "upstream_tag": "v1.18.33"
+      },
+      "per_artifact_path": "/repo/.opencode-artifacts/opencode-direct-headless-111111111111/opencode",
+      "readiness_ok": true,
+      "track": "direct-headless",
+      "wrong_sha_detail": "experiment artifact checksum mismatch: expected 0000000000000000000000000000000000000000000000000000000000000000, got b4aa887928bb335e426843b5f0934588ddbab9f410156977e0f6f7acd12c011d",
+      "wrong_sha_ready": false
+    }
+  ],
+  "base_commit": "4bc5d9efd332b748910043423762a5fc344c95c2",
+  "baseline": {
+    "deploy_artifact": ".opencode-bin/opencode",
+    "pinned_version": "1.18.33",
+    "unchanged_default_start": "RUNNER_ALLOW_RUNTIME_INSTALL=0 python -m automation.runner_server"
+  },
+  "coexistence": {
+    "distinct_ids": true,
+    "distinct_paths": true,
+    "distinct_references": true
+  },
+  "issue": 86,
+  "mode": "hermetic-offline",
+  "run_id": "36457063725",
+  "schema": "runtime-lab-opencode-artifacts-evidence/v1"
+}
