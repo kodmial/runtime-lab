@@ -122,41 +122,41 @@ jobs:
 
               if [[ -z "$EXISTING_REPAIR" ]]; then
                 REPAIR_BODY="$(cat <<EOF
-<!-- runtime-lab-render-repair source=$ISSUE_NUMBER -->
-<!-- runtime-lab-render-failed-run=$GITHUB_RUN_ID -->
-
-## Goal
-
-Repair the concrete repository defect that caused Render execution for source issue #$ISSUE_NUMBER to fail in workflow run $GITHUB_RUN_ID.
-
-## Required investigation
-
-- Inspect the failed run with `gh run view $GITHUB_RUN_ID --repo $GITHUB_REPOSITORY --log-failed`.
-- Identify the root cause from evidence; do not guess or mask the failure.
-- For external API behavior, verify the contract against current official vendor documentation.
-- Fix the reusable implementation, not only this single run.
-- Add or strengthen regression tests for the discovered failure mode.
-- Run the relevant test suite and keep the change scoped.
-- Do not close or modify source issue #$ISSUE_NUMBER. It stays paused until this repair PR is merged.
-
-## Failure context
-
-- Source issue: #$ISSUE_NUMBER
-- Failed run: $GITHUB_RUN_ID
-- Execute outcome: $EXECUTE_OUTCOME
-- Cleanup outcome: $CLEANUP_OUTCOME
-- Execution mode: $EXECUTION_MODE
-EOF
+          <!-- runtime-lab-render-repair source=$ISSUE_NUMBER -->
+          <!-- runtime-lab-render-failed-run=$GITHUB_RUN_ID -->
+          
+          ## Goal
+          
+          Repair the concrete repository defect that caused Render execution for source issue #$ISSUE_NUMBER to fail in workflow run $GITHUB_RUN_ID.
+          
+          ## Required investigation
+          
+          - Inspect the failed run with `gh run view $GITHUB_RUN_ID --repo $GITHUB_REPOSITORY --log-failed`.
+          - Identify the root cause from evidence; do not guess or mask the failure.
+          - For external API behavior, verify the contract against current official vendor documentation.
+          - Fix the reusable implementation, not only this single run.
+          - Add or strengthen regression tests for the discovered failure mode.
+          - Run the relevant test suite and keep the change scoped.
+          - Do not close or modify source issue #$ISSUE_NUMBER. It stays paused until this repair PR is merged.
+          
+          ## Failure context
+          
+          - Source issue: #$ISSUE_NUMBER
+          - Failed run: $GITHUB_RUN_ID
+          - Execute outcome: $EXECUTE_OUTCOME
+          - Cleanup outcome: $CLEANUP_OUTCOME
+          - Execution mode: $EXECUTION_MODE
+          EOF
                 )"
                 REPAIR_URL="$(gh issue create --repo "$GITHUB_REPOSITORY" \
                   --title "P0: Repair Render execution failure for #$ISSUE_NUMBER (run $GITHUB_RUN_ID)" \
                   --label "priority:p0" --body "$REPAIR_BODY")"
                 gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
-<!-- runtime-lab-render-repair-attempt -->
-Render execution failed (execute=$EXECUTE_OUTCOME, cleanup=$CLEANUP_OUTCOME, run=$GITHUB_RUN_ID).
-Created automatic recovery issue: $REPAIR_URL
-The source issue remains paused until the recovery PR merges.
-EOF
+          <!-- runtime-lab-render-repair-attempt -->
+          Render execution failed (execute=$EXECUTE_OUTCOME, cleanup=$CLEANUP_OUTCOME, run=$GITHUB_RUN_ID).
+          Created automatic recovery issue: $REPAIR_URL
+          The source issue remains paused until the recovery PR merges.
+          EOF
                 )"
                 gh workflow run issue-scheduler.yml --repo "$GITHUB_REPOSITORY" --ref main
               else
