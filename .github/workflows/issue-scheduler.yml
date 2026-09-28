@@ -264,6 +264,17 @@ jobs:
               });
               const attempt = previous.filter(c => (c.body || '').includes(marker)).length + 1;
 
+              if (attempt > maxAttempts) {
+                await removeLabel(issue.number, inProgress);
+                await addLabel(issue.number, paused);
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issue.number,
+                  body: marker + '\nAutomation paused before dispatch attempt ' + attempt +
+                    ': maximum of ' + maxAttempts + ' attempts already reached.',
+                });
+                continue;
+              }
+
               try {
                 await github.rest.issues.createComment({
                   owner, repo, issue_number: issue.number,
