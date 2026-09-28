@@ -1,20 +1,46 @@
 #!/usr/bin/env bash
-# Ephemeral Render execution: create -> wait healthy -> run job -> collect.
+# TEMPORARY development harness only (issue #4): GitHub Actions -> Render.
+#
+# This script is the create -> readiness -> job -> result half of the
+# temporary Actions control plane used to develop and test the Render
+# lifecycle and runner before the direct GitHub->Render integration exists.
+# It is NOT the final runtime architecture: the final production path must
+# not require an OpenCode GitHub Actions job (cutover is owned by later
+# issues). The reusable lifecycle core lives in automation/render_lifecycle.py
+# so the future Render controller can call it directly instead of keeping
+# this orchestration permanently embedded in Actions.
+#
 # Cleanup (delete + verify) lives in automation/render-cleanup.sh, which the
-# render-executor workflow always runs afterwards, even when this script fails.
+# stable render-executor workflow always runs afterwards (if: always()), even
+# when this script fails or times out.
 #
 # Cost guards encoded here (see automation/render_lifecycle.py):
-# - exactly one service creation per issue execution attempt;
-# - polling/deploy retries reuse the same service id, never create a new one;
-# - bounded retries only; no cron path in this script creates services.
+# - exactly one service creation per issue execution attempt (state-file
+#   service id is reused; polling/deploy retries never create a new one);
+# - concurrency: the workflow serializes per issue
+#   (group runtime-lab-render-<issue>) so the same issue never owns more
+#   than one worker, while the scheduler WIP limit allows up to four
+#   different issues concurrently;
+# - bounded retries only; no cron path in this script creates services;
+# - model fallback reuses the same worker (no second service for fallback).
+#
+# Rate limits: Render answers 429 with a Retry-After header (see
+# RENDER_DOC_RATE_LIMITING). api_request() below retries 429/5xx with
+# bounded backoff honoring Retry-After instead of failing immediately.
+#
+# GitHub access from this script is READ-ONLY (gh issue view for task text,
+# git rev-parse for the base SHA). All GitHub writes stay on the Actions
+# workflow side (Finalize step) during this temporary phase.
 #
 # Auth: RENDER_API_KEY is mapped from the repository secret KEY by the stable
-# workflow envelope. This script never prints it.
+# workflow envelope. This script never prints it. OPENCODE_API_KEY is
+# deliberately NOT required: the runner accepts jobs without it.
 set -euo pipefail
 
 : "${ISSUE_NUMBER:?ISSUE_NUMBER must be set}"
 : "${EXECUTION_MODE:?EXECUTION_MODE must be set}"
 : "${RENDER_API_KEY:?RENDER_API_KEY must be set by the workflow}"
+: "${OPENCODE_API_KEY:-}"
 
 RENDER_STATE_FILE="${RENDER_STATE_FILE:-/tmp/runtime-lab-render-state.json}"
 RENDER_RESULT_FILE="${RENDER_RESULT_FILE:-/tmp/runtime-lab-render-result.json}"
@@ -23,24 +49,147 @@ OPENCODE_MODEL="${OPENCODE_MODEL:-opencode/muse-spark-1.3-contributor-free}"
 REPO_URL="https://github.com/kodmial/runtime-lab"
 API_BASE="https://api.render.com/v1"
 
+# Bounded Render API retry envelope (mirrors render_lifecycle constants).
+API_RETRY_MAX_ATTEMPTS="${API_RETRY_MAX_ATTEMPTS:-5}"
+API_RETRY_BASE_SECONDS=5
+API_RETRY_CAP_SECONDS=120
+API_HTTP_CODE="000"
+
 if [[ "$EXECUTION_MODE" != "smoke" && "$EXECUTION_MODE" != "e2e" ]]; then
   echo "::error::Unsupported execution mode: $EXECUTION_MODE" >&2
   exit 2
 fi
 
-# Validate region/model against the single source of truth (fail closed).
-python3 - "$RENDER_REGION" "$OPENCODE_MODEL" <<'PY'
+# Validate region/model against the single source of truth (fail closed,
+# before any Render service is created).
+python3 - "$RENDER_REGION" "$OPENCODE_MODEL" "$EXECUTION_MODE" <<'PY'
 import sys
 sys.path.insert(0, "automation")
-from render_lifecycle import validate_worker_region, PREFERRED_MODEL, FALLBACK_MODEL
-region = sys.argv[1]
-model = sys.argv[2]
-validate_worker_region(region)
-if model not in (PREFERRED_MODEL, FALLBACK_MODEL):
-    raise SystemExit("unknown model: %r" % model)
+from render_lifecycle import (
+    validate_execution_mode,
+    validate_model_name,
+    validate_worker_region,
+)
+validate_worker_region(sys.argv[1])
+validate_model_name(sys.argv[2])
+validate_execution_mode(sys.argv[3])
 PY
 
+# ---------------------------------------------------------------------------
+# Render API helper: bounded retry on 429/5xx honoring Retry-After.
+# Usage: api_request <GET|POST> <url> [json-data] [out-file]
+# On success (2xx) writes the response body to out-file (or stdout) and
+# returns 0. On terminal failure returns non-zero with API_HTTP_CODE set.
+# Never prints the Authorization header or key material.
+# ---------------------------------------------------------------------------
+retry_wait_secs() {
+  local attempt="$1" retry_after="${2:-}" wait_secs=0
+  if [[ "$retry_after" =~ ^[0-9]+$ ]]; then
+    wait_secs="$retry_after"
+    if [[ "$wait_secs" -gt "$API_RETRY_CAP_SECONDS" ]]; then
+      wait_secs="$API_RETRY_CAP_SECONDS"
+    fi
+    echo "$wait_secs"
+    return 0
+  fi
+  wait_secs=$((API_RETRY_BASE_SECONDS * (1 << (attempt - 1))))
+  if [[ "$wait_secs" -gt "$API_RETRY_CAP_SECONDS" ]]; then
+    wait_secs="$API_RETRY_CAP_SECONDS"
+  fi
+  echo "$wait_secs"
+}
+
+api_request() {
+  local method="$1" url="$2" data="${3:-}" out_file="${4:-}"
+  local attempt code body_file header_file retry_after wait_secs
+  body_file="$(mktemp)"
+  header_file="$(mktemp)"
+  API_HTTP_CODE="000"
+  for ((attempt = 1; attempt <= API_RETRY_MAX_ATTEMPTS; attempt++)); do
+    : > "$body_file"
+    : > "$header_file"
+    if [[ -n "$data" ]]; then
+      code="$(curl -sS --max-time 30 -D "$header_file" -o "$body_file" \
+        -w '%{http_code}' -X "$method" \
+        -H "Accept: application/json" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $RENDER_API_KEY" \
+        -d "$data" "$url" 2>/dev/null || true)"
+    else
+      code="$(curl -sS --max-time 30 -D "$header_file" -o "$body_file" \
+        -w '%{http_code}' -X "$method" \
+        -H "Accept: application/json" \
+        -H "Authorization: Bearer $RENDER_API_KEY" \
+        "$url" 2>/dev/null || true)"
+    fi
+    code="$(tr -dc '0-9' <<<"$code" || true)"
+    [[ -z "$code" ]] && code="000"
+    API_HTTP_CODE="$code"
+    if [[ "$code" == "429" || "$code" == "500" || "$code" == "502" || "$code" == "503" || "$code" == "504" ]]; then
+      retry_after="$(grep -i '^retry-after:' "$header_file" 2>/dev/null | tail -n 1 | cut -d: -f2- | tr -d ' \r\n' || true)"
+      if [[ "$attempt" -lt "$API_RETRY_MAX_ATTEMPTS" ]]; then
+        wait_secs="$(retry_wait_secs "$attempt" "$retry_after")"
+        echo "Render API $method returned HTTP $code; respecting Retry-After and retrying in ${wait_secs}s (attempt $attempt/$API_RETRY_MAX_ATTEMPTS)." >&2
+        sleep "$wait_secs"
+        continue
+      fi
+      echo "::error::Render API $method failed with HTTP $code after $API_RETRY_MAX_ATTEMPTS attempts." >&2
+      rm -f "$body_file" "$header_file"
+      return 1
+    fi
+    break
+  done
+  if [[ -n "$out_file" ]]; then
+    cat "$body_file" > "$out_file"
+  else
+    cat "$body_file"
+  fi
+  rm -f "$body_file" "$header_file"
+  case "$API_HTTP_CODE" in
+    2*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Resolve the real issue/task text (read-only) and the exact base SHA.
+# GitHub writes stay in the workflow; failures here fall back to safe
+# defaults so a read outage cannot silently change what gets executed.
+# ---------------------------------------------------------------------------
+ISSUE_TITLE=""
+ISSUE_BODY_TEXT=""
+if command -v gh >/dev/null 2>&1 && [[ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]]; then
+  ISSUE_JSON="$(gh issue view "$ISSUE_NUMBER" --json title,body 2>/dev/null || true)"
+  if [[ -n "$ISSUE_JSON" ]]; then
+    ISSUE_TITLE="$(jq -r '.title // empty' <<<"$ISSUE_JSON" 2>/dev/null || true)"
+    ISSUE_BODY_TEXT="$(jq -r '.body // empty' <<<"$ISSUE_JSON" 2>/dev/null || true)"
+  fi
+fi
+
+GIT_HEAD_SHA=""
+if git rev-parse --verify HEAD >/dev/null 2>&1; then
+  GIT_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+fi
+BASE_SHA="$(ISSUE_TITLE="$ISSUE_TITLE" ISSUE_BODY_TEXT="$ISSUE_BODY_TEXT" python3 - "${GITHUB_SHA:-}" "$GIT_HEAD_SHA" <<'PY'
+import os, sys
+sys.path.insert(0, "automation")
+from render_lifecycle import select_base_sha
+print(select_base_sha(sys.argv[1], sys.argv[2]))
+PY
+)"
+TASK_TEXT="$(ISSUE_TITLE="$ISSUE_TITLE" ISSUE_BODY_TEXT="$ISSUE_BODY_TEXT" python3 - "$ISSUE_NUMBER" "$EXECUTION_MODE" <<'PY'
+import os, sys
+sys.path.insert(0, "automation")
+from render_lifecycle import resolve_task_text
+print(resolve_task_text(int(sys.argv[1]), sys.argv[2],
+      title=os.environ.get("ISSUE_TITLE", ""),
+      body=os.environ.get("ISSUE_BODY_TEXT", "")))
+PY
+)"
+
 # One service creation per attempt: reuse an existing state file service id.
+# This is the "never retry by creating a second worker" enforcement: any
+# retry path below reuses SERVICE_ID from RENDER_STATE_FILE.
 EXISTING_SERVICE_ID=""
 if [[ -s "$RENDER_STATE_FILE" ]]; then
   EXISTING_SERVICE_ID="$(jq -r '.serviceId // empty' "$RENDER_STATE_FILE" 2>/dev/null || true)"
@@ -50,9 +199,14 @@ if [[ -n "$EXISTING_SERVICE_ID" ]]; then
   SERVICE_ID="$EXISTING_SERVICE_ID"
 else
   # Resolve the Render workspace (owner) id without extra secrets.
-  OWNERS_JSON="$(curl -fsSL --max-time 30 "$API_BASE/owners?limit=20" \
-    -H "Accept: application/json" \
-    -H "Authorization: Bearer $RENDER_API_KEY")"
+  OWNERS_FILE="$(mktemp)"
+  if ! api_request GET "$API_BASE/owners?limit=20" "" "$OWNERS_FILE"; then
+    echo "::error::Could not resolve a Render owner id for service creation (HTTP $API_HTTP_CODE)." >&2
+    rm -f "$OWNERS_FILE"
+    exit 1
+  fi
+  OWNERS_JSON="$(cat "$OWNERS_FILE")"
+  rm -f "$OWNERS_FILE"
   OWNER_ID="$(jq -r '.[0].id // empty' <<<"$OWNERS_JSON")"
   if [[ -z "$OWNER_ID" ]]; then
     echo "::error::Could not resolve a Render owner id for service creation." >&2
@@ -71,11 +225,14 @@ PY
 )"
 
   # Create exactly one temporary web service (POST /v1/services -> 201).
-  CREATE_RESPONSE="$(curl -fsSL --max-time 60 -X POST "$API_BASE/services" \
-    -H "Accept: application/json" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $RENDER_API_KEY" \
-    -d "$CREATE_PAYLOAD")"
+  CREATE_FILE="$(mktemp)"
+  if ! api_request POST "$API_BASE/services" "$CREATE_PAYLOAD" "$CREATE_FILE"; then
+    echo "::error::Render service creation failed (HTTP $API_HTTP_CODE)." >&2
+    rm -f "$CREATE_FILE"
+    exit 1
+  fi
+  CREATE_RESPONSE="$(cat "$CREATE_FILE")"
+  rm -f "$CREATE_FILE"
   SERVICE_ID="$(jq -r '.service.id // empty' <<<"$CREATE_RESPONSE")"
   DEPLOY_ID="$(jq -r '.deployId // empty' <<<"$CREATE_RESPONSE")"
   PLAN="$(jq -r '.service.serviceDetails.plan // empty' <<<"$CREATE_RESPONSE")"
@@ -96,8 +253,9 @@ PY
   fi
   jq -n --arg sid "$SERVICE_ID" --arg dep "$DEPLOY_ID" \
     --arg region "$RENDER_REGION" --arg model "$OPENCODE_MODEL" \
-    --arg plan "$PLAN" \
-    '{serviceId: $sid, deployId: $dep, region: $region, model: $model, plan: $plan}' \
+    --arg plan "$PLAN" --arg issue "$ISSUE_NUMBER" \
+    --arg mode "$EXECUTION_MODE" --arg sha "$BASE_SHA" \
+    '{serviceId: $sid, deployId: $dep, region: $region, model: $model, plan: $plan, issue: $issue, mode: $mode, baseSha: $sha}' \
     > "$RENDER_STATE_FILE"
   echo "Created ephemeral Render service $SERVICE_ID (plan=free, region=$RENDER_REGION)."
 fi
@@ -111,10 +269,11 @@ DEPLOY_ATTEMPTS=60
 DEPLOY_INTERVAL=20
 if [[ -n "$DEPLOY_ID" ]]; then
   for ((i = 1; i <= DEPLOY_ATTEMPTS; i++)); do
-    DEPLOY_JSON="$(curl -fsSL --max-time 30 \
-      "$API_BASE/services/$SERVICE_ID/deploys/$DEPLOY_ID" \
-      -H "Accept: application/json" \
-      -H "Authorization: Bearer $RENDER_API_KEY" || true)"
+    DEPLOY_FILE="$(mktemp)"
+    DEPLOY_JSON="$(api_request GET \
+      "$API_BASE/services/$SERVICE_ID/deploys/$DEPLOY_ID" "" "$DEPLOY_FILE" 2>/dev/null \
+      && cat "$DEPLOY_FILE" || true)"
+    rm -f "$DEPLOY_FILE"
     STATUS="$(jq -r '.status // empty' <<<"$DEPLOY_JSON" 2>/dev/null || true)"
     CLASS="$(python3 - "$STATUS" <<'PY' 2>/dev/null || true
 import sys
@@ -145,9 +304,14 @@ else
 fi
 
 # Inspect service state and obtain the externally reachable service URL.
-SERVICE_JSON="$(curl -fsSL --max-time 30 "$API_BASE/services/$SERVICE_ID" \
-  -H "Accept: application/json" \
-  -H "Authorization: Bearer $RENDER_API_KEY")"
+SERVICE_FILE="$(mktemp)"
+if ! api_request GET "$API_BASE/services/$SERVICE_ID" "" "$SERVICE_FILE"; then
+  echo "::error::Could not retrieve Render service $SERVICE_ID (HTTP $API_HTTP_CODE)." >&2
+  rm -f "$SERVICE_FILE"
+  exit 1
+fi
+SERVICE_JSON="$(cat "$SERVICE_FILE")"
+rm -f "$SERVICE_FILE"
 PLAN_NOW="$(jq -r '.serviceDetails.plan // .plan // empty' <<<"$SERVICE_JSON" 2>/dev/null || true)"
 if [[ -n "$PLAN_NOW" && "$PLAN_NOW" != "free" ]]; then
   echo "::error::Render service $SERVICE_ID reports non-free plan '$PLAN_NOW'." >&2
@@ -174,11 +338,6 @@ for ((i = 1; i <= 30; i++)); do
 done
 
 # Build the minimum job payload and submit it to the runner.
-BASE_SHA="${GITHUB_SHA:-}"
-if [[ -z "$BASE_SHA" ]] && git rev-parse --verify HEAD >/dev/null 2>&1; then
-  BASE_SHA="$(git rev-parse HEAD)"
-fi
-TASK_TEXT="Execute issue #${ISSUE_NUMBER} in ${EXECUTION_MODE} mode."
 JOB_PAYLOAD="$(python3 - "$ISSUE_NUMBER" "$REPO_URL" "$TASK_TEXT" "$BASE_SHA" \
   "$RENDER_REGION" "$OPENCODE_MODEL" "$EXECUTION_MODE" "${GITHUB_RUN_ID:-}" <<'PY'
 import json, sys
@@ -216,6 +375,8 @@ fi
 echo "Submitted runner job $JOB_ID."
 
 # Poll the job status/result (bounded; same worker, no new service).
+# A 429/5xx from the runner surfaces as an empty poll body and is retried
+# as not-finished within the same bounded loop; the worker is never replaced.
 FALLBACK_MODEL="opencode/space-bunny-free"
 TRIED_FALLBACK="no"
 for ((i = 1; i <= 60; i++)); do

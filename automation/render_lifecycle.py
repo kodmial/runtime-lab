@@ -5,6 +5,15 @@ deleted unconditionally afterwards. Suspension is only an emergency fallback
 when deletion temporarily fails; the workflow must still retry deletion within
 bounded limits and must never leave the temporary service behind on success.
 
+Temporary development harness note (issue #4): GitHub Actions orchestration in
+``automation/render-job.sh`` / ``automation/render-cleanup.sh`` is a
+temporary control plane used only to develop and test the Render lifecycle
+and runner before the direct GitHub->Render integration exists. The final
+production path must not require an OpenCode GitHub Actions job. This module
+is the factored, reusable core (pure helpers plus payload/state
+classification) so the later Render controller can call it directly instead
+of the logic staying permanently embedded in Actions.
+
 Official Render API documentation used (pinned 2026-05-29 / 2025-10-27):
 - RENDER_DOC_CREATE_SERVICE
 - RENDER_DOC_RETRIEVE_SERVICE
@@ -136,6 +145,63 @@ RENDER_RATE_LIMIT_HEADERS = (
     "Retry-After",
 )
 
+# HTTP statuses that are safe to retry with bounded backoff. 429 is the
+# documented Render rate-limit signal; 5xx are transient server errors. 4xx
+# other than 429 (e.g. 400/401/403/404) are not retried, except that the
+# shell wrappers treat 404/410 on DELETE/retrieve as "already gone".
+RENDER_RATE_LIMITED_STATUS = 429
+RENDER_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+# Bounded retry envelope shared by the shell wrappers so both the job and
+# cleanup paths respect 429/Retry-After identically.
+API_RETRY_MAX_ATTEMPTS = 5
+API_RETRY_BASE_SECONDS = 5
+API_RETRY_CAP_SECONDS = 120
+
+
+def is_rate_limited(http_status: int | None) -> bool:
+    """True when the status is Render's documented rate-limit signal (429)."""
+    return http_status == RENDER_RATE_LIMITED_STATUS
+
+
+def is_retryable_render_status(http_status: int | None) -> bool:
+    """True for 429 and transient 5xx statuses that merit bounded retry."""
+    return http_status in RENDER_RETRYABLE_STATUSES
+
+
+def parse_retry_after(value: object, default: int = API_RETRY_BASE_SECONDS,
+                       cap: int = API_RETRY_CAP_SECONDS) -> int:
+    """Parse a Retry-After header value into bounded seconds.
+
+    Returns ``default`` for missing/unparsable values and clamps every
+    result into ``[0, cap]`` so callers can sleep without extra checks.
+    """
+    try:
+        seconds = int(str(value).strip())
+    except (TypeError, ValueError, AttributeError):
+        return default
+    if seconds < 0:
+        return default
+    return min(seconds, cap)
+
+
+def rate_limit_backoff_seconds(attempt: int, retry_after: int | None = None,
+                               base: int = API_RETRY_BASE_SECONDS,
+                               cap: int = API_RETRY_CAP_SECONDS) -> int:
+    """Bounded backoff for attempt N (1-indexed).
+
+    Uses exponential ``base * 2**(attempt-1)`` capped at ``cap``, but honors
+    an explicit server-provided ``retry_after`` (already clamped) when given.
+    Attempt numbers below 1 are treated as attempt 1.
+    """
+    attempt = max(1, int(attempt))
+    if retry_after is not None:
+        try:
+            return max(0, min(int(retry_after), cap))
+        except (TypeError, ValueError):
+            pass
+    return min(cap, base * (2 ** (attempt - 1)))
+
 # ---------------------------------------------------------------------------
 # Free-tier guard: fail closed, never silently create a paid resource.
 # ---------------------------------------------------------------------------
@@ -228,6 +294,66 @@ def validate_worker_region(region: str) -> str:
 def select_model(primary_failed: bool) -> str:
     """Select the OpenCode model inside the current worker attempt."""
     return FALLBACK_MODEL if primary_failed else PREFERRED_MODEL
+
+
+EXECUTION_MODES = frozenset({"smoke", "e2e"})
+
+# Upper bound for issue body text embedded in a job payload task field.
+MAX_TASK_BODY_CHARS = 2000
+
+
+def validate_execution_mode(mode: str) -> str:
+    """Fail closed unless the mode is one of smoke/e2e."""
+    if mode not in EXECUTION_MODES:
+        raise ValueError("execution_mode must be one of %s, got %r"
+                         % (sorted(EXECUTION_MODES), mode))
+    return mode
+
+
+def validate_model_name(model: str) -> str:
+    """Fail closed unless the model is the preferred or fallback model."""
+    if model not in (PREFERRED_MODEL, FALLBACK_MODEL):
+        raise ValueError("unknown model: %r" % (model,))
+    return model
+
+
+def resolve_task_text(issue_number: int, execution_mode: str,
+                      title: str = "", body: str = "") -> str:
+    """Build the runner task text for an issue execution.
+
+    Uses the real issue title/body when provided (read-only resolution on
+    the Actions side), otherwise falls back to a deterministic placeholder
+    so offline tests and local runs still produce a valid job payload.
+    Pure helper: no network access, reusable by the future controller.
+    """
+    if not isinstance(issue_number, int) or issue_number <= 0:
+        raise ValueError("issue_number must be a positive integer")
+    validate_execution_mode(execution_mode)
+    title = (title or "").strip()
+    body_text = (body or "").strip()
+    if not title and not body_text:
+        return "Execute issue #%d in %s mode." % (issue_number, execution_mode)
+    if len(body_text) > MAX_TASK_BODY_CHARS:
+        body_text = body_text[:MAX_TASK_BODY_CHARS] + "...[truncated]"
+    if title and body_text:
+        return ("Issue #%d [%s]: %s\n\n%s"
+                % (issue_number, execution_mode, title, body_text))
+    if title:
+        return "Issue #%d [%s]: %s" % (issue_number, execution_mode, title)
+    return "Issue #%d [%s]:\n\n%s" % (issue_number, execution_mode, body_text)
+
+
+def select_base_sha(*candidates: object) -> str:
+    """Return the first non-empty candidate SHA (exact base revision).
+
+    Candidates are tried in order (e.g. GITHUB_SHA, then ``git rev-parse
+    HEAD``). Returns "" when every candidate is empty so callers can
+    decide whether to proceed without a pinned SHA or fail closed.
+    """
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return ""
 
 
 # ---------------------------------------------------------------------------
