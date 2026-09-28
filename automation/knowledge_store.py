@@ -85,6 +85,24 @@ KNOWLEDGE_REPO_NAME = "agent-knowledge"
 KNOWLEDGE_DEFAULT_BRANCH = "main"
 TAP_PAT_ENV = "TAP_PAT"
 
+# In the OpenCode Actions workflow the TAP_PAT repository secret is mapped
+# as ``GH_TOKEN: ${{ secrets.TAP_PAT || github.token }}`` (and the same for
+# ``GITHUB_TOKEN``). It is NOT exposed under the literal name ``TAP_PAT``,
+# so a literal ``TAP_PAT`` presence check cannot distinguish "PAT missing"
+# from "PAT present under GH_TOKEN". The authoritative test in Actions is a
+# live authenticated capability check through GH_TOKEN/GitHub CLI or the
+# trusted transport, distinguishing the repository-scoped ``github.token``
+# fallback from a PAT by the required capability (not by token format).
+TRUSTED_TRANSPORT_ENV_NAMES = ("GH_TOKEN", "GITHUB_TOKEN")
+
+# kodmial is a personal GitHub account, not an Organization. Repository
+# creation must use POST /user/repos (authenticated-user endpoint), never
+# POST /orgs/kodmial/repos. Creating a private repo for the authenticated
+# user requires classic PAT scope ``repo`` or fine-grained PAT repository
+# creation (write) / administration (write).
+BOOTSTRAP_CREATE_PATH = "/user/repos"
+FORBIDDEN_ORG_CREATE_PATH = "/orgs/kodmial/repos"
+
 # Least privilege for normal knowledge-store operation.
 KNOWLEDGE_APP_PERMISSIONS: dict[str, str] = {
     "contents": "write",
@@ -214,16 +232,18 @@ def build_bootstrap_repo_request(
     *,
     description: str = "Private long-term agent knowledge ledger (Runtime Lab).",
 ) -> tuple[str, dict[str, Any]]:
-    """Build the GitHub create-repository request (org path + payload).
+    """Build the GitHub create-repository request (personal-account path).
 
-    Returns ``(url_path, payload)`` for ``POST /orgs/{owner}/repos``.
-    The payload always requires ``private=true``.
+    Returns ``(url_path, payload)`` for ``POST /user/repos``. ``kodmial``
+    is a personal account, not an Organization, so ``POST
+    /orgs/kodmial/repos`` must never be used. The payload always requires
+    ``private=true``.
     """
     if (owner or "").strip() != KNOWLEDGE_REPO_OWNER:
         raise _fail("knowledge repository owner must be %r" % KNOWLEDGE_REPO_OWNER)
     if (repo or "").strip() != KNOWLEDGE_REPO_NAME:
         raise _fail("knowledge repository name must be %r" % KNOWLEDGE_REPO_NAME)
-    path = "/orgs/%s/repos" % KNOWLEDGE_REPO_OWNER
+    path = BOOTSTRAP_CREATE_PATH
     payload: dict[str, Any] = {
         "name": KNOWLEDGE_REPO_NAME,
         "private": True,
@@ -236,6 +256,19 @@ def build_bootstrap_repo_request(
         "default_branch": KNOWLEDGE_DEFAULT_BRANCH,
     }
     return path, payload
+
+
+def assert_not_org_bootstrap_endpoint(path: str) -> str:
+    """Fail closed when the forbidden org endpoint is used (personal acct)."""
+    cleaned = (path or "").strip()
+    if cleaned == FORBIDDEN_ORG_CREATE_PATH or cleaned.startswith("/orgs/"):
+        raise _fail(
+            "knowledge-repository bootstrap must use POST /user/repos "
+            "(kodmial is a personal account, not an Organization)"
+        )
+    if cleaned != BOOTSTRAP_CREATE_PATH:
+        raise _fail("knowledge-repository bootstrap path must be /user/repos")
+    return cleaned
 
 
 def require_private_bootstrap_request(payload: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -306,6 +339,18 @@ def verify_knowledge_repository(info: Mapping[str, Any]) -> dict[str, Any]:
 
 # ---------------------------------------------------------------------------
 # TAP_PAT availability (explicit safe blocker, never a public fallback).
+#
+# NOTE (live-bootstrap correction): in `.github/workflows/opencode.yml` the
+# TAP_PAT secret is mapped as GH_TOKEN/GITHUB_TOKEN
+# (``${{ secrets.TAP_PAT || github.token }}``), never under the literal
+# name ``TAP_PAT``. A literal ``os.environ["TAP_PAT"]`` check therefore
+# cannot prove the PAT is unavailable inside Actions. The authoritative
+# test there is a live authenticated capability check through GH_TOKEN /
+# GitHub CLI or the trusted transport (see below): a repository-scoped
+# ``github.token`` fallback fails the required capability (create/read the
+# private personal-account repository) while a PAT with ``repo`` scope (or
+# fine-grained repository-creation write) succeeds. Capability, not token
+# format/value, decides. Never print either token.
 # ---------------------------------------------------------------------------
 
 TAP_PAT_BLOCKER_MESSAGE = (
@@ -319,7 +364,13 @@ TAP_PAT_BLOCKER_MESSAGE = (
 
 
 def tap_pat_status(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
-    """Report TAP_PAT availability without exposing its value."""
+    """Report literal TAP_PAT availability without exposing its value.
+
+    Offline helper only. Inside the Actions workflow the secret arrives as
+    GH_TOKEN/GITHUB_TOKEN (see note above), so this literal check must not
+    be used as the availability test there; use the trusted-transport
+    capability probe instead.
+    """
     env = environ if environ is not None else os.environ
     try:
         value = str(env.get(TAP_PAT_ENV, "") or "")
@@ -332,10 +383,100 @@ def tap_pat_status(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
 
 
 def require_tap_pat(environ: Mapping[str, str] | None = None) -> None:
-    """Fail closed with an explicit blocker when TAP_PAT is absent."""
+    """Fail closed with an explicit blocker when literal TAP_PAT is absent."""
     status = tap_pat_status(environ)
     if not status["available"]:
         raise KnowledgeAuthBlocker(redact_knowledge_error(str(status["blocker"])))
+
+
+def trusted_transport_token_present(environ: Mapping[str, str] | None = None) -> bool:
+    """True when GH_TOKEN/GITHUB_TOKEN is non-empty (value never exposed)."""
+    env = environ if environ is not None else os.environ
+    try:
+        for name in TRUSTED_TRANSPORT_ENV_NAMES:
+            if str(env.get(name, "") or "").strip():
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def describe_bootstrap_credential_source(
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Redacted description of the bootstrap credential source (no values)."""
+    env = environ if environ is not None else os.environ
+    try:
+        literal = bool(str(env.get(TAP_PAT_ENV, "") or "").strip())
+    except Exception:
+        literal = False
+    transport = trusted_transport_token_present(env)
+    if literal and transport:
+        return (
+            "TAP_PAT literal present and GH_TOKEN/GITHUB_TOKEN trusted "
+            "transport present (values redacted; live capability probe "
+            "is authoritative)"
+        )
+    if literal:
+        return "TAP_PAT literal present (value redacted)"
+    if transport:
+        return (
+            "GH_TOKEN/GITHUB_TOKEN trusted transport present (value "
+            "redacted; may carry TAP_PAT or the repository-scoped "
+            "github.token fallback; live capability probe is authoritative)"
+        )
+    return "no bootstrap credential in TAP_PAT or GH_TOKEN/GITHUB_TOKEN"
+
+
+def classify_bootstrap_capability_failure(
+    *,
+    operation: str,
+    status: int | None,
+    message: str = "",
+) -> KnowledgeAuthBlocker:
+    """Build a redacted blocker for a failed live capability probe.
+
+    Distinguishes the repository-scoped ``github.token`` fallback (403 on
+    user-repo creation / 404 on the private repo) from other failures by
+    HTTP status/capability, never by token format/value. Never embeds
+    token material.
+    """
+    op = (operation or "bootstrap").strip() or "bootstrap"
+    detail = redact_knowledge_error(str(message or ""))[:300]
+    if status == 401:
+        text = (
+            "live bootstrap capability probe failed during %s: HTTP 401 "
+            "(unauthenticated; trusted token missing or revoked). %s" % (op, detail)
+        )
+    elif status == 403:
+        text = (
+            "live bootstrap capability probe failed during %s: HTTP 403 "
+            "(token lacks the required capability: classic PAT needs repo "
+            "scope, fine-grained PAT needs repository-creation write; the "
+            "repository-scoped github.token fallback cannot create/access "
+            "a different private repository). %s" % (op, detail)
+        )
+    elif status == 404:
+        text = (
+            "live bootstrap capability probe returned HTTP 404 during %s "
+            "(repository not visible to this token: either it does not "
+            "exist yet or the token -- e.g. the repository-scoped "
+            "github.token fallback -- cannot see the private repository). "
+            "%s" % (op, detail)
+        )
+    elif status == 422:
+        text = (
+            "live bootstrap capability probe failed during %s: HTTP 422 "
+            "(validation failed; the repository may already exist). %s" % (op, detail)
+        )
+    elif status is None:
+        text = "live bootstrap capability probe failed during %s. %s" % (op, detail)
+    else:
+        text = (
+            "live bootstrap capability probe failed during %s: HTTP %s. %s"
+            % (op, status, detail)
+        )
+    return KnowledgeAuthBlocker(redact_knowledge_error(text))
 
 
 # ---------------------------------------------------------------------------
@@ -1225,19 +1366,22 @@ def plan_live_bootstrap(
     *,
     project: str = "runtime-lab",
 ) -> dict[str, Any]:
-    """Plan the live bootstrap, failing closed without TAP_PAT.
+    """Plan the live bootstrap, failing closed without literal TAP_PAT.
 
-    Returns a credential-free plan (request path/payload, layout paths,
-    verification steps) when ``TAP_PAT`` is available. Raises
-    :class:`KnowledgeAuthBlocker` with the explicit safe blocker when
-    it is not. The PAT value itself is never included in the plan.
+    Offline helper: returns a credential-free plan (request path/payload,
+    layout paths, verification steps) when literal ``TAP_PAT`` is present.
+    Inside Actions prefer :func:`plan_live_bootstrap_trusted_transport`,
+    because the secret arrives as GH_TOKEN/GITHUB_TOKEN there. The PAT
+    value itself is never included in the plan.
     """
     require_tap_pat(environ)
     path, payload = build_bootstrap_repo_request()
+    assert_not_org_bootstrap_endpoint(path)
     require_private_bootstrap_request(payload)
     layout = initial_layout_file_map(project=project)
     return {
         "repository": KNOWLEDGE_REPO_FULL,
+        "request_method": "POST",
         "request_path": path,
         "request_payload": dict(payload),
         "layout_paths": sorted(layout.keys()),
@@ -1251,6 +1395,55 @@ def plan_live_bootstrap(
             "no secret value appears in contents or logs",
         ],
         "credential": "TAP_PAT (held by trusted layer only, never in plan output)",
+    }
+
+
+def plan_live_bootstrap_trusted_transport(
+    environ: Mapping[str, str] | None = None,
+    *,
+    project: str = "runtime-lab",
+) -> dict[str, Any]:
+    """Plan the live bootstrap via the GH_TOKEN/GITHUB_TOKEN transport.
+
+    Fails closed with :class:`KnowledgeAuthBlocker` when no trusted
+    transport token is present. Presence alone does not prove capability:
+    the caller must still run the live authenticated capability check
+    (GET /user, GET /repos/kodmial/agent-knowledge, POST /user/repos with
+    private=true) through GH_TOKEN/GitHub CLI, because the transport may
+    carry either TAP_PAT or the repository-scoped github.token fallback.
+    The token value itself is never included in the plan.
+    """
+    if not trusted_transport_token_present(environ):
+        raise KnowledgeAuthBlocker(redact_knowledge_error(TAP_PAT_BLOCKER_MESSAGE))
+    path, payload = build_bootstrap_repo_request()
+    assert_not_org_bootstrap_endpoint(path)
+    require_private_bootstrap_request(payload)
+    layout = initial_layout_file_map(project=project)
+    return {
+        "repository": KNOWLEDGE_REPO_FULL,
+        "request_method": "POST",
+        "request_path": path,
+        "request_payload": dict(payload),
+        "layout_paths": sorted(layout.keys()),
+        "capability_probes": [
+            "GET /user (authenticated identity; no token output)",
+            "GET /repos/kodmial/agent-knowledge (exists? private?)",
+            "POST /user/repos with private=true (only when missing)",
+            "unauthenticated GET /repos/kodmial/agent-knowledge expects 404",
+        ],
+        "verification": [
+            "full name is exactly kodmial/agent-knowledge",
+            "private == true / visibility is private",
+            "default branch exists",
+            "trusted layer can read the repository",
+            "trusted layer can create/update a bootstrap file",
+            "no anonymous/public read succeeds",
+            "no secret value appears in contents or logs",
+        ],
+        "credential": (
+            "GH_TOKEN/GITHUB_TOKEN trusted transport "
+            "(held by trusted layer only, never in plan output)"
+        ),
     }
 
 

@@ -27,10 +27,13 @@ from automation.knowledge_store import (
     KnowledgeAuthBlocker,
     KnowledgeConflictError,
     PublicRepositoryError,
+    assert_not_org_bootstrap_endpoint,
     build_bootstrap_repo_request,
     build_worker_context,
     cas_commit_files_with_retry,
+    classify_bootstrap_capability_failure,
     create_scoped_token_provider,
+    describe_bootstrap_credential_source,
     detect_app_access_to_knowledge_repo,
     experiment_remote_path,
     initial_layout_file_map,
@@ -38,10 +41,12 @@ from automation.knowledge_store import (
     local_record_file_to_remote_path,
     migrate_experiment_text,
     plan_live_bootstrap,
+    plan_live_bootstrap_trusted_transport,
     redact_knowledge_error,
     require_private_bootstrap_request,
     tap_pat_status,
     topic_remote_path,
+    trusted_transport_token_present,
     verify_knowledge_repository,
     verify_migrated_record_identity,
     worker_payload_contains_credentials,
@@ -97,7 +102,13 @@ def _record_text(issue=37, run_id="r1", title="Test record", **overrides):
 
 def test_bootstrap_request_requires_private_true():
     path, payload = build_bootstrap_repo_request()
-    assert path == "/orgs/kodmial/repos"
+    # kodmial is a personal account: POST /user/repos, never /orgs/...
+    assert path == "/user/repos"
+    assert_not_org_bootstrap_endpoint(path)
+    with pytest.raises(store.KnowledgeStoreError):
+        assert_not_org_bootstrap_endpoint("/orgs/kodmial/repos")
+    with pytest.raises(store.KnowledgeStoreError):
+        assert_not_org_bootstrap_endpoint("/orgs/other/repos")
     assert payload["name"] == "agent-knowledge"
     assert payload["private"] is True
     require_private_bootstrap_request(payload)
@@ -393,8 +404,47 @@ def test_missing_tap_pat_is_explicit_safe_blocker(monkeypatch):
 def test_tap_pat_present_yields_credential_free_plan():
     plan = plan_live_bootstrap({"TAP_PAT": "present-but-opaque"})
     assert plan["repository"] == "kodmial/agent-knowledge"
+    assert plan["request_method"] == "POST"
+    assert plan["request_path"] == "/user/repos"
     assert plan["request_payload"]["private"] is True
     assert "present-but-opaque" not in json.dumps(plan)
+
+
+def test_trusted_transport_plan_uses_personal_account_endpoint():
+    # In Actions TAP_PAT arrives as GH_TOKEN/GITHUB_TOKEN, never TAP_PAT.
+    plan = plan_live_bootstrap_trusted_transport({"GH_TOKEN": "present-but-opaque"})
+    assert plan["request_method"] == "POST"
+    assert plan["request_path"] == "/user/repos"
+    assert plan["request_payload"]["private"] is True
+    assert "present-but-opaque" not in json.dumps(plan)
+    assert not trusted_transport_token_present({})
+    assert trusted_transport_token_present({"GITHUB_TOKEN": "x"})
+    assert not trusted_transport_token_present({"TAP_PAT": "x"})
+    with pytest.raises(KnowledgeAuthBlocker):
+        plan_live_bootstrap_trusted_transport({})
+    # Redacted credential-source description never embeds values.
+    described = describe_bootstrap_credential_source({"GH_TOKEN": "super-secret"})
+    assert "super-secret" not in described
+    assert "GH_TOKEN" in described
+
+
+def test_capability_failure_classification_is_redacted_and_capability_based():
+    for status, marker in ((401, "401"), (403, "403"),
+                           (404, "404"), (422, "422")):
+        with pytest.raises(KnowledgeAuthBlocker) as excinfo:
+            raise classify_bootstrap_capability_failure(
+                operation="POST /user/repos", status=status,
+                message="probe detail ghs_abcDEF123")
+        text = str(excinfo.value)
+        assert marker in text
+        assert "ghs_abcDEF123" not in text
+        assert "[redacted]" in text
+    # 403 blocker explains the github.token fallback cannot create the repo.
+    try:
+        raise classify_bootstrap_capability_failure(
+            operation="POST /user/repos", status=403, message="forbidden")
+    except KnowledgeAuthBlocker as exc:
+        assert "github.token" in str(exc).lower()
 
 
 # -- migrated records preserve identity/provenance ----------------------------
