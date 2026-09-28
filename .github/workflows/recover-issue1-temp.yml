@@ -1,0 +1,25 @@
+name: Recover issue 1 after publish fix
+
+on:
+  push:
+    paths:
+      - '.github/workflows/recover-issue1-temp.yml'
+
+permissions:
+  actions: write
+  issues: write
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Recover issue 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue edit 1 --repo "$GITHUB_REPOSITORY"             --remove-label "automation:paused"             --add-label "automation:in-progress" >/dev/null
+          gh issue comment 1 --repo "$GITHUB_REPOSITORY"             --body "Recovery dispatch after fixing stale-main workflow push rejection."
+          gh workflow run opencode.yml --repo "$GITHUB_REPOSITORY" --ref main             -f mode=issue -f issue_number=1
