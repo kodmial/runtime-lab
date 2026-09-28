@@ -565,3 +565,96 @@ def test_runner_source_enforces_knowledge_handoff_before_success():
     assert "validate_experiment_record_text" in source
     assert "knowledge handoff validation failed" in source
     assert source.index("knowledge handoff validation failed") < source.rindex('job_id, "succeeded"')
+
+
+def test_spool_runner_captures_stdout_and_stderr(tmp_path):
+    runner = SubprocessCommandRunner()
+    result = runner.run(
+        ["sh", "-c", "echo out-msg; echo err-msg >&2"],
+        str(tmp_path),
+        10.0,
+    )
+    assert result.timed_out is False
+    assert result.returncode == 0
+    assert "out-msg" in result.stdout
+    assert "err-msg" in result.stderr
+
+
+def test_spool_runner_reports_nonzero_exit(tmp_path):
+    runner = SubprocessCommandRunner()
+    result = runner.run(["sh", "-c", "echo boom; exit 3"], str(tmp_path), 10.0)
+    assert result.timed_out is False
+    assert result.returncode == 3
+    assert "boom" in result.stdout or "boom" in result.stderr
+
+
+def test_spool_runner_missing_binary_is_127(tmp_path):
+    runner = SubprocessCommandRunner()
+    result = runner.run(
+        ["/nonexistent-runtime-lab-binary-xyz", "--version"],
+        str(tmp_path),
+        10.0,
+    )
+    assert result.timed_out is False
+    assert result.returncode == 127
+
+
+def test_spool_runner_timeout_kills_and_marks_timed_out(tmp_path):
+    runner = SubprocessCommandRunner()
+    result = runner.run(["sh", "-c", "sleep 30"], str(tmp_path), 0.5)
+    assert result.timed_out is True
+    assert result.returncode == 124
+
+
+def test_spool_runner_caps_pathological_output(tmp_path):
+    from runner_server import _SPOOL_READ_CAP_BYTES
+
+    runner = SubprocessCommandRunner()
+    # ~2 MiB of stdout: spool file holds it all, Python keeps only the cap.
+    result = runner.run(
+        ["sh", "-c", "head -c 2097152 /dev/zero | tr '\\0' 'x'; echo"],
+        str(tmp_path),
+        30.0,
+    )
+    assert result.timed_out is False
+    assert result.returncode == 0
+    assert len(result.stdout.encode("utf-8")) <= _SPOOL_READ_CAP_BYTES
+    assert len(result.stdout) > 0
+
+
+def test_spool_runner_child_env_carries_smol_without_clobber(monkeypatch, tmp_path):
+    import subprocess as _subprocess
+
+    monkeypatch.setenv("BUN_OPTIONS", "--operator")
+    seen = {}
+
+    real_popen = _subprocess.Popen
+
+    class _SpyPopen(real_popen):
+        def __init__(self, *args, **kwargs):
+            seen.update(dict(kwargs.get("env") or {}))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(_subprocess, "Popen", _SpyPopen)
+    runner = SubprocessCommandRunner()
+    result = runner.run(["sh", "-c", "echo hi"], str(tmp_path), 10.0)
+    assert result.returncode == 0
+    assert seen.get("BUN_OPTIONS") == "--operator"
+
+    monkeypatch.delenv("BUN_OPTIONS", raising=False)
+    seen.clear()
+    monkeypatch.setattr(_subprocess, "Popen", _SpyPopen)
+    result = runner.run(["sh", "-c", "echo hi"], str(tmp_path), 10.0)
+    assert result.returncode == 0
+    assert seen.get("BUN_OPTIONS") == "--smol"
+
+
+def test_manager_init_default_bun_smol_without_clobber(monkeypatch, tmp_path):
+    monkeypatch.delenv("BUN_OPTIONS", raising=False)
+    assert "BUN_OPTIONS" not in __import__("os").environ
+    _manager(tmp_path)
+    assert __import__("os").environ.get("BUN_OPTIONS") == "--smol"
+
+    monkeypatch.setenv("BUN_OPTIONS", "--operator")
+    _manager(tmp_path)
+    assert __import__("os").environ.get("BUN_OPTIONS") == "--operator"

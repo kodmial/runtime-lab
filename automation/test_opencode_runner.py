@@ -27,7 +27,9 @@ from opencode_runner import (  # noqa: E402
     CHECKOUT_SUBDIR,
     OPENCODE_CONFIG_CONTENT,
     OPENCODE_INSTALL_COMMAND,
+    OPENCODE_LOW_MEMORY_BUN_OPTIONS,
     OPENCODE_PINNED_VERSION,
+    apply_opencode_env_overrides,
     assert_public_clone_url,
     build_changes,
     build_checkout_command,
@@ -37,6 +39,7 @@ from opencode_runner import (  # noqa: E402
     build_rev_parse_command,
     build_status_command,
     decode_change_content,
+    default_opencode_env_overrides,
     is_model_unavailable_error,
     opencode_install_shell_snippet,
     parse_git_status_porcelain,
@@ -638,3 +641,33 @@ def test_runner_holds_no_github_write_credential(tmp_path, monkeypatch):
     for call in runner.calls:
         for part in call["cmd"]:
             assert "ghp_" not in part and "github_pat" not in part.lower()
+
+
+def test_low_memory_env_overrides_include_smol_default():
+    """Run 36449610030 thrashed at the 512 MB ceiling without BUN smol.
+
+    Issue #56 measured BUN_OPTIONS=--smol as a safe ~40 MB harmless
+    default; production never wired it in. The canonical overrides must
+    carry it alongside the confinement settings.
+    """
+    overrides = default_opencode_env_overrides()
+    assert overrides["BUN_OPTIONS"] == "--smol"
+    assert overrides["BUN_OPTIONS"] == OPENCODE_LOW_MEMORY_BUN_OPTIONS
+    assert overrides["OPENCODE_CONFIG_CONTENT"] == OPENCODE_CONFIG_CONTENT
+    assert overrides["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_apply_opencode_env_overrides_never_clobbers_operator_values():
+    env = {"BUN_OPTIONS": "--custom", "PATH": "/usr/bin"}
+    out = apply_opencode_env_overrides(env)
+    assert out is env
+    assert env["BUN_OPTIONS"] == "--custom"
+    assert env["OPENCODE_CONFIG_CONTENT"] == OPENCODE_CONFIG_CONTENT
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_apply_opencode_env_overrides_rejects_non_mapping():
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        apply_opencode_env_overrides(None)

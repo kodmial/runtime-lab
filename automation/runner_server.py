@@ -136,6 +136,7 @@ try:  # pragma: no cover - import path depends on entrypoint
         OPENCODE_CONFIG_CONTENT,
         OPENCODE_INSTALL_MAX_ATTEMPTS,
         OPENCODE_INSTALL_RETRY_DELAYS,
+        apply_opencode_env_overrides,
         build_changes,
         build_checkout_command,
         build_clone_command,
@@ -143,6 +144,7 @@ try:  # pragma: no cover - import path depends on entrypoint
         build_opencode_install_command,
         build_rev_parse_command,
         build_status_command,
+        default_opencode_env_overrides,
         find_opencode_binary,
         is_model_unavailable_error,
         opencode_runtime_install_allowed,
@@ -157,6 +159,7 @@ except ImportError:  # pytest inserts automation/ on sys.path
         OPENCODE_CONFIG_CONTENT,
         OPENCODE_INSTALL_MAX_ATTEMPTS,
         OPENCODE_INSTALL_RETRY_DELAYS,
+        apply_opencode_env_overrides,
         build_changes,
         build_checkout_command,
         build_clone_command,
@@ -164,6 +167,7 @@ except ImportError:  # pytest inserts automation/ on sys.path
         build_opencode_install_command,
         build_rev_parse_command,
         build_status_command,
+        default_opencode_env_overrides,
         find_opencode_binary,
         is_model_unavailable_error,
         opencode_runtime_install_allowed,
@@ -208,6 +212,34 @@ _JOB_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 _MAX_OUTPUT_CHARS = 4000
+
+# Disk-spool read-back cap per child stream (issue #58): bounds Python
+# RAM no matter how chatty the child is. Callers already truncate to
+# _MAX_OUTPUT_CHARS for results; 512 KiB per stream keeps full fidelity
+# for small outputs while capping pathological ones.
+_SPOOL_READ_CAP_BYTES = 512 * 1024
+
+
+def _read_spool_prefix(spool: Any, cap_bytes: int) -> str:
+    """Read at most ``cap_bytes`` from a binary spool file (never raises)."""
+    try:
+        spool.seek(0)
+    except Exception:
+        return ""
+    try:
+        chunk = spool.read(int(cap_bytes) + 1)
+    except Exception:
+        return ""
+    if not chunk:
+        return ""
+    if isinstance(chunk, str):
+        data = chunk.encode("utf-8", errors="replace")[: int(cap_bytes)]
+        return data.decode("utf-8", errors="replace")
+    try:
+        raw = bytes(chunk)[: int(cap_bytes)]
+    except Exception:
+        return ""
+    return raw.decode("utf-8", errors="replace")
 
 
 def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
@@ -283,7 +315,18 @@ class CommandRunner:
 
 
 class SubprocessCommandRunner(CommandRunner):
-    """Default implementation based on subprocess.run (no shell)."""
+    """Default implementation: disk-backed spooling, bounded RAM (no PIPE).
+
+    Issue #58 requires disk-backed stdout/stderr spooling instead of
+    unbounded PIPE buffering on the 512 MB worker; run 36449610030
+    thrashed at the cgroup ceiling while every child stream was also
+    buffered fully in Python RAM (PIPE + decoded strings + combined
+    copies). Each stream spools to an unlinked temporary file and only
+    a capped prefix is read back, so a chatty child can never grow
+    Python RSS without bound. Semantics match the old PIPE version:
+    capped text streams, 124 on timeout, 127 when the binary is
+    missing/unrunnable.
+    """
 
     def run(self, cmd: Sequence[str], cwd: str, timeout: float) -> CommandResult:
         try:
@@ -295,29 +338,51 @@ class SubprocessCommandRunner(CommandRunner):
                 child_env: dict[str, str] | None = scrubbed_env_for_worker()
             except Exception:
                 child_env = None
-            completed = subprocess.run(
-                list(cmd),
-                cwd=cwd,
-                timeout=timeout,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=child_env,
-            )
-        except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-            stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-            return CommandResult(returncode=124, stdout=str(stdout), stderr=str(stderr), timed_out=True)
+            if child_env is not None:
+                try:
+                    apply_opencode_env_overrides(child_env)
+                except Exception:
+                    pass
+            with tempfile.TemporaryFile(mode="w+b") as out_spool, \
+                    tempfile.TemporaryFile(mode="w+b") as err_spool:
+                try:
+                    proc = subprocess.Popen(
+                        list(cmd),
+                        cwd=cwd,
+                        stdout=out_spool,
+                        stderr=err_spool,
+                        env=child_env,
+                    )
+                except FileNotFoundError as exc:
+                    return CommandResult(returncode=127, stdout="", stderr="command not found: %s" % exc)
+                except OSError as exc:
+                    return CommandResult(returncode=127, stdout="", stderr="execution failed: %s" % exc)
+                try:
+                    returncode = proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    try:
+                        proc.wait(timeout=10)
+                    except Exception:
+                        pass
+                    stdout = _read_spool_prefix(out_spool, _SPOOL_READ_CAP_BYTES)
+                    stderr = _read_spool_prefix(err_spool, _SPOOL_READ_CAP_BYTES)
+                    return CommandResult(returncode=124, stdout=stdout, stderr=stderr, timed_out=True)
+                stdout = _read_spool_prefix(out_spool, _SPOOL_READ_CAP_BYTES)
+                stderr = _read_spool_prefix(err_spool, _SPOOL_READ_CAP_BYTES)
+                return CommandResult(
+                    returncode=returncode,
+                    stdout=stdout,
+                    stderr=stderr,
+                    timed_out=False,
+                )
         except FileNotFoundError as exc:
             return CommandResult(returncode=127, stdout="", stderr="command not found: %s" % exc)
         except OSError as exc:
             return CommandResult(returncode=127, stdout="", stderr="execution failed: %s" % exc)
-        return CommandResult(
-            returncode=completed.returncode,
-            stdout=completed.stdout or "",
-            stderr=completed.stderr or "",
-            timed_out=False,
-        )
 
 
 def default_command_for_job(payload: Mapping[str, Any], workspace: str) -> list[str]:
@@ -529,12 +594,21 @@ class JobManager:
         self._install_lock = threading.Lock()
         self._jobs: dict[str, JobRecord] = {}
         self._idempotency: dict[str, str] = {}
-        # Confine every OpenCode subprocess to read-only git inspection.
-        # Credentials stay inherited from the process environment (Render
-        # env vars); only confinement settings are defaulted here so
-        # concurrent jobs never race on global state.
-        os.environ.setdefault("OPENCODE_CONFIG_CONTENT", OPENCODE_CONFIG_CONTENT)
-        os.environ.setdefault("GIT_TERMINAL_PROMPT", "0")
+        # Confine every OpenCode subprocess to read-only git inspection
+        # and apply the validated low-memory default (BUN_OPTIONS=--smol,
+        # issue #56: ~40 MB off the ~600 MB peak; run 36449610030
+        # thrashed at the 512 MB ceiling without it). Credentials stay
+        # inherited from the process environment (Render env vars); only
+        # safe defaults are set here so concurrent jobs never race on
+        # global state. The canonical defaults live in
+        # opencode_runner.default_opencode_env_overrides; explicit
+        # operator values always win (setdefault semantics).
+        try:
+            for _key, _value in default_opencode_env_overrides().items():
+                os.environ.setdefault(_key, _value)
+        except Exception:
+            os.environ.setdefault("OPENCODE_CONFIG_CONTENT", OPENCODE_CONFIG_CONTENT)
+            os.environ.setdefault("GIT_TERMINAL_PROMPT", "0")
 
     # -- introspection ----------------------------------------------------
 
