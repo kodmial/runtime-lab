@@ -114,7 +114,7 @@ jobs:
           - Add or update automated tests when appropriate.
           - Run the relevant local checks when practical.
           - Keep all comments and commit-facing text in English.
-          - Do not create releases and do not add CodeRabbit automation.
+          - Do not add unrelated automation outside the issue scope.
           - Do not perform git commits, pushes, branch switches, rebases, resets, or PR creation; the workflow owns Git state.
           EOF
           )"
