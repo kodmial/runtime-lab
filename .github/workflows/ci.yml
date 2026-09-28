@@ -25,7 +25,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Resolve target
@@ -78,7 +78,41 @@ jobs:
           ref: ${{ steps.target.outputs.sha }}
           persist-credentials: false
 
+      - name: Detect project stack
+        id: stack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python=false
+          node=false
+          java=false
+          go=false
+          rust=false
+
+          if [[ -f pyproject.toml || -f requirements.txt || -f setup.py || -f setup.cfg ]] || \
+             find . -type f -name '*.py' -not -path './.git/*' -not -path './.github/*' | grep -q .; then
+            python=true
+          fi
+          [[ -f package.json ]] && node=true
+          if [[ -f pom.xml || -f mvnw || -f build.gradle || -f build.gradle.kts || -f gradlew ]]; then
+            java=true
+          fi
+          [[ -f go.mod ]] && go=true
+          [[ -f Cargo.toml ]] && rust=true
+
+          {
+            echo "python=$python"
+            echo "node=$node"
+            echo "java=$java"
+            echo "go=$go"
+            echo "rust=$rust"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Detected: python=$python node=$node java=$java go=$go rust=$rust"
+
       - name: Set up Python
+        if: steps.stack.outputs.python == 'true'
         uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d # v5
         with:
           python-version: "3.12"
@@ -89,32 +123,96 @@ jobs:
         run: |
           set -euo pipefail
 
-          python -m compileall -q -x '(^|/)(\.git|\.venv|venv)(/|$)' .
+          checked=false
 
-          python -m pip install --upgrade pip
-
-          if [[ -f requirements.txt ]]; then
-            python -m pip install -r requirements.txt
+          if [[ "${{ steps.stack.outputs.python }}" == "true" ]]; then
+            checked=true
+            echo "::group::Python"
+            python -m compileall -q -x '(^|/)(\.git|\.venv|venv)(/|$)' .
+            python -m pip install --upgrade pip
+            if [[ -f requirements.txt ]]; then
+              python -m pip install -r requirements.txt
+            fi
+            if [[ -f pyproject.toml ]]; then
+              python -m pip install -e .
+            fi
+            if find . -type f \( -name 'test_*.py' -o -name '*_test.py' \) -not -path './.git/*' | grep -q .; then
+              python -m pip install pytest
+              python -m pytest -q
+            else
+              echo "No Python tests detected."
+            fi
+            echo "::endgroup::"
           fi
 
-          if [[ -f pyproject.toml ]]; then
-            python -m pip install -e .
+          if [[ "${{ steps.stack.outputs.node }}" == "true" ]]; then
+            checked=true
+            echo "::group::Node"
+            node --version
+            npm --version
+            if [[ -f package-lock.json ]]; then
+              npm ci
+            else
+              npm install
+            fi
+            npm test --if-present
+            npm run build --if-present
+            echo "::endgroup::"
           fi
 
-          if find . -type f \( -name 'test_*.py' -o -name '*_test.py' \) -not -path './.git/*' | grep -q .; then
-            python -m pip install pytest
-            python -m pytest -q
-          else
-            echo "No Python tests yet; skipping pytest."
+          if [[ "${{ steps.stack.outputs.java }}" == "true" ]]; then
+            checked=true
+            echo "::group::Java"
+            java -version
+            if [[ -f mvnw ]]; then
+              chmod +x mvnw
+              ./mvnw -B verify
+            elif [[ -f pom.xml ]]; then
+              mvn -B verify
+            fi
+            if [[ -f gradlew ]]; then
+              chmod +x gradlew
+              ./gradlew build
+            elif [[ -f build.gradle || -f build.gradle.kts ]]; then
+              gradle build
+            fi
+            echo "::endgroup::"
+          fi
+
+          if [[ "${{ steps.stack.outputs.go }}" == "true" ]]; then
+            checked=true
+            echo "::group::Go"
+            go version
+            go test ./...
+            go build ./...
+            echo "::endgroup::"
+          fi
+
+          if [[ "${{ steps.stack.outputs.rust }}" == "true" ]]; then
+            checked=true
+            echo "::group::Rust"
+            rustc --version
+            cargo --version
+            cargo test --all-targets
+            cargo build --all-targets
+            echo "::endgroup::"
           fi
 
           if [[ -f Dockerfile ]]; then
+            checked=true
+            echo "::group::Docker"
             docker build -t runtime-lab-ci .
+            echo "::endgroup::"
           fi
 
           while IFS= read -r -d '' script; do
+            checked=true
             bash -n "$script"
           done < <(find . -type f -name '*.sh' -not -path './.git/*' -print0)
+
+          if [[ "$checked" == "false" ]]; then
+            echo "No implementation stack exists yet; nothing language-specific to build."
+          fi
 
       - name: Publish CI result and continue automation
         if: always()
