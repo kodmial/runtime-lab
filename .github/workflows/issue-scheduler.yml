@@ -47,6 +47,36 @@ jobs:
             const renderSmoke = 'execution:render-smoke';
             const renderE2E = 'execution:render-e2e';
 
+            let executionBackend = 'actions';
+            try {
+              const {data: configFile} = await github.rest.repos.getContent({
+                owner, repo, path: 'automation/control-plane.json', ref: 'main',
+              });
+              if (Array.isArray(configFile) || !configFile.content) {
+                throw new Error('automation/control-plane.json is not a regular file');
+              }
+              const config = JSON.parse(
+                Buffer.from(configFile.content, 'base64').toString('utf8')
+              );
+              executionBackend = config.execution_backend || 'actions';
+            } catch (err) {
+              if (err.status !== 404) throw err;
+            }
+
+            if (!['actions', 'render-controller'].includes(executionBackend)) {
+              throw new Error(
+                'Unsupported execution_backend in automation/control-plane.json: ' +
+                executionBackend
+              );
+            }
+
+            if (executionBackend === 'render-controller') {
+              core.notice(
+                'Direct Render controller is active; Actions issue dispatch is disabled.'
+              );
+              return;
+            }
+
             const labelSpecs = [
               ['priority:p0', 'B60205', 'P0 — critical work.'],
               ['priority:p1', 'D93F0B', 'P1 — high-priority planned work.'],
