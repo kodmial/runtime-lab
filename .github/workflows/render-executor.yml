@@ -20,7 +20,7 @@ permissions:
   statuses: write
 
 concurrency:
-  group: runtime-lab-render-ephemeral
+  group: runtime-lab-render-${{ inputs.issue_number }}
   cancel-in-progress: false
 
 jobs:
@@ -48,7 +48,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
           RENDER_API_KEY: ${{ secrets.KEY }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
