@@ -66,7 +66,21 @@ jobs:
       - name: Install OpenCode CLI
         run: |
           set -euo pipefail
-          curl -fsSL https://opencode.ai/install | bash
+
+          for attempt in 1 2 3; do
+            echo "OpenCode install attempt $attempt/3"
+            if curl -fsSL https://opencode.ai/install | bash; then
+              break
+            fi
+
+            if [[ "$attempt" == "3" ]]; then
+              echo "::error::OpenCode installer failed after 3 attempts"
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+
+          test -x "$HOME/.opencode/bin/opencode"
           echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
 
       - name: Implement issue
