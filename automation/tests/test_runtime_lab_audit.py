@@ -111,9 +111,9 @@ def test_live_control_plane_uses_temporary_actions_backend():
     assert config["execution_backend"] == "actions"
 
 
-def test_live_scheduler_permits_four_concurrent_issues():
+def test_live_scheduler_permits_six_concurrent_issues():
     text = _read_workflow("issue-scheduler.yml")
-    assert scheduler_wip_default(text) == "4"
+    assert scheduler_wip_default(text) == "6"
     assert scheduler_max_attempts_default(text) == "4"
 
 
