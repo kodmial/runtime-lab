@@ -1407,6 +1407,7 @@ class Controller:
         max_concurrent: int = MAX_CONCURRENT_AUTOMATION_JOBS,
         writeback_factory: Any | None = None,
         github_api: Any | None = None,
+        provider_fleet: Any | None = None,
     ) -> None:
         if max_concurrent <= 0:
             raise ValueError("max_concurrent must be positive")
@@ -1439,6 +1440,10 @@ class Controller:
         # and verifies cleanup exactly as in #10.
         self.writeback_factory = writeback_factory
         self.github_api = github_api
+        # Issue #64: provider fleet control plane. Separate module behind
+        # the same controller process; None when unconfigured (fail
+        # closed). Never carries LLM traffic (control/metadata only).
+        self.provider_fleet = provider_fleet
         self.deployment_pattern = resolve_deployment_pattern()
         self._slots = threading.Semaphore(max_concurrent)
         self._lock = threading.Lock()

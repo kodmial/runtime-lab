@@ -165,6 +165,19 @@ def build_controller_from_env(
         provider = StaticSnapshotProvider()
         writeback_factory = None
         github_api = None
+    # Issue #64: provider fleet control plane lives behind the same
+    # HTTP process but never carries LLM traffic (control/metadata only).
+    fleet = None
+    try:
+        try:
+            from automation.provider_routes import build_fleet_from_env
+        except ImportError:
+            from provider_routes import (  # type: ignore[no-redef]
+                build_fleet_from_env,
+            )
+        fleet = build_fleet_from_env()
+    except Exception:
+        fleet = None
     return Controller(
         webhook_secret=os.environ.get(ENV_WEBHOOK_SECRET, ""),
         store=store,
@@ -176,6 +189,7 @@ def build_controller_from_env(
             os.environ.get(ENV_MAX_CONCURRENT)),
         writeback_factory=writeback_factory,
         github_api=github_api,
+        provider_fleet=fleet,
     )
 
 
@@ -215,11 +229,146 @@ class ControllerHandler(BaseHTTPRequestHandler):
     def _path_only(self) -> str:
         return urllib.parse.urlsplit(self.path).path
 
+    def _provider_fleet(self) -> Any:
+        controller = self.controller
+        if controller is None:
+            return None
+        return getattr(controller, "provider_fleet", None)
+
+    def _require_provider_auth(self, fleet: Any) -> bool:
+        authorization = self.headers.get("Authorization")
+        try:
+            return bool(fleet.check_auth(authorization))
+        except Exception:
+            return False
+
+    def _provider_pool_from_path(self, path: str,
+                                 suffix: str = "") -> str | None:
+        try:
+            try:
+                from automation.provider_routes import PROVIDER_ROUTES_PREFIX
+            except ImportError:
+                from provider_routes import (  # type: ignore[no-redef]
+                    PROVIDER_ROUTES_PREFIX,
+                )
+        except ImportError:
+            return None
+        prefix = PROVIDER_ROUTES_PREFIX + "/"
+        if not path.startswith(prefix):
+            return None
+        remainder = path[len(prefix):]
+        if suffix:
+            if not remainder.endswith(suffix):
+                return None
+            remainder = remainder[: -len(suffix)]
+        pool = urllib.parse.unquote(remainder).strip().strip("/")
+        if not pool or "/" in pool:
+            return None
+        return pool
+
+    def _handle_provider_route_read(self, pool: str) -> None:
+        fleet = self._provider_fleet()
+        if fleet is None:
+            self._send_json(503, {"error": "provider fleet is not configured"})
+            return
+        if not self._require_provider_auth(fleet):
+            self._send_json(401, {"error": "unauthorized"})
+            return
+        try:
+            status, body = fleet.get_route(pool)
+        except Exception as exc:
+            # Name-based match: the fleet may come from either the
+            # top-level or the automation.* module instance (no __init__
+            # package; both import paths exist in tests and prod).
+            if type(exc).__name__ == "PoolRejectedError":
+                self._send_json(404, {"error": "unknown pool"})
+                return
+            self._send_json(503, {"error": "provider route unavailable"})
+            return
+        # Safe public contract only; never includes credentials or
+        # request-payload material.
+        self._send_json(status, body)
+
+    def _read_bounded_body(self, limit: int) -> bytes | None:
+        length = self.headers.get("Content-Length")
+        if not length:
+            return b""
+        try:
+            count = int(length)
+        except ValueError:
+            return None
+        if count < 0 or count > limit:
+            return None
+        if count == 0:
+            return b""
+        return self.rfile.read(count)
+
+    def _handle_provider_rotate(self, pool: str) -> None:
+        fleet = self._provider_fleet()
+        if fleet is None:
+            self._send_json(503, {"error": "provider fleet is not configured"})
+            return
+        if not self._require_provider_auth(fleet):
+            self._send_json(401, {"error": "unauthorized"})
+            return
+        try:
+            try:
+                from automation.provider_routes import (
+                    MAX_ROUTE_BODY_BYTES,
+                    coerce_expected_generation,
+                    sanitize_rotate_body,
+                )
+            except ImportError:
+                from provider_routes import (  # type: ignore[no-redef]
+                    MAX_ROUTE_BODY_BYTES,
+                    coerce_expected_generation,
+                    sanitize_rotate_body,
+                )
+        except ImportError:
+            self._send_json(503, {"error": "provider route unavailable"})
+            return
+        raw = self._read_bounded_body(MAX_ROUTE_BODY_BYTES)
+        if raw is None:
+            self._send_json(413, {"error": "request body too large"})
+            return
+        try:
+            parsed = json.loads(raw.decode("utf-8") if raw else "{}")
+        except (ValueError, UnicodeDecodeError):
+            self._send_json(400, {"error": "request body must be valid JSON"})
+            return
+        if parsed is None:
+            parsed = {}
+        if not isinstance(parsed, dict):
+            self._send_json(400, {"error": "request body must be a JSON object"})
+            return
+        try:
+            cleaned = sanitize_rotate_body(parsed)
+            expected = coerce_expected_generation(
+                cleaned.get("expected_generation"))
+            key = str(cleaned.get("idempotency_key") or "")
+        except Exception:
+            self._send_json(400, {"error": "invalid rotate request"})
+            return
+        try:
+            status, body = fleet.rotate(
+                pool, expected_generation=expected, idempotency_key=key)
+        except Exception as exc:
+            if type(exc).__name__ == "PoolRejectedError":
+                self._send_json(404, {"error": "unknown pool"})
+                return
+            self._send_json(502, {"error": "rotation failed"})
+            return
+        self._send_json(status, body)
+
     # -- routes -----------------------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802
         controller = self.controller
         path = self._path_only()
+        pool = self._provider_pool_from_path(path)
+        if pool is not None:
+            self._handle_provider_route_read(pool)
+            return
         if path == CONTROLLER_HEALTH_PATH:
             if controller is None:
                 self._send_json(503, {"status": "starting", "ready": False,
@@ -285,6 +434,10 @@ class ControllerHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         controller = self.controller
         path = self._path_only()
+        pool = self._provider_pool_from_path(path, suffix="/rotate")
+        if pool is not None:
+            self._handle_provider_rotate(pool)
+            return
         if path in WEBHOOK_PATH_ALIASES:
             if controller is None:
                 self._send_json(503, {"error": "controller is not ready"})
@@ -381,6 +534,14 @@ def create_server(
     # so a restart between durable accept and dispatch cannot lose work.
     try:
         resolved.recover_pending()
+    except Exception:
+        pass
+    # Issue #64: recover durable provider routes (restart must not lose
+    # the active route/generation).
+    try:
+        fleet = getattr(resolved, "provider_fleet", None)
+        if fleet is not None and hasattr(fleet, "recover"):
+            fleet.recover()
     except Exception:
         pass
     handler = type("BoundControllerHandler", (ControllerHandler,),
