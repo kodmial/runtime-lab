@@ -542,6 +542,51 @@ def parse_exact_workflow_artifact_requirement(
         return None
 
 
+# Validated advisories for known immutable workflow artifacts (issue
+# #123): artifact IDs are immutable, so a proven finding about one
+# exact artifact never goes stale. Keyed by
+# (artifact_id, source_run_id); values are short evidence-backed notes
+# appended to the infrastructure-blocked diagnostic so a future
+# delivery mechanism cannot misread the artifact's own failure mode
+# as a memory result. Data, not logic: adding a future advisory must
+# not require touching the blocker itself.
+KNOWN_WORKFLOW_ARTIFACT_ADVISORIES = {
+    ("11001896223", "36492639568"): (
+        " Known-artifact advisory: this exact PR #12 artifact "
+        "(opencode-coding-linux-x64, binary SHA-256 "
+        "a6dabf731c49999d5c95dd7477cd74f18070615f6a01a8ce36cd8e35b5dce38d) "
+        "reports version 0.0.0 (unstamped build: the artifact workflow "
+        "runs build:coding with no OPENCODE_VERSION/tag fetch) and every "
+        "real-agent trial fast-fails in seconds at the provider free-tier "
+        "gate ('OpenCode 1.18.0 or newer is required to use the free "
+        "tier') with sub-ceiling peaks and zero memory-pressure events, "
+        "so its fast-fail peaks are never memory-fit evidence; a "
+        "version-stamped rebuild is required before any memory verdict, "
+        "and the feasible qualification path where credentials exist is "
+        "automation/opencode_max_headless_qualify.py (see "
+        "automation/knowledge/experiments/issue-109-run-36493321957.md)."
+    ),
+}
+
+
+def known_workflow_artifact_advisory(
+    requirement: Mapping[str, Any] | None,
+) -> str:
+    """Return the validated advisory for a known artifact, else "".
+
+    Never raises: unparsable input means "no advisory", never a gate
+    trip and never a blocker failure.
+    """
+    try:
+        if not isinstance(requirement, Mapping):
+            return ""
+        artifact = str(requirement.get("artifact_id", "") or "").strip()
+        run = str(requirement.get("source_run_id", "") or "").strip()
+        return KNOWN_WORKFLOW_ARTIFACT_ADVISORIES.get((artifact, run), "")
+    except Exception:
+        return ""
+
+
 def exact_workflow_artifact_blocker(requirement: Mapping[str, Any]) -> str:
     """Explain why an exact workflow artifact cannot run on Render (issue #115).
 
@@ -580,6 +625,9 @@ def exact_workflow_artifact_blocker(requirement: Mapping[str, Any]) -> str:
     )
     if digest:
         reason += " Expected archive digest sha256:%s." % digest
+    reason += known_workflow_artifact_advisory(
+        requirement if isinstance(requirement, Mapping) else None
+    )
     return reason
 
 

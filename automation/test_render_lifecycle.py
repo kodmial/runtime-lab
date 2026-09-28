@@ -74,6 +74,7 @@ from render_lifecycle import (  # noqa: E402
     is_terminal_job_status,
     experiment_record_path,
     knowledge_handoff_instructions,
+    known_workflow_artifact_advisory,
     validate_experiment_record_text,
     parse_exact_workflow_artifact_requirement,
     resolve_task_text,
@@ -792,3 +793,43 @@ def test_exact_workflow_artifact_blocker_names_evidence_and_gap():
     fallback = exact_workflow_artifact_blocker({})
     assert "infrastructure-blocked" in fallback
     assert exact_workflow_artifact_blocker(None) != ""
+
+
+def test_known_workflow_artifact_advisory_names_version_gate():
+    # Regression for run 36499977510 (repair issue #123): the
+    # infrastructure-blocked refusal for the exact PR #12 artifact
+    # named only the transport gap, inviting a future delivery
+    # mechanism to misread the artifact's own seconds-fast 0.0.0
+    # provider-gate fast-fail as a memory result. The blocker must
+    # carry the validated #109 advisory for this immutable artifact
+    # (version 0.0.0, free-tier gate stderr, sub-ceiling peaks, zero
+    # pressure events, version-stamped rebuild required, Actions-side
+    # harness pointer) while leaving every other contract's message
+    # unchanged.
+    requirement = parse_exact_workflow_artifact_requirement(
+        "t", ISSUE_110_ARTIFACT_BODY)
+    assert requirement is not None
+    advisory = known_workflow_artifact_advisory(requirement)
+    assert "0.0.0" in advisory
+    assert "1.18.0 or newer" in advisory
+    assert "opencode_max_headless_qualify" in advisory
+    message = exact_workflow_artifact_blocker(requirement)
+    assert advisory in message
+    assert "infrastructure-blocked" in message
+    # Unknown artifacts get no advisory and the base message is
+    # byte-identical with or without the lookup.
+    other = {
+        "artifact_id": "99999999999",
+        "artifact_name": "opencode-coding-linux-x64",
+        "source_run_id": "36492639568",
+        "archive_sha256": "8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df",
+        "source_sha": "",
+    }
+    assert known_workflow_artifact_advisory(other) == ""
+    other_message = exact_workflow_artifact_blocker(other)
+    assert "Known-artifact advisory" not in other_message
+    assert "infrastructure-blocked" in other_message
+    # Garbage input never raises and never yields an advisory.
+    assert known_workflow_artifact_advisory(None) == ""
+    assert known_workflow_artifact_advisory({}) == ""
+    assert known_workflow_artifact_advisory("11001896223") == ""

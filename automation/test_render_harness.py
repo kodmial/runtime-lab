@@ -2063,6 +2063,13 @@ def test_job_refuses_issue110_exact_artifact_before_creation(tmp_path):
     assert "11001896223" in combined
     assert "36492639568" in combined
     assert "baseline binary" in combined
+    # Repair issue #123 (run 36499977510): the refusal for this known
+    # immutable artifact must also carry the validated 0.0.0
+    # version-gate advisory so a future delivery mechanism cannot
+    # misread the artifact's seconds-fast provider-gate fast-fail as
+    # a memory result.
+    assert "0.0.0" in combined
+    assert "opencode_max_headless_qualify" in combined
     # No Render service was created and no state was recorded.
     assert not log.exists() or "api.render.com/v1/services" not in log.read_text()
     assert not state.exists() or "srv-" not in state.read_text()
