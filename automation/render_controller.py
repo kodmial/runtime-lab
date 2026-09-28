@@ -1021,6 +1021,17 @@ class DispatchResult:
     delete_status: int | None = None
     verify_status: int | None = None
     cleanup_verified: bool = False
+    # Full terminal runner payload (job_id/status/changes/...), attached so
+    # the controller can hand it to the GitHub write-back stage (#11)
+    # without re-contacting the (already deleted) worker.
+    result_payload: dict[str, Any] = field(default_factory=dict)
+    # GitHub write-back proof (filled by Controller when a writeback
+    # factory is configured): action/branch/pr_number/dispatched_ci.
+    writeback_action: str = ""
+    writeback_branch: str = ""
+    writeback_pr: int | None = None
+    writeback_ci_dispatched: bool = False
+    writeback_error: str = ""
 
 
 def cleanup_worker(client: RenderWorkerClient, service_id: str) -> tuple[int | None, int | None, bool]:
@@ -1238,6 +1249,8 @@ def execute_issue_attempt(
             model=model,
             status=result.status,
             reason=str(result.summary or result.error or "")[:500],
+            result_payload=dict(result_payload) if isinstance(
+                result_payload, Mapping) else {},
         )
         return outcome
     finally:
@@ -1254,6 +1267,72 @@ def execute_issue_attempt(
 # ---------------------------------------------------------------------------
 # Controller: idempotent ingress + concurrency + dispatch ownership.
 # ---------------------------------------------------------------------------
+
+_WRITEBACK_SECRET_PATTERNS = None  # compiled lazily via github_app when present
+
+
+def _redact_controller_error(exc: BaseException) -> str:
+    """Redact secret material from a dispatch/write-back failure reason."""
+    try:  # pragma: no cover - import path depends on entrypoint
+        from automation.github_app import redact_secrets as _redact
+    except ImportError:
+        try:
+            from github_app import redact_secrets as _redact  # type: ignore[no-redef]
+        except ImportError:
+            _redact = None  # type: ignore[assignment]
+    text = "%s: %s" % (type(exc).__name__, exc)
+    if _redact is not None:
+        try:
+            return _redact(text)[:500]
+        except Exception:
+            pass
+    import re as _re
+
+    redacted = _re.sub(r"(?i)bearer\s+[A-Za-z0-9._\-~+/=]+", "[redacted]", text)
+    redacted = _re.sub(r"gh[pousr]_[A-Za-z0-9]+", "[redacted]", redacted)
+    redacted = _re.sub(r"ghs_[A-Za-z0-9]+", "[redacted]", redacted)
+    redacted = _re.sub(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+                       "[redacted]", redacted)
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if not any(marker in upper for marker in ("TOKEN", "KEY", "SECRET", "PASSWORD")):
+            continue
+        if isinstance(value, str) and len(value) >= 4 and value in redacted:
+            redacted = redacted.replace(value, "[redacted]")
+    return redacted[:500]
+
+
+def _best_effort_reserve(github_api: Any | None, issue: int) -> None:
+    """Apply the automation:in-progress reservation label (never blocks)."""
+    if github_api is None or issue <= 0:
+        return
+    try:
+        add = getattr(github_api, "add_labels", None)
+        if callable(add):
+            add(issue, ["automation:in-progress"])
+            return
+        reserve = getattr(github_api, "reserve_issue", None)
+        if callable(reserve):
+            reserve(issue)
+    except Exception:
+        pass
+
+
+def _best_effort_release(github_api: Any | None, issue: int) -> None:
+    """Remove the reservation label (never blocks dispatch/cleanup)."""
+    if github_api is None or issue <= 0:
+        return
+    try:
+        remove = getattr(github_api, "remove_label", None)
+        if callable(remove):
+            remove(issue, "automation:in-progress")
+            return
+        release = getattr(github_api, "release_reservation", None)
+        if callable(release):
+            release(issue)
+    except Exception:
+        pass
+
 
 class Controller:
     """Owns webhook acceptance, scheduling and worker dispatch.
@@ -1279,6 +1358,8 @@ class Controller:
         wip_limit: int = DEFAULT_WIP_LIMIT,
         max_attempts: int = DEFAULT_MAX_DISPATCH_ATTEMPTS,
         max_concurrent: int = MAX_CONCURRENT_AUTOMATION_JOBS,
+        writeback_factory: Any | None = None,
+        github_api: Any | None = None,
     ) -> None:
         if max_concurrent <= 0:
             raise ValueError("max_concurrent must be positive")
@@ -1301,6 +1382,16 @@ class Controller:
         self.wip_limit = wip_limit
         self.max_attempts = max_attempts
         self.max_concurrent = max_concurrent
+        # Issue #11: GitHub App write-back from the Render controller.
+        # ``writeback_factory`` maps an issue number to a #5-compatible
+        # WritebackClient (App installation-token implementation in
+        # automation/github_app.py), or returns None when GitHub writes are
+        # disabled. ``github_api`` is the optional installation-token API
+        # client used for best-effort reservation labels. Both are
+        # optional: without them the controller still dispatches workers
+        # and verifies cleanup exactly as in #10.
+        self.writeback_factory = writeback_factory
+        self.github_api = github_api
         self.deployment_pattern = resolve_deployment_pattern()
         self._slots = threading.Semaphore(max_concurrent)
         self._lock = threading.Lock()
@@ -1540,6 +1631,9 @@ class Controller:
                                   reason="dispatching %s" % decision.reason)
             region = self.region
             model = self.model
+            # Best-effort reservation label before the worker starts; label
+            # failures never block dispatch or cleanup.
+            _best_effort_reserve(self.github_api, issue)
             result = execute_issue_attempt(
                 delivery_id=delivery,
                 issue_number=issue,
@@ -1555,6 +1649,100 @@ class Controller:
                 runner_client=self.runner_client,
             )
             # execute_issue_attempt guarantees deletion+verification in its
+            # finally path, so the worker is already gone before any
+            # GitHub write-back below runs. Write-back failures therefore
+            # never leak a worker and never expose secrets (redacted).
+            writeback_summary = ""
+            if self.writeback_factory is not None:
+                try:
+                    client = self.writeback_factory(issue)
+                except Exception as exc:
+                    redacted = _redact_controller_error(exc)
+                    result.writeback_error = redacted
+                    if delivery:
+                        self.store.update(
+                            delivery,
+                            status="failed",
+                            worker_service_id=result.worker_service_id,
+                            job_id=result.job_id,
+                            execution_mode=result.execution_mode,
+                            reason="github auth failed (worker cleaned up): %s"
+                            % redacted,
+                        )
+                    _best_effort_release(self.github_api, issue)
+                    return {"delivery_id": delivery, "processed": True,
+                            "dispatched": True, "ok": False,
+                            "worker_service_id": result.worker_service_id,
+                            "job_id": result.job_id,
+                            "cleanup_verified": result.cleanup_verified,
+                            "writeback_error": redacted,
+                            "correlation": format_correlation(
+                                delivery_id=delivery, issue_number=issue,
+                                worker_service_id=result.worker_service_id,
+                                job_id=result.job_id)}
+                if client is not None and result.result_payload:
+                    try:
+                        try:
+                            from automation.result_materialize import (
+                                materialize_result as _materialize,
+                            )
+                        except ImportError:
+                            from result_materialize import (  # type: ignore[no-redef]
+                                materialize_result as _materialize,
+                            )
+                        payload = dict(result.result_payload)
+                        payload.setdefault("issue_number", issue)
+                        metadata = payload.get("metadata")
+                        if isinstance(metadata, dict):
+                            metadata = dict(metadata)
+                            metadata.setdefault("issue_number", issue)
+                            payload["metadata"] = metadata
+                        else:
+                            payload["metadata"] = {"issue_number": issue}
+                        suffix = "ctrl-%s" % (
+                            delivery[:12] if delivery else uuid.uuid4().hex[:12])
+                        outcome = _materialize(
+                            payload, client=client,
+                            unique_suffix=re.sub(r"[^A-Za-z0-9._-]",
+                                                "-", suffix).strip("-") or "ctrl",
+                            issue_title=event.title,
+                        )
+                        result.writeback_action = outcome.action
+                        result.writeback_branch = outcome.branch
+                        result.writeback_pr = outcome.pr_number
+                        result.writeback_ci_dispatched = outcome.dispatched_ci
+                        writeback_summary = " writeback=%s branch=%s pr=%s" % (
+                            outcome.action, outcome.branch or "-",
+                            outcome.pr_number if outcome.pr_number is not None else "-")
+                        if outcome.action in ("created", "updated"):
+                            pass  # reservation held by the open PR
+                        else:
+                            _best_effort_release(self.github_api, issue)
+                    except Exception as exc:
+                        redacted = _redact_controller_error(exc)
+                        result.writeback_error = redacted
+                        if delivery:
+                            self.store.update(
+                                delivery,
+                                status="failed",
+                                worker_service_id=result.worker_service_id,
+                                job_id=result.job_id,
+                                execution_mode=result.execution_mode,
+                                reason="github write-back failed (worker cleaned up): %s%s"
+                                % (redacted, writeback_summary),
+                            )
+                        _best_effort_release(self.github_api, issue)
+                        return {"delivery_id": delivery, "processed": True,
+                                "dispatched": True, "ok": False,
+                                "worker_service_id": result.worker_service_id,
+                                "job_id": result.job_id,
+                                "cleanup_verified": result.cleanup_verified,
+                                "writeback_error": redacted,
+                                "correlation": format_correlation(
+                                    delivery_id=delivery, issue_number=issue,
+                                    worker_service_id=result.worker_service_id,
+                                    job_id=result.job_id)}
+            # execute_issue_attempt guarantees deletion+verification in its
             # finally path; record the correlation here.
             if delivery:
                 self.store.update(
@@ -1563,15 +1751,20 @@ class Controller:
                     worker_service_id=result.worker_service_id,
                     job_id=result.job_id,
                     execution_mode=result.execution_mode,
-                    reason="%s worker=%s job=%s" % (
+                    reason="%s worker=%s job=%s%s" % (
                         result.status or ("ok" if result.ok else "failed"),
                         result.worker_service_id or "-",
-                        result.job_id or "-"),
+                        result.job_id or "-",
+                        writeback_summary),
                 )
             return {"delivery_id": delivery, "processed": True,
                     "dispatched": True, "ok": result.ok,
                     "worker_service_id": result.worker_service_id,
                     "job_id": result.job_id,
+                    "cleanup_verified": result.cleanup_verified,
+                    "writeback_action": result.writeback_action,
+                    "writeback_branch": result.writeback_branch,
+                    "writeback_pr": result.writeback_pr,
                     "correlation": format_correlation(
                         delivery_id=delivery, issue_number=issue,
                         worker_service_id=result.worker_service_id,

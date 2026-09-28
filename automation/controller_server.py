@@ -118,18 +118,64 @@ def build_controller_from_env(
     store: DeliveryStore | None = None,
     controller: Controller | None = None,
 ) -> Controller:
-    """Build the controller from environment (no secrets logged)."""
+    """Build the controller from environment (no secrets logged).
+
+    Besides the webhook secret and Render owner id, this wires the issue
+    #11 GitHub App write-back path when the App secrets are present
+    (``GITHUB_APP_ID`` / ``GITHUB_APP_PRIVATE_KEY`` /
+    ``GITHUB_APP_INSTALLATION_ID`` plus ``GITHUB_REPOSITORY``). No
+    long-lived PAT (``GITHUB_TOKEN``/``GH_TOKEN``) is ever consulted. When
+    the App secrets are absent, the controller still runs (dispatch +
+    verified cleanup) with GitHub writes disabled.
+    """
     if controller is not None:
         return controller
+    provider: Any = StaticSnapshotProvider()
+    writeback_factory = None
+    github_api = None
+    try:
+        try:
+            from automation.github_app import (
+                build_provider_and_client,
+                is_app_configured,
+                load_app_config_from_env,
+                writeback_client_for,
+            )
+        except ImportError:
+            from github_app import (  # type: ignore[no-redef]
+                build_provider_and_client,
+                is_app_configured,
+                load_app_config_from_env,
+                writeback_client_for,
+            )
+        if is_app_configured():
+            config = load_app_config_from_env()
+            api, app_provider = build_provider_and_client(config)
+            provider = app_provider
+            github_api = api
+
+            def _factory(_issue: int, _api: Any = api) -> Any:
+                return writeback_client_for(_api)
+
+            writeback_factory = _factory
+    except Exception:
+        # Offline/test mode or incomplete App config: GitHub writes stay
+        # disabled, dispatch + verified cleanup still work. Secrets are
+        # never logged here.
+        provider = StaticSnapshotProvider()
+        writeback_factory = None
+        github_api = None
     return Controller(
         webhook_secret=os.environ.get(ENV_WEBHOOK_SECRET, ""),
         store=store,
-        provider=StaticSnapshotProvider(),
+        provider=provider,
         render_client=None,  # wired by the deployment with Render credentials
         runner_client=None,
         owner_id=os.environ.get(ENV_OWNER_ID, ""),
         max_concurrent=resolve_max_concurrent(
             os.environ.get(ENV_MAX_CONCURRENT)),
+        writeback_factory=writeback_factory,
+        github_api=github_api,
     )
 
 
@@ -202,6 +248,12 @@ class ControllerHandler(BaseHTTPRequestHandler):
                 },
                 "queue": {
                     "pending": controller.queue_depth(),
+                },
+                "github": {
+                    "auth": "github-app-installation-token",
+                    "writeback_enabled": bool(
+                        getattr(controller, "writeback_factory", None) is not None),
+                    "long_lived_pat_required": False,
                 },
                 "uptime_seconds": round(time.time() - getattr(
                     controller, "_started_at", time.time()), 1),
