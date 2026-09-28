@@ -613,6 +613,78 @@ def test_memory_pressure_quiet_counters_abandon_via_replacements():
         memory_pressure_evidence(cool)) == "none"
 
 
+def _run_36493364897_samples():
+    """Live telemetry shape of failed run 36493364897 (issue #112).
+
+    Five worker instances in ~11 minutes (6d24e521 -> ef17e15f ->
+    f0c1085b -> f00ba6aa -> 240045cb at ~143s intervals), cgroup
+    usage pinned at EXACTLY the 512 MB limit (peak current 536870912
+    of 536870912, ratio 1.0), Python RSS ~33 MB, swap 0,
+    memory.events counters fully quiet (within-group max-stall rise
+    162 against the 10000 surge threshold; global first/last deltas
+    0), every replacement separated by sampler gap samples plus a
+    job_resubmitted event marker. The storm breaker abandoned at the
+    fourth proven loss (poll 33/140) via the replacements branch --
+    an even quieter counter shape than run 36493316814 (surge 448),
+    so this second live shape locks the pure-replacements path where
+    no stall movement at all is needed for a pressure verdict.
+    """
+    samples = []
+    index = 0
+    stall = 0
+    instances = ("6d24e5213968", "ef17e15f0f3c", "f0c1085bd3fe",
+                 "f00ba6aa767b", "240045cbeb49")
+    # Within-group max-stall rises per instance lifetime; the largest
+    # single-group rise is 162, far below the 10000 surge threshold.
+    rises = (0, 0, 0, 0, 162)
+    for group, instance in enumerate(instances):
+        for i in range(8):
+            if i == 6:
+                stall += rises[group]
+            samples.append({
+                "type": "sample",
+                "timestamp": 1790635000.0 + index,
+                "ok": True,
+                "instance_id": instance,
+                "memory_limit_bytes": LIMIT_512M,
+                "memory_current_bytes": LIMIT_512M,
+                "memory_events": {"high": 0, "max": stall, "oom": 0,
+                                  "oom_kill": 0, "oom_group_kill": 0},
+            })
+            index += 20
+        samples.append(error_sample(float(index), "health poll failed: 502"))
+        index += 20
+        samples.append({"type": "event", "timestamp": float(index),
+                        "name": "job_resubmitted", "detail": "lost=x resubmitted=y"})
+        index += 1
+        stall = 0  # per-container counters reset on replacement
+    return samples
+
+
+def test_memory_pressure_exact_pinned_quiet_counters_abandon_via_replacements():
+    # Regression for run 36493364897: usage pinned at exactly the
+    # limit (ratio 1.0) with fully quiet stall counters (surge 162)
+    # must still abandon via the replacements branch -- four instance
+    # transitions with pinned usage is pressure even when no stall
+    # movement of any significance exists.
+    samples = _run_36493364897_samples()
+    assert detect_memory_pressure(samples) is True
+    evidence = memory_pressure_evidence(samples)
+    assert evidence["pinned_at_limit"] is True
+    assert evidence["usage_ratio"] == 1.0
+    assert evidence["restart_transitions"] == 4
+    assert evidence["max_stall_surge_delta"] == 162
+    assert evidence["stall_surge"] is False
+    assert pressure_decision_branch(evidence) == "replacements"
+    # Same restart cadence without pinning keeps budget-limited
+    # recovery (transient host-maintenance shape, never a storm).
+    cool = [dict(s, memory_current_bytes=LIMIT_512M // 2)
+            if s.get("ok") else dict(s) for s in samples]
+    assert detect_memory_pressure(cool) is False
+    assert pressure_decision_branch(
+        memory_pressure_evidence(cool)) == "none"
+
+
 def test_pressure_decision_branch_names_deciding_evidence():
     pinned = {"pinned_at_limit": True, "restart_transitions": 3,
               "stall_surge": False}
