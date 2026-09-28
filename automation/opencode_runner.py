@@ -217,6 +217,113 @@ def resolve_opencode_bin_override() -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Parallel experiment artifacts (issue #86).
+#
+# An explicit artifact reference selects one content-addressed binary under
+# ``.opencode-artifacts/<exp-id>/opencode`` (keyed by the resolved fork
+# SHA, so concurrent experiments coexist). The upstream pinned binary at
+# ``.opencode-bin/opencode`` stays the baseline only: experiment mode never
+# falls back to it, never runs the network installer, and fails readiness
+# when the requested fingerprint is not on disk.
+# ---------------------------------------------------------------------------
+
+EXPERIMENT_ARTIFACT_ENV_VARS = (
+    "OPENCODE_ARTIFACT_REF",
+    "OPENCODE_EXPECTED_FORK_SHA",
+    "OPENCODE_EXPECTED_SHA256",
+    "OPENCODE_ARTIFACT_ID",
+    "OPENCODE_ARTIFACT_URL",
+)
+
+
+def resolve_artifact_selection(environ: object = None) -> dict[str, str]:
+    """Resolve the requested artifact mode (baseline vs experiment).
+
+    Thin wrapper over :mod:`automation.opencode_artifact` so runner
+    callers have a single import. Never raises on baseline (empty env);
+    raises ``ValueError`` on a malformed experiment request instead of
+    silently falling back to the upstream binary.
+    """
+    try:
+        from automation.opencode_artifact import resolve_artifact_selection as _resolve
+    except ImportError:
+        from opencode_artifact import resolve_artifact_selection as _resolve  # type: ignore[no-redef]
+    if environ is None:
+        return _resolve()
+    return _resolve(environ)
+
+
+def find_experiment_binary(artifact_id: str = "") -> str | None:
+    """Return the experiment binary path for ``artifact_id``, or None.
+
+    When ``artifact_id`` is empty, the current environment selection is
+    used; baseline mode returns None. Only an executable file counts.
+    """
+    resolved_id = (artifact_id or "").strip()
+    if not resolved_id:
+        try:
+            selection = resolve_artifact_selection()
+        except ValueError:
+            return None
+        if selection.get("mode") != "experiment":
+            return None
+        resolved_id = str(selection.get("artifact_id") or "").strip()
+    if not resolved_id:
+        return None
+    try:
+        from automation.opencode_artifact import artifact_binary_candidates
+    except ImportError:
+        from opencode_artifact import artifact_binary_candidates  # type: ignore[no-redef]
+    for candidate in artifact_binary_candidates(None, resolved_id):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def probe_experiment_readiness(
+    selection: dict | None = None, timeout: float = 20.0
+) -> tuple[bool, str, str]:
+    """Verify the selected experiment artifact is the binary that runs.
+
+    Checks the fingerprint manifest plus binary SHA-256 and executability,
+    then probes ``--version``. Returns (ready, path, detail); never raises.
+    A wrong or missing artifact reports not-ready with a safe detail string.
+    """
+    try:
+        selection = dict(selection) if selection is not None else resolve_artifact_selection()
+    except ValueError as exc:
+        return False, "", "invalid experiment artifact selection: %s" % exc
+    if not isinstance(selection, dict) or selection.get("mode") != "experiment":
+        return False, "", "no experiment artifact requested"
+    artifact_id = str(selection.get("artifact_id") or "").strip()
+    if not artifact_id:
+        return False, "", "experiment request has no artifact_id"
+    try:
+        from automation.opencode_artifact import verify_experiment_selection
+    except ImportError:
+        from opencode_artifact import verify_experiment_selection  # type: ignore[no-redef]
+    errors = verify_experiment_selection(selection)
+    if errors:
+        return False, "", "experiment artifact not ready: %s" % errors[0][:200]
+    binary = find_experiment_binary(artifact_id) or ""
+    if not binary:
+        return False, "", "experiment artifact binary is absent"
+    ready, resolved, version = probe_opencode_readiness(binary, timeout=timeout)
+    if not ready:
+        return False, resolved, version
+    expected_digest = str(selection.get("expected_sha256") or "").strip()
+    if expected_digest:
+        # The on-disk SHA was already verified above; the version probe
+        # proves this exact binary executes. Report the fingerprint.
+        return True, resolved, "%s [artifact=%s sha256=%.16s]" % (
+            version,
+            artifact_id,
+            expected_digest[:16],
+        )
+    return True, resolved, "%s [artifact=%s]" % (version, artifact_id)
+
+
 def probe_opencode_readiness(
     binary: str | None = None, timeout: float = 20.0
 ) -> tuple[bool, str, str]:

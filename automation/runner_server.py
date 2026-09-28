@@ -144,11 +144,14 @@ try:  # pragma: no cover - import path depends on entrypoint
         build_opencode_install_command,
         build_rev_parse_command,
         build_status_command,
+        find_experiment_binary,
         find_opencode_binary,
         fresh_session_env,
         is_model_unavailable_error,
         opencode_runtime_install_allowed,
+        probe_experiment_readiness,
         probe_opencode_readiness,
+        resolve_artifact_selection,
         resolve_opencode_bin_override,
         sanitize_output,
         summarize_changes,
@@ -168,11 +171,14 @@ except ImportError:  # pytest inserts automation/ on sys.path
         build_opencode_install_command,
         build_rev_parse_command,
         build_status_command,
+        find_experiment_binary,
         find_opencode_binary,
         fresh_session_env,
         is_model_unavailable_error,
         opencode_runtime_install_allowed,
+        probe_experiment_readiness,
         probe_opencode_readiness,
+        resolve_artifact_selection,
         resolve_opencode_bin_override,
         sanitize_output,
         summarize_changes,
@@ -680,6 +686,57 @@ class JobManager:
             self.ready = bool(ready)
             if not ready:
                 self.opencode_bin = resolved_path or self.opencode_bin
+        # Parallel experiment artifacts (issue #86): an explicit artifact
+        # reference selects that exact binary. The upstream pinned binary
+        # stays the baseline only; experiment mode never falls back to it,
+        # never runs the network installer, and fails readiness when the
+        # requested fingerprint/version is not the binary that is running.
+        try:
+            self.artifact_selection = resolve_artifact_selection()
+        except ValueError as exc:
+            self.artifact_selection = {
+                "mode": "experiment",
+                "artifact_ref": "",
+                "expected_fork_sha": "",
+                "expected_sha256": "",
+                "artifact_id": "",
+                "artifact_url": "",
+            }
+            self.artifact_ready = False
+            self.artifact_detail = "invalid experiment artifact selection: %s" % exc
+            self.ready = False
+            self.opencode_ready_detail = self.artifact_detail[:200]
+        else:
+            if self.artifact_selection.get("mode") == "experiment":
+                artifact_ready, artifact_path, artifact_detail = probe_experiment_readiness(
+                    self.artifact_selection
+                )
+                self.artifact_ready = bool(artifact_ready)
+                self.artifact_detail = artifact_detail
+                if artifact_ready:
+                    # Jobs must execute this exact artifact binary.
+                    self.opencode_bin = artifact_path
+                    self.opencode_resolved_bin = artifact_path
+                    self.opencode_version = artifact_detail
+                    self.opencode_ready_detail = artifact_detail
+                    self.ready = True
+                else:
+                    self.ready = False
+                    self.opencode_ready_detail = (
+                        "experiment artifact not ready: %s" % artifact_detail
+                    )[:300]
+                    # Point diagnostics at the requested artifact, never at
+                    # the baseline binary, so a wrong fingerprint cannot be
+                    # mistaken for a ready baseline.
+                    requested = find_experiment_binary(
+                        str(self.artifact_selection.get("artifact_id") or "")
+                    )
+                    self.opencode_bin = requested or self.opencode_bin
+                    self.opencode_resolved_bin = requested or ""
+                    self.opencode_version = ""
+            else:
+                self.artifact_ready = True
+                self.artifact_detail = "upstream-baseline mode (pinned binary)"
         self._lock = threading.Lock()
         # Serializes OpenCode CLI provisioning (curl|bash installer) so
         # concurrent jobs never run concurrent heavyweight installers on
@@ -704,6 +761,7 @@ class JobManager:
     def health_snapshot(self) -> dict[str, Any]:
         """Process-identity + readiness snapshot for GET /health."""
         counts = self.job_counts()
+        selection = dict(getattr(self, "artifact_selection", {}) or {})
         return {
             "status": "ok",
             "ready": bool(self.ready),
@@ -726,6 +784,13 @@ class JobManager:
             "allow_runtime_install": bool(
                 getattr(self, "allow_runtime_install", True)
             ),
+            "artifact_mode": selection.get("mode", "upstream-baseline"),
+            "artifact_ref": selection.get("artifact_ref", ""),
+            "artifact_fork_sha": selection.get("expected_fork_sha", ""),
+            "artifact_sha256": selection.get("expected_sha256", ""),
+            "artifact_id": selection.get("artifact_id", ""),
+            "artifact_ready": bool(getattr(self, "artifact_ready", True)),
+            "artifact_detail": getattr(self, "artifact_detail", ""),
         }
 
     def job_counts(self) -> dict[str, int]:
@@ -1096,7 +1161,25 @@ class JobManager:
         (``.opencode-bin/opencode`` copied at build time by
         automation/install-opencode.sh) so build-time $HOME never needs
         to equal runtime $HOME.
+
+        Issue #86 experiment mode: when an explicit artifact reference is
+        selected, only that exact fingerprinted binary may run. A missing
+        or mismatched artifact fails fast with FileNotFoundError and never
+        runs the network installer or falls back to the baseline binary.
         """
+        selection = dict(getattr(self, "artifact_selection", {}) or {})
+        if selection.get("mode") == "experiment":
+            artifact_id = str(selection.get("artifact_id") or "").strip()
+            ready, artifact_path, detail = probe_experiment_readiness(selection)
+            if ready and artifact_path:
+                return artifact_path
+            raise FileNotFoundError(
+                "experiment artifact %r is not ready (%s); provision the exact "
+                "artifact via automation/install-opencode-artifact.sh with "
+                "OPENCODE_ARTIFACT_REF/OPENCODE_EXPECTED_FORK_SHA/"
+                "OPENCODE_EXPECTED_SHA256 and never fall back to the "
+                "upstream baseline" % (artifact_id or "?", detail[:200])
+            )
         override = (self.opencode_bin or "").strip()
         if override and override != "opencode":
             return override

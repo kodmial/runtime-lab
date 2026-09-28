@@ -627,6 +627,11 @@ def build_create_service_payload(
     build_command: str = "pip install -r requirements.txt && bash automation/install-opencode.sh",
     start_command: str = "RUNNER_ALLOW_RUNTIME_INSTALL=0 python -m automation.runner_server",
     health_check_path: str = "/health",
+    opencode_artifact_ref: str = "",
+    opencode_expected_fork_sha: str = "",
+    opencode_expected_sha256: str = "",
+    opencode_artifact_id: str = "",
+    opencode_artifact_url: str = "",
 ) -> dict[str, Any]:
     """Build the POST /v1/services body for an ephemeral free-tier worker.
 
@@ -643,6 +648,18 @@ def build_create_service_payload(
     (``RUNNER_ALLOW_RUNTIME_INSTALL=0``): a worker whose deploy artifact
     lacks an executable OpenCode binary fails readiness (/health 503)
     instead of running curl|bash inside the job (issue #52).
+
+    Issue #86 experiment selection: pass any ``opencode_artifact_*`` /
+    ``opencode_expected_*`` value to select one immutable experiment
+    artifact before running a memory test. The build command then also
+    provisions exactly that artifact
+    (``automation/install-opencode-artifact.sh`` with the explicit
+    reference, failing closed instead of falling back), and the start
+    command carries the same fingerprint env so readiness (/health 503)
+    fails when the requested fingerprint/version is not running. Empty
+    selection keeps the pinned upstream baseline only. Several artifact
+    ids coexist because each provisions only its own
+    ``.opencode-artifacts/<exp-id>/`` directory.
     """
     if not name:
         raise ValueError("service name must not be empty")
@@ -654,6 +671,41 @@ def build_create_service_payload(
             "development phase must deploy from %r, got %r"
             % (PUBLIC_REPO_URL, repo)
         )
+    requested = {
+        "artifact_ref": (opencode_artifact_ref or "").strip(),
+        "expected_fork_sha": (opencode_expected_fork_sha or "").strip(),
+        "expected_sha256": (opencode_expected_sha256 or "").strip(),
+        "artifact_id": (opencode_artifact_id or "").strip(),
+        "artifact_url": (opencode_artifact_url or "").strip(),
+    }
+    if any(requested.values()):
+        try:
+            from automation.opencode_artifact import (
+                build_command_fragment,
+                resolve_artifact_selection,
+                start_env_prefix,
+            )
+        except ImportError:
+            from opencode_artifact import (  # type: ignore[no-redef]
+                build_command_fragment,
+                resolve_artifact_selection,
+                start_env_prefix,
+            )
+        selection = resolve_artifact_selection(
+            {
+                "OPENCODE_ARTIFACT_REF": requested["artifact_ref"],
+                "OPENCODE_EXPECTED_FORK_SHA": requested["expected_fork_sha"],
+                "OPENCODE_EXPECTED_SHA256": requested["expected_sha256"],
+                "OPENCODE_ARTIFACT_ID": requested["artifact_id"],
+                "OPENCODE_ARTIFACT_URL": requested["artifact_url"],
+            }
+        )
+        fragment = build_command_fragment(selection)
+        if fragment:
+            build_command = "%s && %s" % (build_command, fragment)
+        prefix = start_env_prefix(selection)
+        if prefix and prefix not in start_command:
+            start_command = "%s %s" % (prefix, start_command)
     return {
         "type": REQUIRED_SERVICE_TYPE,
         "name": name,
