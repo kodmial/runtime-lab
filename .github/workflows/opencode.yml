@@ -156,28 +156,47 @@ jobs:
 
           git add -A
           git commit -m "fix: implement issue #${ISSUE_NUMBER}"
+          TASK_COMMIT="$(git rev-parse HEAD)"
 
-          # main can advance while OpenCode is working. Rebase the task-only
-          # commit onto the latest main before publishing so creating the
-          # issue branch cannot be interpreted as changing protected workflow
-          # files that were updated on main in the meantime.
-          sync_and_verify_branch() {
-            git fetch origin main --quiet
-            git rebase origin/main
-
-            if [[ -n "$(git diff --name-only origin/main...HEAD -- .github/workflows)" ]]; then
-              echo "::error::Issue branch differs from current main under .github/workflows/**."
-              git diff --name-status origin/main...HEAD -- .github/workflows
-              exit 1
-            fi
-          }
-
-          sync_and_verify_branch
-          if ! git push -u origin "$BRANCH"; then
-            echo "Initial push failed; refreshing main and retrying once."
-            sync_and_verify_branch
-            git push -u origin "$BRANCH"
+          # GITHUB_TOKEN is a GitHub App installation token. GitHub requires a
+          # separate Workflows repository permission when an app edits
+          # .github/workflows/**. Keep the task commit strictly outside that
+          # path, then create the remote branch from the current main SHA via
+          # the documented Git refs API (Contents: write is sufficient).
+          if [[ -n "$(git diff-tree --no-commit-id --name-only -r "$TASK_COMMIT" -- .github/workflows)" ]]; then
+            echo "::error::Task commit contains .github/workflows/** changes."
+            git diff-tree --no-commit-id --name-status -r "$TASK_COMMIT" -- .github/workflows
+            exit 1
           fi
+
+          BASE_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          [[ -n "$BASE_SHA" ]] || { echo "::error::Could not resolve current main SHA"; exit 1; }
+
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/heads/$BRANCH" \
+            -f sha="$BASE_SHA" >/dev/null
+
+          # Rebuild the local issue branch from that exact remote base and
+          # replay only the task commit. This makes the subsequent push a
+          # fast-forward containing ordinary repository changes only.
+          git fetch origin "$BRANCH" --quiet
+          git switch --detach "origin/$BRANCH"
+          if ! git cherry-pick "$TASK_COMMIT"; then
+            git cherry-pick --abort || true
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" >/dev/null 2>&1 || true
+            echo "::error::Task changes conflict with current main; remote issue branch removed."
+            exit 1
+          fi
+
+          if [[ -n "$(git diff --name-only "$BASE_SHA"...HEAD -- .github/workflows)" ]]; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" >/dev/null 2>&1 || true
+            echo "::error::Replayed task differs from its branch base under .github/workflows/**."
+            exit 1
+          fi
+
+          git branch -f "$BRANCH" HEAD
+          git switch "$BRANCH"
+          git push --force-with-lease="refs/heads/$BRANCH:$BASE_SHA" -u origin "HEAD:$BRANCH"
 
           PR_NUMBER="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state all             --json number --jq '.[0].number // empty')"
           if [[ -z "$PR_NUMBER" ]]; then
