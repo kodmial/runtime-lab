@@ -612,8 +612,10 @@ def build_create_service_payload(
     Uses the public Git URL explicitly with autoDeploy=no, so no
     Render<->GitHub provider connection is required for this phase. The
     build step installs the OpenCode CLI with the known-good NanoDictate
-    pattern (``curl -fsSL https://opencode.ai/install | bash`` via
-    automation/install-opencode.sh) so every worker can execute jobs.
+    pattern pinned to an explicit release (``curl -fsSL
+    https://opencode.ai/install | bash -s -- --version <pinned>`` via
+    automation/install-opencode.sh; the pin skips the installer's
+    unauthenticated api.github.com lookup) so every worker can execute jobs.
     """
     if not name:
         raise ValueError("service name must not be empty")

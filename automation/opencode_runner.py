@@ -8,13 +8,16 @@ Known-good OpenCode CLI provisioning (from NanoDictate, via
 .github/workflows/opencode.yml, excluding extra integrations and
 release-specific behavior):
 
-    curl -fsSL https://opencode.ai/install | bash
+    curl -fsSL https://opencode.ai/install | bash -s -- --version <pinned>
 
-with bounded retries (3 attempts, linear backoff), followed by
-``test -x "$HOME/.opencode/bin/opencode"``. The shell entrypoint
-``automation/install-opencode.sh`` encodes exactly that pattern for the
-Render build step; ``ensure_opencode_cli`` below encodes the same pattern
-for lazy runtime provisioning.
+with bounded retries (3 attempts, backoff), followed by
+``test -x "$HOME/.opencode/bin/opencode"``. The explicit ``--version``
+pin skips the installer's unauthenticated api.github.com
+latest-version lookup, which fails closed with "Failed to fetch version
+information" under Render shared-egress rate limiting (run 36421205678).
+The shell entrypoint ``automation/install-opencode.sh`` encodes exactly
+that pattern for the Render build step; ``ensure_opencode_cli`` below
+encodes the same pattern for lazy runtime provisioning.
 
 Non-interactive OpenCode invocation (same order as the known-good
 workflow step):
@@ -67,6 +70,24 @@ OPENCODE_BIN_NAME = "opencode"
 OPENCODE_HOME_SUBPATH = os.path.join(".opencode", "bin", "opencode")
 OPENCODE_INSTALL_MAX_ATTEMPTS = 3
 
+# Pinned OpenCode release used for deterministic worker provisioning.
+#
+# The upstream installer resolves "latest" via an unauthenticated
+# ``api.github.com/repos/.../releases/latest`` call and exits 1 with
+# "Failed to fetch version information" when that lookup fails (Render
+# shared-egress rate limiting or any transient network error). Passing an
+# explicit ``--version`` skips that discovery call entirely (verified
+# against the live installer script 2026-09-28: the versioned branch only
+# HEAD-checks the release tag page, then downloads the pinned asset).
+# Pin verified live 2026-09-28: tag v1.18.33 exists with linux
+# x64/arm64 tarballs (opencode-linux-x64.tar.gz et al.).
+OPENCODE_PINNED_VERSION = "1.18.33"
+# Environment override for the pinned version (build-time and lazy
+# runtime provisioning both honor it).
+OPENCODE_VERSION_ENV_VAR = "OPENCODE_VERSION"
+# Seconds to sleep between lazy-provisioning attempts (attempts 1->2, 2->3).
+OPENCODE_INSTALL_RETRY_DELAYS = (5.0, 10.0)
+
 # Confine OpenCode to read-only git inspection. Mirrors the issue-mode
 # OPENCODE_CONFIG_CONTENT in .github/workflows/opencode.yml: bash is
 # allowed, `git *` writes are denied, read-only git inspection is allowed.
@@ -109,9 +130,57 @@ def find_opencode_binary() -> str | None:
     return None
 
 
-def opencode_install_shell_snippet() -> str:
-    """Return the known-good install snippet (for docs/tests)."""
-    return OPENCODE_INSTALL_COMMAND
+def opencode_install_shell_snippet(version: str | None = None) -> str:
+    """Return the version-pinned install snippet (for docs/tests).
+
+    The pinned form skips the installer's unauthenticated
+    ``api.github.com`` latest-version lookup, which is the failure mode
+    seen live (run 36421205678: "Failed to fetch version information").
+    Pass ``version=""`` explicitly for the unpinned base command.
+    """
+    if version == "":
+        return OPENCODE_INSTALL_COMMAND
+    return build_opencode_install_command(
+        version if version is not None else resolve_opencode_version()
+    )
+
+
+def resolve_opencode_version(raw: str | None = None) -> str:
+    """Resolve the OpenCode release version to provision.
+
+    Defaults to ``$OPENCODE_VERSION`` when set, else the pinned release.
+    Accepts an optional leading ``v`` and surrounding whitespace; rejects
+    anything that is not a numeric ``X.Y.Z`` release.
+    """
+    if raw is None:
+        raw = os.environ.get(OPENCODE_VERSION_ENV_VAR, "")
+    text = str(raw or "").strip()
+    if not text:
+        text = OPENCODE_PINNED_VERSION
+    text = text.strip()
+    if text.startswith(("v", "V")):
+        text = text[1:].strip()
+    parts = text.split(".")
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        raise ValueError("invalid OpenCode version: %r" % raw)
+    return text
+
+
+def build_opencode_install_command(version: str | None = None) -> str:
+    """Build the installer invocation, pinning ``--version``.
+
+    ``version=None`` resolves via :func:`resolve_opencode_version`
+    (env override else pinned release); ``version=""`` returns the
+    unpinned base command for callers that explicitly want discovery.
+    """
+    if version == "":
+        return OPENCODE_INSTALL_COMMAND
+    resolved = (
+        resolve_opencode_version(version)
+        if version is not None
+        else resolve_opencode_version()
+    )
+    return "%s -s -- --version %s" % (OPENCODE_INSTALL_COMMAND, resolved)
 
 
 def build_opencode_command(

@@ -39,10 +39,12 @@ Lifecycle properties implemented here:
     invocations injectable for tests. An explicit ``command`` field in the
     submit payload still selects the legacy single-command path (used by
     unit tests); production jobs without it run the OpenCode pipeline.
-  - OpenCode CLI provisioning uses the known-good NanoDictate pattern
-    (``curl -fsSL https://opencode.ai/install | bash`` with bounded
-    retries; see automation/install-opencode.sh), without extra
-    integrations or release-specific behavior.
+- OpenCode CLI provisioning uses the known-good NanoDictate pattern
+  pinned to an explicit release (``curl -fsSL https://opencode.ai/install
+  | bash -s -- --version <pinned>`` with bounded retries plus backoff;
+  see automation/install-opencode.sh), without extra
+  integrations or release-specific behavior. The pin skips the
+  installer's unauthenticated api.github.com lookup.
   - Binds to Render's provided $PORT (falls back to 10000/8000 locally).
   - No durable state: jobs live in process memory, workspaces live under the
     system temp dir. The whole service is disposable and may be deleted
@@ -123,12 +125,13 @@ try:  # pragma: no cover - import path depends on entrypoint
     from automation.opencode_runner import (
         CHECKOUT_SUBDIR,
         OPENCODE_CONFIG_CONTENT,
-        OPENCODE_INSTALL_COMMAND,
         OPENCODE_INSTALL_MAX_ATTEMPTS,
+        OPENCODE_INSTALL_RETRY_DELAYS,
         build_changes,
         build_checkout_command,
         build_clone_command,
         build_opencode_command,
+        build_opencode_install_command,
         build_rev_parse_command,
         build_status_command,
         find_opencode_binary,
@@ -140,12 +143,13 @@ except ImportError:  # pytest inserts automation/ on sys.path
     from opencode_runner import (  # type: ignore[no-redef]
         CHECKOUT_SUBDIR,
         OPENCODE_CONFIG_CONTENT,
-        OPENCODE_INSTALL_COMMAND,
         OPENCODE_INSTALL_MAX_ATTEMPTS,
+        OPENCODE_INSTALL_RETRY_DELAYS,
         build_changes,
         build_checkout_command,
         build_clone_command,
         build_opencode_command,
+        build_opencode_install_command,
         build_rev_parse_command,
         build_status_command,
         find_opencode_binary,
@@ -836,12 +840,18 @@ class JobManager:
         return max(0.0, deadline - time.time())
 
     def _ensure_opencode_binary(self, cwd: str, timeout: float) -> str:
-        """Resolve the OpenCode binary, provisioning with the known-good
-        pattern when missing: ``curl -fsSL https://opencode.ai/install | bash``
-        with bounded retries, then verify executability.
+        """Resolve the OpenCode binary, provisioning with the version-pinned
+        pattern when missing: ``curl -fsSL https://opencode.ai/install |
+        bash -s -- --version <pinned>`` with bounded retries and backoff,
+        then verify executability.
 
-        An explicit RUNNER_OPENCODE_BIN/manager override is used verbatim
-        (tests inject fakes this way) and skips provisioning.
+        The pinned ``--version`` form skips the installer's unauthenticated
+        ``api.github.com`` latest-version lookup, which fails closed with
+        "Failed to fetch version information" under Render shared-egress
+        rate limiting or transient network errors (run 36421205678).
+        ``$OPENCODE_VERSION`` overrides the pin; an explicit
+        RUNNER_OPENCODE_BIN/manager override is used verbatim (tests
+        inject fakes this way) and skips provisioning.
         """
         override = (self.opencode_bin or "").strip()
         if override and override != "opencode":
@@ -857,17 +867,25 @@ class JobManager:
             found = find_opencode_binary()
             if found:
                 return found
+            try:
+                install_command = build_opencode_install_command()
+            except ValueError as exc:
+                raise FileNotFoundError(
+                    "invalid OpenCode version (%s); provision via "
+                    "automation/install-opencode.sh" % exc
+                )
             last_error = "opencode CLI not found"
             attempts = max(1, int(OPENCODE_INSTALL_MAX_ATTEMPTS))
             for attempt in range(1, attempts + 1):
                 try:
                     result = self.command_runner.run(
-                        ["sh", "-c", OPENCODE_INSTALL_COMMAND],
+                        ["sh", "-c", install_command],
                         cwd=cwd,
                         timeout=timeout,
                     )
                 except Exception as exc:
                     last_error = "opencode install failed: %s" % exc
+                    self._sleep_between_install_attempts(attempt, timeout)
                     continue
                 if result.timed_out:
                     last_error = "opencode install timed out"
@@ -882,10 +900,29 @@ class JobManager:
                     last_error = "opencode install failed (code %d): %s" % (
                         result.returncode, sanitize_output(detail)[:500],
                     )
+                self._sleep_between_install_attempts(attempt, timeout)
             raise FileNotFoundError(
                 "%s; provision via automation/install-opencode.sh "
-                "(curl -fsSL https://opencode.ai/install | bash)" % last_error
+                "(curl -fsSL https://opencode.ai/install | bash -s -- --version <pinned>)" % last_error
             )
+
+    def _sleep_between_install_attempts(self, attempt: int, timeout: float) -> None:
+        """Backoff sleep between install attempts (no sleep after last)."""
+        delays = OPENCODE_INSTALL_RETRY_DELAYS
+        index = attempt - 1  # attempt is 1-indexed; delay precedes next try
+        if index < 0 or index >= len(delays):
+            return
+        try:
+            delay = float(delays[index])
+        except (TypeError, ValueError):
+            return
+        if delay <= 0:
+            return
+        try:
+            remaining = float(timeout)
+        except (TypeError, ValueError):
+            remaining = delay
+        time.sleep(min(delay, max(0.0, remaining)))
 
     def _execute_opencode(self, job_id: str, payload: dict[str, Any], timeout: float) -> None:
         """Clone, checkout, run OpenCode (with same-worker fallback), diff."""

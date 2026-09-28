@@ -16,6 +16,7 @@
 
 - A stale-worker watchdog now exists as a second cleanup line for orphaned automation-owned workers. It fail-closes on ambiguous names/timestamps, excludes the persistent controller, supports active-lease protection and dry-run planning, and never provisions a replacement worker. Evidence: `../experiments/issue-27-run-36405661952.md`.
 - An offline lifecycle fault-injection matrix now covers failures across provisioning, deploy, health, job execution, fallback, cleanup and GitHub write-back. Evidence: `../experiments/issue-28-run-36405666089.md`.
+- OpenCode CLI provisioning is pinned to an explicit release (`--version <pinned>`, `$OPENCODE_VERSION` override) in both `automation/install-opencode.sh` and lazy runtime provisioning: the unpinned installer depends on an unauthenticated `api.github.com` latest-release lookup that fails closed with "Failed to fetch version information" under shared-egress rate limiting. Lazy provisioning retries with bounded backoff capped by the job budget. Evidence: `../experiments/issue-50-run-36421399199.md`.
 
 ## Do not repeat
 - Do not parse the first workspace as `.[0].id`.
@@ -23,6 +24,7 @@
 - Do not treat an empty/unparsable job poll as queued/running.
 - Do not create a second service for model fallback or polling retry (same-worker resubmission reuses the existing worker, up to two resubmissions).
 - Do not infer worker process identity from `current_uptime < prior_uptime` alone; a replacement process can report a larger uptime than the old snapshot. Compare instance ids first, then wall-clock elapsed vs uptime delta.
+- Do not provision workers with unpinned `curl -fsSL https://opencode.ai/install | bash`; always pin `--version` (or `$OPENCODE_VERSION`).
 
 ## Open
 - Hard process termination can bypass in-process cleanup; stale-worker reconciliation is being developed separately.
