@@ -1,0 +1,32 @@
+{
+  "fork_branch": "main",
+  "fork_repo": "kodmial/opencode",
+  "fork_sha": "9000e7fc8d96c845512f7c73122431418a71d4e4",
+  "history": {
+    "fork_contains_upstream_base_commit": true,
+    "fork_contains_upstream_tag_commit": true,
+    "preserved": true
+  },
+  "note": "kodmial/opencode is only the OpenCode source fork. All issues, priorities, dependencies, experiments and acceptance criteria belong in kodmial/runtime-lab (see kodmial/opencode#1). Do not create a product-roadmap backlog in the fork.",
+  "ownership": {
+    "fork_role": "source fork only",
+    "requires_fork_backlog": false,
+    "tracking_repo": "kodmial/runtime-lab"
+  },
+  "pinned_opencode_version": "1.18.33",
+  "schema": "runtime-lab-opencode-fork-baseline/v1",
+  "sync": {
+    "method": "fetch upstream dev then rebase or merge onto fork main; baseline SHAs are the rebase reference",
+    "upstream_default_branch": "dev",
+    "upstream_remote": "https://github.com/anomalyco/opencode.git"
+  },
+  "upstream_base_commit": "75e1e7ae310dc36c86c920e8997d0e1181e24a88",
+  "upstream_repo": "anomalyco/opencode",
+  "upstream_tag": "v1.18.33",
+  "upstream_tag_commit": "1eacc1bdb919bc54fc1c9f745b0da02e83ebbdf9",
+  "verified": {
+    "fork_package_version": "1.18.33",
+    "headless_entry": "packages/opencode/src/index.ts (RunCommand via opencode run)",
+    "release_asset": "opencode-linux-x64.tar.gz"
+  }
+}
