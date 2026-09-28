@@ -1,0 +1,21 @@
+name: Restart issue 1 with updated Render requirements
+
+on:
+  push:
+    paths:
+      - '.github/workflows/restart-issue1-temp.yml'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel stale OpenCode run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST repos/kodmial/runtime-lab/actions/runs/36371534344/cancel
