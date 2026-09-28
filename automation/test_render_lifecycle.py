@@ -18,7 +18,6 @@ from render_lifecycle import (  # noqa: E402
     FREE_PLAN,
     JOB_POLL_INTERVAL_SECONDS,
     JOB_POLL_MAX_ATTEMPTS,
-    JOB_POLL_MAX_JOB_RESUBMITS,
     JOB_POLL_OUTCOMES,
     JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY,
     JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES,
@@ -427,38 +426,45 @@ def test_job_poll_transport_fail_fast_requires_sustained_unhealthiness():
     assert should_fail_fast_on_transport(None) is False
 
 
-def test_job_loss_resubmission_is_bounded_to_five_same_worker_retries():
-    # Regression for run 36409152332: a submitted job polled as pending
-    # for ~2 minutes, then turned into a permanent unknown-job 404 while
-    # the runner stayed healthy (documented anytime-restart of Free
-    # workers wiped the in-memory job). The controller resubmits the same
-    # payload on the SAME worker. Run 36417263684 proved one retry is
-    # not enough when restarts cluster (original plus one resubmission
-    # both lost to consecutive proven restarts), so the bound became two
-    # same-worker resubmissions. Run 36422228148 then lost the original
-    # plus both resubmissions to three consecutive proven restarts
-    # (instances 67de372e1e5f -> 5a3329272140 -> 81873f2a0598 ->
-    # 3133df580cc1), so the bound became three same-worker
-    # resubmissions. Run 36425019190 then lost the original plus all
-    # three resubmissions to four consecutive proven restarts
-    # (instances cf0ce0e1fd5b -> 3b567ebafa1a -> 57c5fc5fe6d1 ->
-    # e0e82704a45d -> 9838a60f9feb), so the bound became four
-    # same-worker resubmissions. Run 36430429432 then lost the original
-    # plus all four resubmissions to a five-restart cluster
-    # (instances 7b01eddc7d40 -> 9eba933f33fa -> d5aef13e888a ->
-    # 91c8fea12ee0 -> 9adf1bd5433a, with live cgroup telemetry pinning
-    # the driver to 512 MB memory pressure), so the bound is five
-    # same-worker resubmissions; a sixth consecutive loss still fails fast.
-    assert JOB_POLL_MAX_JOB_RESUBMITS == 5
-    assert should_resubmit_after_job_loss(0) is True
-    assert should_resubmit_after_job_loss(1) is True
-    assert should_resubmit_after_job_loss(2) is True
-    assert should_resubmit_after_job_loss(3) is True
-    assert should_resubmit_after_job_loss(4) is True
-    assert should_resubmit_after_job_loss(5) is False
-    assert should_resubmit_after_job_loss(6) is False
-    assert should_resubmit_after_job_loss("bogus") is False
-    assert should_resubmit_after_job_loss(None) is False
+def test_job_loss_resubmission_is_budget_limited_not_count_limited():
+    # Regression for run 36434278632: a submitted job plus all five
+    # resubmissions were lost to six consecutive proven worker restarts
+    # (instances 7126f50f2488 -> 052597e76e74 -> 89d9f277a377 ->
+    # f6d90020ee91 -> 1e9d729fe0bf -> fb20ff4cd8af -> 7d6acf859f67 at
+    # ~3-minute intervals, ~18 minutes wall-clock, well inside the
+    # unchanged 140x20s poll budget), failing fast with "resubmissions
+    # used: 5/5". Repairs for runs 36417263684, 36422228148, 36425019190
+    # and 36430429432 had grown a fixed resubmission bound one live
+    # failure at a time (1 -> 2 -> 3 -> 4 -> 5); any fixed N is falsified
+    # by the next (N+1)-restart cluster while poll budget remains, so the
+    # policy is budget-limited instead of count-limited: the resubmission
+    # count no longer gates recovery, and a proven same-process loss
+    # fails fast even with budget left (an unknown-job 404 proves the
+    # poll reached the worker, so the same process losing its own job is
+    # deterministic).
+    assert should_resubmit_after_job_loss(
+        polls_remaining=1, worker_restarted=True) is True
+    assert should_resubmit_after_job_loss(
+        polls_remaining=100, worker_restarted=True) is True
+    # Missing restart evidence fails open toward recovery inside budget.
+    assert should_resubmit_after_job_loss(
+        polls_remaining=137, worker_restarted=None) is True
+    # An exhausted budget stops resubmission even after a proven restart.
+    assert should_resubmit_after_job_loss(
+        polls_remaining=0, worker_restarted=True) is False
+    assert should_resubmit_after_job_loss(
+        polls_remaining=-3, worker_restarted=True) is False
+    # A proven same-process loss is deterministic: fail fast even with
+    # ample budget remaining.
+    assert should_resubmit_after_job_loss(
+        polls_remaining=139, worker_restarted=False) is False
+    assert should_resubmit_after_job_loss(
+        polls_remaining=1, worker_restarted=False) is False
+    # Unparsable budgets fail closed.
+    assert should_resubmit_after_job_loss(
+        polls_remaining="bogus", worker_restarted=True) is False
+    assert should_resubmit_after_job_loss(
+        polls_remaining=None, worker_restarted=True) is False
 
 
 def test_worker_restart_discriminator_uses_health_uptime():

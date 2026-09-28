@@ -514,28 +514,27 @@ echo "Submitted runner job $JOB_ID."
 # any healthy probe (or any poll that reaches the worker) resets the
 # streak.
 #
-# Job-loss recovery (regression for run 36409152332, extended for run
-# 36417263684, run 36422228148 and run 36425019190): that run polled a
-# submitted job as pending for ~2 minutes before it turned into a
-# permanent unknown-job 404 with a healthy runner. Render may restart a
-# Free web service at any time (see RENDER_DOC_FREE_TIER in
-# automation/render_lifecycle.py) and the runner keeps jobs only in
-# worker process memory, so a restart wipes the submitted job id while
-# /health answers 200 again on the fresh process. Because the submit
-# payload is fully reproducible, bounded same-worker resubmissions
-# (JOB_POLL_MAX_JOB_RESUBMITS, never a second Render service) convert
-# transient restarts into retries; run 36417263684 lost both the
-# original and the first resubmission to two consecutive proven
-# restarts, run 36422228148 lost the original plus both
-# resubmissions to three consecutive proven restarts, run
-# 36425019190 lost the original plus all three resubmissions to
-# four consecutive proven restarts, and run 36430429432 lost the
-# original plus all four resubmissions to a five-restart cluster
-# (four proven 404 losses plus a transport-error down-window that is
-# effectively a fifth restart, with live cgroup telemetry pinning the
-# driver to 512 MB memory pressure from the ~600 MB agent peak), so
-# the bound is five resubmissions and a sixth consecutive loss still
-# fails fast. A submit-time /health snapshot (uptime_seconds) is compared with
+# Job-loss recovery (regression for run 36409152332, extended through
+# run 36434278632): that first run polled a submitted job as pending
+# for ~2 minutes before it turned into a permanent unknown-job 404 with
+# a healthy runner. Render may restart a Free web service at any time
+# (see RENDER_DOC_FREE_TIER in automation/render_lifecycle.py) and the
+# runner keeps jobs only in worker process memory, so a restart wipes
+# the submitted job id while /health answers 200 again on the fresh
+# process. Because the submit payload is fully reproducible,
+# budget-limited same-worker resubmissions (never a second Render
+# service) convert transient restarts into retries: runs 36417263684,
+# 36422228148, 36425019190 and 36430429432 each exhausted a fixed
+# resubmission bound (1, 2, 3, 4) with a larger consecutive-restart
+# cluster, and run 36434278632 then lost the original job plus all five
+# resubmissions to six consecutive proven restarts inside the unchanged
+# poll budget, so a fixed count is no longer incremented -- the loop
+# resubmits while poll iterations remain (should_resubmit_after_job_loss
+# in automation/render_lifecycle.py) and only fails fast on an
+# exhausted budget or a proven deterministic loss (same healthy worker
+# process no longer knows the job it accepted; an unknown-job 404
+# proves the poll reached the worker, so resubmission cannot recover
+# it). A submit-time /health snapshot (uptime_seconds) is compared with
 # the loss-time reading via detect_worker_restart() so the diagnostic
 # states whether a restart was actually observed.
 FALLBACK_MODEL="opencode/space-bunny-free"
@@ -566,14 +565,14 @@ from render_lifecycle import JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES
 print(JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES)
 PY
 )"
-POLL_MAX_RESUBMITS="$(python3 - <<'PY'
+POLL_MAX_ATTEMPTS="$(python3 - <<'PY'
 import sys
 sys.path.insert(0, "automation")
-from render_lifecycle import JOB_POLL_MAX_JOB_RESUBMITS
-print(JOB_POLL_MAX_JOB_RESUBMITS)
+from render_lifecycle import JOB_POLL_MAX_ATTEMPTS
+print(JOB_POLL_MAX_ATTEMPTS)
 PY
 )"
-[[ "$POLL_MAX_RESUBMITS" =~ ^[0-9]+$ ]] || POLL_MAX_RESUBMITS=1
+[[ "$POLL_MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || POLL_MAX_ATTEMPTS=140
 [[ "$POLL_MAX_UNHEALTHY" =~ ^[0-9]+$ ]] || POLL_MAX_UNHEALTHY=1
 [[ "$POLL_HEALTH_EVERY" =~ ^[0-9]+$ ]] || POLL_HEALTH_EVERY=5
 # Submit-time runner health snapshot (best-effort restart-evidence
@@ -677,15 +676,36 @@ prior, current, prior_inst, current_inst, prior_wall, current_wall = (
 print(format_restart_evidence(prior, current, prior_inst, current_inst, prior_wall, current_wall))
 PY
 )"
-        # Same-worker resubmission (regression for run 36409152332,
-        # extended for runs 36417263684, 36422228148, 36425019190 and
-        # 36430429432): the
-        # payload is fully reproducible and the worker is healthy again,
-        # so retry up to JOB_POLL_MAX_JOB_RESUBMITS times on the SAME
-        # worker instead of failing the whole
-        # attempt on transient restarts. Never creates a second service.
-        if [[ "$RUNNER_HEALTH" == "healthy" && "$POLL_RESUBMITS" -lt "$POLL_MAX_RESUBMITS" ]]; then
-          echo "Runner lost job $JOB_ID ($RESTART_EVIDENCE); resubmitting the same payload on the same worker (resubmission $((POLL_RESUBMITS + 1))/$POLL_MAX_RESUBMITS, no new service)."
+        # Machine-readable restart verdict for the budget-limited
+        # resubmission policy (should_resubmit_after_job_loss): a proven
+        # restart ("restarted") or missing evidence ("unknown") keeps
+        # retrying while poll budget remains; a proven same-process loss
+        # ("same-process") is deterministic and fails fast. An
+        # unknown-job 404 proves the poll reached the worker, so a loss
+        # on the same process that accepted the job cannot be a restart
+        # down-window.
+        RESTART_VERDICT="$(python3 - "$SUBMIT_UPTIME" "$CURRENT_UPTIME" "$SUBMIT_INSTANCE" "$CURRENT_INSTANCE" "$SUBMIT_WALL" "$CURRENT_WALL" <<'PY'
+import sys
+sys.path.insert(0, "automation")
+from render_lifecycle import detect_worker_restart
+verdict = detect_worker_restart(
+    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+)
+print("restarted" if verdict is True else ("same-process" if verdict is False else "unknown"))
+PY
+)"
+        POLLS_REMAINING=$((POLL_MAX_ATTEMPTS - i))
+        # Budget-limited same-worker resubmission (regression for run
+        # 36434278632, which lost six consecutive jobs to six proven
+        # restarts inside the poll budget and exhausted the old fixed
+        # bound of five): the payload is fully reproducible and the
+        # worker is healthy again, so resubmit on the SAME worker while
+        # poll iterations remain instead of failing the whole attempt
+        # on transient restarts. A sixth (or Nth) consecutive restart
+        # loss is another retry, not a terminal failure. Never creates
+        # a second service.
+        if [[ "$RUNNER_HEALTH" == "healthy" && "$RESTART_VERDICT" != "same-process" && "$POLLS_REMAINING" -gt 0 ]]; then
+          echo "Runner lost job $JOB_ID ($RESTART_EVIDENCE); resubmitting the same payload on the same worker (resubmission $((POLL_RESUBMITS + 1)), $POLLS_REMAINING poll(s) of budget remaining, no new service)."
           LOST_JOB_ID="$JOB_ID"
           RESUBMIT_RESPONSE="$(curl -fsSL --max-time 30 -X POST "$SERVICE_URL/v1/jobs" \
             -H "Accept: application/json" \
@@ -707,7 +727,16 @@ PY
           SUBMIT_WALL="$CURRENT_WALL"
           continue
         fi
-        echo "::error::Runner no longer knows job $JOB_ID (HTTP $POLL_LAST_CODE on $POLL_UNKNOWN_COUNT consecutive polls; runner health: $RUNNER_HEALTH; resubmissions used: $POLL_RESUBMITS/$POLL_MAX_RESUBMITS; $RESTART_EVIDENCE). Jobs live in worker process memory, so a worker restart loses the job permanently; failing fast instead of waiting out the full poll budget." >&2
+        # Fail fast with a qualified diagnostic. A proven same-process
+        # loss is deterministic (the poll reached the worker, so the
+        # worker losing its own job cannot be recovered by resubmission);
+        # any other terminal loss means the poll budget is exhausted or
+        # the worker is unreachable.
+        if [[ "$RUNNER_HEALTH" == "healthy" && "$RESTART_VERDICT" == "same-process" ]]; then
+          echo "::error::Runner no longer knows job $JOB_ID (HTTP $POLL_LAST_CODE on $POLL_UNKNOWN_COUNT consecutive polls; runner health: $RUNNER_HEALTH; resubmissions used: $POLL_RESUBMITS; $RESTART_EVIDENCE). An unknown-job answer proves the poll reached the worker, so a loss on the same process that accepted the job is deterministic and resubmission cannot recover it; failing fast instead of burning the poll budget." >&2
+          exit 1
+        fi
+        echo "::error::Runner no longer knows job $JOB_ID (HTTP $POLL_LAST_CODE on $POLL_UNKNOWN_COUNT consecutive polls; runner health: $RUNNER_HEALTH; resubmissions used: $POLL_RESUBMITS; poll $i/$POLL_MAX_ATTEMPTS, budget exhausted; $RESTART_EVIDENCE). Jobs live in worker process memory, so a worker restart loses the job permanently; failing fast instead of waiting out the full poll budget." >&2
         exit 1
       fi
       if [[ "$i" -eq 140 ]]; then

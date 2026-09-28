@@ -518,68 +518,38 @@ JOB_POLL_INTERVAL_SECONDS = 20
 JOB_POLL_UNKNOWN_JOB_THRESHOLD = 3
 JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY = 5
 JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES = 3
-# Same-worker job resubmission bound for proven job loss.
+# Same-worker job resubmission policy for proven job loss.
 #
 # Run 36409152332 submitted a job that polled as pending for ~2 minutes
 # and then turned into a permanent unknown-job 404 while the runner
 # stayed healthy: Render may restart a Free web service at any time
 # (RENDER_DOC_FREE_TIER) and runner jobs live only in worker process
 # memory, so a restart wipes the submitted job id forever. The submit
-# payload is fully reproducible, so the controller resubmits it at most
-# this many times on the SAME worker (never a second Render service).
+# payload is fully reproducible, so the controller resubmits it on the
+# SAME worker (never a second Render service).
 #
-# Run 36417263684 then proved one resubmission is not enough when
-# restarts cluster: the original job (instance fe21f53ff840) was lost to
-# a restart (b7c7865bf540), the single allowed resubmission (job
-# 55f1882cd7074e5a9b328e9a6085d077) was lost to a second restart
-# (4e9b50b43378), and the attempt failed fast with resubmissions used
-# 1/1. The vendor contract ("Render might restart a Free web service at
-# any time") permits consecutive restarts, and run 36410676408 showed
-# the same double-loss signature. Two bounded same-worker resubmissions
-# (three job attempts total) convert a double-restart cluster into
-# retries within the unchanged 140-iteration poll budget, while a third
-# consecutive loss still fails fast with full diagnostics (all job ids,
-# resubmit count, restart evidence).
-#
-# Run 36422228148 then proved two resubmissions are not enough when
-# restarts cluster further: the original job (instance 67de372e1e5f)
-# was lost to a restart (5a3329272140), the first resubmission (job
-# 29d1b9d0a0fa4bc8a8c752e84eccb989) was lost to a second restart
-# (81873f2a0598), and the second resubmission (job
-# e6163a828552452f81f8832ee9fb49c5) was lost to a third restart
-# (3133df580cc1); the attempt failed fast with resubmissions used 2/2
-# after ~18 minutes, well inside the unchanged 140x20s poll budget, so
-# a third resubmission would still have had ample budget left. Three
-# bounded same-worker resubmissions (four job attempts total) convert
-# a triple-restart cluster into retries, while a fourth consecutive
-# loss still fails fast.
-#
-# Run 36425019190 then proved three resubmissions are not enough when
-# restarts cluster further still: the original job (instance
-# cf0ce0e1fd5b) was lost to a restart (3b567ebafa1a), and all three
-# resubmissions were lost to three further consecutive restarts
-# (57c5fc5fe6d1 -> e0e82704a45d -> 9838a60f9feb); the attempt failed
-# fast with resubmissions used 3/3 after ~37 minutes, inside the
-# unchanged 140x20s (46m40s) poll budget. Four bounded same-worker
-# resubmissions (five job attempts total) convert a quadruple-restart
-# cluster into retries, while a fifth consecutive loss still fails
-# fast.
-#
-# Run 36430429432 then proved four resubmissions are not enough when the
-# cluster grows to five: the original job (instance 7b01eddc7d40) plus
-# all four resubmissions were lost to four consecutive proven restarts
-# (9eba933f33fa -> d5aef13e888a -> 91c8fea12ee0 -> 9adf1bd5433a), and
-# the fifth job died in a transport-error down-window (five consecutive
-# HTTP 502 polls with /health also failing) that is effectively a fifth
-# restart. The first live issue-57 container telemetry on that run
-# (cgroup limit/current/peak all 512.0 MB, Python RSS only ~32 MB,
-# memory.events max +434) proves the driver is memory pressure from the
-# ~600-615 MB agent peak measured in issue #52, not generic host
-# maintenance. Five bounded same-worker resubmissions (six job attempts
-# total) convert a quintuple-restart cluster into retries within the
-# unchanged 140x20s budget, while a sixth consecutive loss still fails
-# fast.
-JOB_POLL_MAX_JOB_RESUBMITS = 5
+# Repairs for runs 36417263684, 36422228148, 36425019190, and 36430429432
+# grew a fixed resubmission bound one live failure at a time (1 -> 2 ->
+# 3 -> 4 -> 5), and run 36434278632 then lost the original job plus all
+# five resubmissions to six consecutive proven restarts (instances
+# 7126f50f2488 -> 052597e76e74 -> 89d9f277a377 -> f6d90020ee91 ->
+# 1e9d729fe0bf -> fb20ff4cd8af -> 7d6acf859f67 at ~3-minute intervals,
+# ~18 minutes wall-clock, well inside the unchanged 140x20s poll
+# budget), failing fast with "resubmissions used: 5/5". A fixed count is
+# the wrong shape for this failure mode: any fixed N is falsified by the
+# next (N+1)-restart cluster while poll budget demonstrably remains, so
+# the bound must not be incremented a sixth time. Resubmission is
+# therefore budget-limited, not count-limited: the controller keeps
+# resubmitting the reproducible payload on the same healthy worker while
+# poll iterations remain (see should_resubmit_after_job_loss), and stops
+# only when the budget is exhausted or the loss is proven deterministic
+# (same worker process still healthy but no longer knows the job it
+# accepted: an unknown-job 404 proves the poll reached the worker, so a
+# loss on the SAME process is a deterministic defect that resubmission
+# cannot recover, and failing fast there is also faster than the old
+# count-bound behavior). Every existing invariant holds (one service per
+# attempt, same-worker policy, unchanged 140-iteration budget, mandatory
+# verified cleanup).
 # Poll outcome vocabulary for one job-status attempt (controller side).
 JOB_POLL_OUTCOMES = frozenset({
     "succeeded",
@@ -939,13 +909,29 @@ def should_fail_fast_on_transport(consecutive_unhealthy_probes: int) -> bool:
     return count >= JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES
 
 
-def should_resubmit_after_job_loss(resubmits_used: int) -> bool:
-    """True while the same-worker resubmission budget is not exhausted."""
+def should_resubmit_after_job_loss(*, polls_remaining: object,
+                                   worker_restarted: object) -> bool:
+    """Budget-limited same-worker resubmission decision (run 36434278632).
+
+    ``polls_remaining`` is the number of job-poll iterations left in the
+    unchanged poll budget; ``worker_restarted`` is the
+    detect_worker_restart() verdict for the loss (True = proven restart,
+    False = proven same process, None = missing evidence). Returns True
+    only while another attempt can still be observed (budget remains)
+    and the loss is not proven deterministic: a proven same-process
+    loss fails fast even with budget left (an unknown-job 404 proves the
+    poll reached the worker, so the same process losing its own job is a
+    deterministic defect resubmission cannot recover), while missing
+    evidence fails open toward recovery inside the budget. Unparsable
+    budgets fail closed.
+    """
+    if worker_restarted is False:
+        return False
     try:
-        used = int(resubmits_used)
+        remaining = int(polls_remaining)
     except (TypeError, ValueError):
         return False
-    return used < JOB_POLL_MAX_JOB_RESUBMITS
+    return remaining > 0
 
 
 def detect_worker_restart(prior_uptime: object,
