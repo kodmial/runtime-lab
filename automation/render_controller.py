@@ -38,7 +38,9 @@ as constants and durable-store semantics):
 Scheduling semantics reuse the repository's existing scheduler behavior
 (``.github/workflows/issue-scheduler.yml``), not a second incompatible
 workflow: priority:p0/p1/p2 ordering, native blocked-by dependencies
-(with the DoR ``#N is completed`` fallback), automation:in-progress
+(with the DoR ``#N is completed`` fallback plus the enforced OpenCode
+optimization DAG from issue #88 in
+``automation/opencode_dependency_dag.py``), automation:in-progress
 reservation with lease/open-PR handling, automation:paused handling and
 WIP/concurrency limits (default 4 concurrent issues, per-issue single
 worker, no global single-job mutex).
@@ -141,6 +143,25 @@ except ImportError:  # pytest inserts automation/ on sys.path
     from opencode_runner import (  # type: ignore[no-redef]
         is_model_unavailable_error,
     )
+
+try:  # pragma: no cover - import path depends on entrypoint
+    from automation.opencode_dependency_dag import (
+        enforced_open_blockers as _enforced_open_blockers,
+    )
+    from automation.opencode_dependency_dag import (
+        enforced_prerequisites as _enforced_prerequisites,
+    )
+except ImportError:  # pytest inserts automation/ on sys.path
+    try:
+        from opencode_dependency_dag import (  # type: ignore[no-redef]
+            enforced_open_blockers as _enforced_open_blockers,
+        )
+        from opencode_dependency_dag import (  # type: ignore[no-redef]
+            enforced_prerequisites as _enforced_prerequisites,
+        )
+    except ImportError:
+        _enforced_prerequisites = None  # type: ignore[assignment]
+        _enforced_open_blockers = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Controller identity / ingress contract.
@@ -490,11 +511,14 @@ def decide_eligible(snapshot: EligibilitySnapshot) -> EligibilityDecision:
     """Apply the scheduler semantics to one issue snapshot (pure, no I/O).
 
     Mirrors issue-scheduler.yml: paused short-circuits everything, only
-    explicitly prioritized work enters the queue, open blockers (native or
-    DoR-fallback) defer, an issue with a live reservation (open PR or valid
+    explicitly prioritized work enters the queue, open blockers (native,
+    DoR-fallback, or the enforced OpenCode optimization DAG from issue
+    #88) defer, an issue with a live reservation (open PR or valid
     lease under automation:in-progress) is already active, the WIP limit
     caps concurrent issues, and attempts beyond the maximum pause instead
-    of dispatching.
+    of dispatching. Enforced blockers are checked before the reservation
+    gate so a blocked issue can never be treated as already active: it is
+    ineligible and its stale reservation must be released, never dispatched.
     """
     labels = set(snapshot.labels)
     mode = snapshot.execution_mode()
@@ -521,6 +545,17 @@ def decide_eligible(snapshot: EligibilitySnapshot) -> EligibilityDecision:
         state = snapshot.open_blocker_fallback_states.get(number, "")
         if state == "open" and number not in blockers:
             blockers.append(number)
+    if _enforced_open_blockers is not None:
+        try:
+            for number in _enforced_open_blockers(
+                snapshot.issue_number,
+                open_blockers=tuple(blockers),
+                open_states=dict(snapshot.open_blocker_fallback_states),
+            ):
+                if number not in blockers:
+                    blockers.append(number)
+        except Exception:
+            pass
     if blockers:
         return EligibilityDecision(
             False,
@@ -977,11 +1012,26 @@ def build_snapshot(event: WebhookEvent, *,
                    wip_limit: int = DEFAULT_WIP_LIMIT,
                    max_attempts: int = DEFAULT_MAX_DISPATCH_ATTEMPTS,
                    active_count: int | None = None) -> EligibilitySnapshot:
-    """Assemble an EligibilitySnapshot for one webhook event."""
+    """Assemble an EligibilitySnapshot for one webhook event.
+
+    Besides native blockers and the DoR fallback, the enforced OpenCode
+    optimization DAG prerequisites are resolved here so
+    ``decide_eligible`` can fail closed on missing evidence: every
+    enforced prerequisite state is fetched through the provider and
+    carried in ``open_blocker_fallback_states``.
+    """
     provider = provider or StaticSnapshotProvider()
     blockers = provider.open_blockers(event.issue_number) if event.issue_number else []
     fallback_numbers = readiness_dependency_numbers(event.body, event.issue_number)
-    states = provider.open_issue_states(fallback_numbers) if fallback_numbers else {}
+    needed: list[int] = list(fallback_numbers)
+    if _enforced_prerequisites is not None and event.issue_number:
+        try:
+            for number in _enforced_prerequisites(event.issue_number):
+                if number not in needed:
+                    needed.append(number)
+        except Exception:
+            pass
+    states = provider.open_issue_states(needed) if needed else {}
     return EligibilitySnapshot(
         issue_number=event.issue_number,
         state=(event.state or "open") if event.event in ("issues", "issue_comment") else "open",
