@@ -324,6 +324,32 @@ def test_opencode_subprocess_gets_isolated_session_env(tmp_path):
     assert captured[1] == "1"
 
 
+def test_subprocess_runner_creates_session_db_dir(tmp_path):
+    # OpenCode fails fast with "unable to open database file" when the
+    # OPENCODE_DB parent directory does not exist (measured, issue #78),
+    # so the launcher must create it before spawning `opencode run`.
+    workspace = tmp_path / "ws-nodb"
+    checkout = workspace / "repo"
+    checkout.mkdir(parents=True)
+    fake = tmp_path / "opencode"
+    fake.write_text(
+        '#!/bin/sh\ntest -d "$(dirname "$OPENCODE_DB")" && echo dbdir-ok\necho done\n',
+        encoding="utf-8",
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    runner = SubprocessCommandRunner()
+    result = runner.run(
+        [str(fake), "run", "--auto", "--model", PREFERRED_MODEL, "task"],
+        cwd=str(checkout),
+        timeout=30.0,
+    )
+    assert result.returncode == 0
+    assert "dbdir-ok" in (result.stdout or "")
+    assert os.path.isdir(
+        os.path.join(str(workspace), ".runtime-lab-opencode-db")
+    )
+
+
 def test_subprocess_runner_refuses_session_reuse_before_start(tmp_path):
     runner = SubprocessCommandRunner()
     with pytest.raises(ValueError):
