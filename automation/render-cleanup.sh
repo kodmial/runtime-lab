@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# Unconditional cleanup for the ephemeral Render service.
-# Deletion is the primary cleanup mechanism; suspension is only an emergency
-# fallback if deletion temporarily fails, and deletion is still retried within
-# bounded limits. A successful run must prove the service no longer exists.
+# TEMPORARY development harness only (issue #4): GitHub Actions -> Render.
+#
+# Unconditional cleanup for the ephemeral Render service created by
+# automation/render-job.sh. Part of the temporary Actions control plane used
+# while the direct GitHub->Render integration does not exist yet; it is NOT
+# the final runtime architecture (the final production path must not require
+# an OpenCode GitHub Actions job). Deletion is the primary cleanup mechanism;
+# suspension is only an emergency fallback if deletion temporarily fails, and
+# deletion is still retried within bounded limits. A successful run must
+# prove the service no longer exists (GET -> 404/410).
 #
 # This script runs in an always() workflow step, covering success, runner
 # failure, timeout and partial provisioning failure whenever a service id
-# exists. Auth uses RENDER_API_KEY (mapped from the repository secret KEY
-# by the workflow); never printed.
+# exists. Render 429 responses are honored via Retry-After with bounded
+# retries (see RENDER_DOC_RATE_LIMITING). Auth uses RENDER_API_KEY (mapped
+# from the repository secret KEY by the workflow); never printed.
 set -euo pipefail
 
 : "${RENDER_API_KEY:?RENDER_API_KEY must be set by the workflow}"
@@ -17,6 +24,7 @@ API_BASE="https://api.render.com/v1"
 DELETE_MAX_ATTEMPTS=5
 DELETE_INTERVAL=10
 SUSPEND_FALLBACK_ATTEMPTS=2
+API_RETRY_CAP_SECONDS=120
 
 if [[ ! -s "$RENDER_STATE_FILE" ]]; then
   echo "No Render state was created; cleanup has nothing to delete."
@@ -31,22 +39,39 @@ fi
 
 echo "Deleting ephemeral Render service $SERVICE_ID."
 
-delete_once() {
-  local code
-  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -X DELETE \
-    "$API_BASE/services/$SERVICE_ID" \
+# raw_http <METHOD> <URL> [extra curl args...]: single attempt printing the
+# numeric HTTP code. Unlike the job script's api_request, cleanup manages its
+# own bounded retry loop below so a suspend fallback can run between two
+# bounded deletion windows; 429/Retry-After is honored on every attempt.
+raw_http() {
+  local method="$1" url="$2"
+  shift 2
+  local header_file code retry_after
+  header_file="$(mktemp)"
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -D "$header_file" \
+    -X "$method" "$url" \
     -H "Accept: application/json" \
-    -H "Authorization: Bearer $RENDER_API_KEY" 2>/dev/null || true)"
+    -H "Authorization: Bearer $RENDER_API_KEY" "$@" 2>/dev/null || true)"
+  code="$(tr -dc '0-9' <<<"$code" || true)"
+  [[ -z "$code" ]] && code="000"
+  retry_after="$(grep -i '^retry-after:' "$header_file" 2>/dev/null | tail -n 1 | cut -d: -f2- | tr -d ' \r\n' || true)"
+  rm -f "$header_file"
+  if [[ "$code" == "429" && "$retry_after" =~ ^[0-9]+$ ]]; then
+    if [[ "$retry_after" -gt "$API_RETRY_CAP_SECONDS" ]]; then
+      retry_after="$API_RETRY_CAP_SECONDS"
+    fi
+    echo "Render API returned 429 with Retry-After=${retry_after}s; waiting before retry." >&2
+    sleep "$retry_after"
+  fi
   echo "$code"
 }
 
+delete_once() {
+  raw_http DELETE "$API_BASE/services/$SERVICE_ID"
+}
+
 verify_gone() {
-  local code
-  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
-    "$API_BASE/services/$SERVICE_ID" \
-    -H "Accept: application/json" \
-    -H "Authorization: Bearer $RENDER_API_KEY" 2>/dev/null || true)"
-  echo "$code"
+  raw_http GET "$API_BASE/services/$SERVICE_ID"
 }
 
 DELETE_CODE=""
@@ -71,10 +96,7 @@ fi
 # Emergency fallback only: suspend to stop burn, then keep retrying deletion.
 echo "Deletion not yet verified (HTTP $VERIFY_CODE); attempting suspend fallback." >&2
 for ((i = 1; i <= SUSPEND_FALLBACK_ATTEMPTS; i++)); do
-  SUSPEND_CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -X POST \
-    "$API_BASE/services/$SERVICE_ID/suspend" \
-    -H "Accept: application/json" \
-    -H "Authorization: Bearer $RENDER_API_KEY" 2>/dev/null || true)"
+  SUSPEND_CODE="$(raw_http POST "$API_BASE/services/$SERVICE_ID/suspend")"
   echo "Suspend fallback attempt $i/$SUSPEND_FALLBACK_ATTEMPTS returned HTTP $SUSPEND_CODE." >&2
   if [[ "$SUSPEND_CODE" == "202" || "$SUSPEND_CODE" == "404" || "$SUSPEND_CODE" == "410" ]]; then
     break
