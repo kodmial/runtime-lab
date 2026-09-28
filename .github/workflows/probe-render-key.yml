@@ -1,0 +1,24 @@
+name: Probe Render KEY
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/probe-render-key.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify KEY against Render
+        env:
+          RENDER_KEY: ${{ secrets.KEY }}
+        run: |
+          test -n "$RENDER_KEY"
+          code=$(curl -sS -o /tmp/render.json -w '%{http_code}' https://api.render.com/v1/owners?limit=20 -H "Authorization: Bearer $RENDER_KEY")
+          echo "HTTP=$code"
+          test "$code" = "200"
+          jq -r '.[] | (.owner // .) | "name=" + ((.name // "unknown")|tostring) + " type=" + ((.type // "unknown")|tostring)' /tmp/render.json
