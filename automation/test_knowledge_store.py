@@ -29,6 +29,7 @@ from automation.knowledge_store import (
     PublicRepositoryError,
     assert_not_org_bootstrap_endpoint,
     build_bootstrap_repo_request,
+    build_knowledge_repo_settings_patch,
     build_worker_context,
     cas_commit_files_with_retry,
     classify_bootstrap_capability_failure,
@@ -38,6 +39,7 @@ from automation.knowledge_store import (
     experiment_remote_path,
     initial_layout_file_map,
     knowledge_installation_token_request,
+    knowledge_repo_settings_patch_path,
     local_record_file_to_remote_path,
     migrate_experiment_text,
     plan_live_bootstrap,
@@ -47,6 +49,7 @@ from automation.knowledge_store import (
     tap_pat_status,
     topic_remote_path,
     trusted_transport_token_present,
+    verify_knowledge_repo_settings_for_roadmap,
     verify_knowledge_repository,
     verify_migrated_record_identity,
     worker_payload_contains_credentials,
@@ -111,6 +114,9 @@ def test_bootstrap_request_requires_private_true():
         assert_not_org_bootstrap_endpoint("/orgs/other/repos")
     assert payload["name"] == "agent-knowledge"
     assert payload["private"] is True
+    # Knowledge Plane roadmap uses native repo issues: bootstrap must not
+    # disable them.
+    assert payload["has_issues"] is True
     require_private_bootstrap_request(payload)
     with pytest.raises(PublicRepositoryError):
         require_private_bootstrap_request({**payload, "private": False})
@@ -118,6 +124,39 @@ def test_bootstrap_request_requires_private_true():
         require_private_bootstrap_request({**payload, "visibility": "public"})
     with pytest.raises(PublicRepositoryError):
         require_private_bootstrap_request({**payload, "private": "true"})
+    with pytest.raises(store.KnowledgeStoreError):
+        require_private_bootstrap_request({**payload, "has_issues": False})
+    with pytest.raises(store.KnowledgeStoreError):
+        require_private_bootstrap_request(
+            {k: v for k, v in payload.items() if k != "has_issues"})
+
+
+def test_bootstrap_settings_patch_enables_issues_without_touching_visibility():
+    assert knowledge_repo_settings_patch_path() == "/repos/kodmial/agent-knowledge"
+    patch = build_knowledge_repo_settings_patch()
+    assert patch == {"has_issues": True}
+    # The correction must never weaken visibility or privacy settings.
+    assert "private" not in patch
+    assert "visibility" not in patch
+
+    good = {
+        "full_name": "kodmial/agent-knowledge",
+        "private": True,
+        "visibility": "private",
+        "default_branch": "main",
+        "has_issues": True,
+    }
+    verified = verify_knowledge_repo_settings_for_roadmap(good)
+    assert verified["full_name"] == "kodmial/agent-knowledge"
+    assert verified["has_issues"] is True
+    assert verified["private"] is True
+    # Issues disabled fails closed even when the repo is otherwise private.
+    with pytest.raises(store.KnowledgeStoreError):
+        verify_knowledge_repo_settings_for_roadmap({**good, "has_issues": False})
+    # A public repo with issues enabled is still rejected.
+    with pytest.raises(PublicRepositoryError):
+        verify_knowledge_repo_settings_for_roadmap(
+            {**good, "private": False, "visibility": "public"})
 
 
 def test_public_or_reused_public_repository_is_rejected():
