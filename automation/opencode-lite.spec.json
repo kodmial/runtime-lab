@@ -1,0 +1,135 @@
+{
+  "benchmark": {
+    "baseline_issue": 52,
+    "baseline_note": "Issues 77 and 78 have no experiment records in the derived catalog at the time of this change; the comparison baseline is the measured issue-52 real-agent peak plus the issue-56 anon-mmap finding. A resourced fork builder must re-run the lite binary against the same harness and record the delta.",
+    "baseline_peak_kb": 614632,
+    "blocking_issues_without_records": [
+      77,
+      78
+    ],
+    "method": "python3 automation/memory_benchmark.py --include-network for the full binary; static import-graph closure plus the deterministic representative coding task in automation/opencode_lite.py for the lite path until a resourced bun build exists"
+  },
+  "boundaries": {
+    "custom_provider_guard": "The lite entrypoint must not introduce a direct provider/API client. All model access stays through the existing OpenCode provider/model/session/agent loop. Static imports of third-party LLM SDKs or hard-coded provider API hosts outside packages/opencode/src/provider/** fail validation.",
+    "forbidden_dynamic_import": true,
+    "forbidden_static_import": true
+  },
+  "fork_base_sha": "9000e7fc8d96c845512f7c73122431418a71d4e4",
+  "fork_repo": "kodmial/opencode",
+  "full": {
+    "build_script": "packages/opencode/script/build.ts",
+    "entrypoint": "packages/opencode/src/index.ts",
+    "required_paths": [
+      "packages/opencode/package.json",
+      "packages/opencode/src/index.ts",
+      "packages/opencode/src/cli/cmd/run.ts",
+      "packages/opencode/script/build.ts",
+      "bun.lock"
+    ]
+  },
+  "no_custom_provider_rewrite": true,
+  "pinned_opencode_version": "1.18.33",
+  "removed_groups": [
+    {
+      "group": "A-ui-share-update",
+      "modules": [
+        "TUI",
+        "desktop/web UI",
+        "sharing/UI routes",
+        "update/model-catalog helpers not needed with explicit configuration"
+      ],
+      "patterns": [
+        "tui",
+        "cli/cmd/tui",
+        "desktop",
+        "web/ui",
+        "share",
+        "routes/share",
+        "update",
+        "upgrade",
+        "models.dev",
+        "model-catalog",
+        "model_catalog"
+      ],
+      "rationale": "No dependency from the headless provider/agent/tool loop; safe to compile-separate first."
+    },
+    {
+      "group": "B-tools-registry",
+      "modules": [
+        "MCP",
+        "plugins/external skills",
+        "web search/fetch tools",
+        "LSP and formatter infrastructure"
+      ],
+      "patterns": [
+        "mcp",
+        "plugin",
+        "skill",
+        "extension",
+        "websearch",
+        "webfetch",
+        "web_search",
+        "web_fetch",
+        "language-server",
+        "lsp",
+        "formatter",
+        "prettier",
+        "dprint"
+      ],
+      "rationale": "Tool-registry only. The minimal coding set (read/search/edit/write/patch/shell) does not need them."
+    },
+    {
+      "group": "C-agent-adjacent",
+      "modules": [
+        "question/todo/task/subagent tooling",
+        "file watcher",
+        "snapshot/undo subsystem"
+      ],
+      "patterns": [
+        "question",
+        "todo",
+        "subagent",
+        "agent/task",
+        "watch",
+        "watcher",
+        "chokidar",
+        "snapshot",
+        "undo",
+        "checkpoint"
+      ],
+      "rationale": "Adjacent to the agent loop, so removed last and validated against the representative coding task. The task tool keeps the generic name, so validation matches path-qualified agent/task and subagent patterns rather than a bare task substring."
+    }
+  ],
+  "retained": {
+    "capabilities": [
+      "repository read/search",
+      "edit/write/patch",
+      "shell/build/test",
+      "provider/model/session/agent loop"
+    ],
+    "patterns": [
+      "provider",
+      "session",
+      "agent",
+      "model",
+      "tool/read",
+      "tool/grep",
+      "tool/glob",
+      "tool/edit",
+      "tool/write",
+      "tool/patch",
+      "tool/bash",
+      "cli/cmd/run"
+    ]
+  },
+  "schema": "runtime-lab-opencode-lite-spec/v1",
+  "upstream_repo": "anomalyco/opencode",
+  "variant": {
+    "build_command": "bun run script/build-lite.ts",
+    "build_script": "packages/opencode/script/build-lite.ts",
+    "entrypoint": "packages/opencode/src/cli/cmd/run-coding.ts",
+    "name": "coding-only",
+    "outdir": "dist/lite",
+    "support_dir": "packages/opencode/src/lite"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "base_commit": "672d996025909cc503a2e2e16d3988f4bcacae57",
+  "benchmark_host": {
+    "opencode_bin": "/home/runner/.opencode/bin/opencode",
+    "pinned_opencode_version": "1.18.33",
+    "python_version": "3.12.3"
+  },
+  "correctness": {
+    "representative_task": "inspect/search repository, modify files, run build/tests, react to failures, return expected result",
+    "representative_task_outcome": "pass",
+    "representative_task_peak_tree_kb": 8960,
+    "representative_task_result": "line three"
+  },
+  "fork": {
+    "fork_repo": "kodmial/opencode",
+    "fork_sha": "9000e7fc8d96c845512f7c73122431418a71d4e4",
+    "upstream_repo": "anomalyco/opencode"
+  },
+  "full_binary_baseline": {
+    "note": "Issues 77 and 78 have no experiment records in the derived catalog, so the comparison baseline is the measured issue-52 real-agent peak. No lite binary exists yet; no binary memory delta is claimed here.",
+    "real_agent_peak_tree_kb": 614632,
+    "real_agent_source": "automation/benchmark-results/memory-benchmark-issue-52-run-36423884312.json (issue #52, run 36423884312)",
+    "version_peak_main_kb": 178136,
+    "version_peak_tree_kb": 178136,
+    "version_remeasured_this_run_kb": 178136,
+    "version_time_v_max_rss_kb": 203336
+  },
+  "issue": 79,
+  "lite_static_delta": {
+    "excluded_patterns_total": 34,
+    "groups_validated": ["A-ui-share-update", "B-tools-registry", "C-agent-adjacent"],
+    "lite_closure_reachable_files": 15,
+    "method": "static transitive import closure of packages/opencode/src/cli/cmd/run-coding.ts over the retained provider/agent/tool graph; per-group check_group_removed evidence instead of one opaque bulk change",
+    "retained_patterns_total": 12
+  },
+  "run_id": "36452596724",
+  "schema": "runtime-lab-opencode-lite-benchmark/v1",
+  "spec": "automation/opencode-lite.spec.json",
+    "verdict": "Source-level delta is explicit (lite closure excludes all 34 subsystem patterns across 3 staged groups while keeping the 12 retained provider/agent/tool patterns). Binary peak-memory delta is not measured in this worker: a resourced fork builder must build both targets (scripts.build vs scripts.build:lite) and rerun python3 automation/memory_benchmark.py --include-network for the lite binary before any 512 MB claim."
+}
