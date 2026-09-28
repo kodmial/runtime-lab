@@ -16,6 +16,8 @@ from render_lifecycle import (  # noqa: E402
     FALLBACK_MODEL,
     FORBIDDEN_WORKER_REGIONS,
     FREE_PLAN,
+    JOB_POLL_INTERVAL_SECONDS,
+    JOB_POLL_MAX_ATTEMPTS,
     LIFECYCLE_STEPS,
     CLEANUP_TRIGGER_EVENTS,
     MAX_CONCURRENT_AUTOMATION_JOBS,
@@ -26,6 +28,7 @@ from render_lifecycle import (  # noqa: E402
     POLL_RETRY_CREATES_NEW_SERVICE,
     PREFERRED_MODEL,
     PUBLIC_REPO_URL,
+    RUNNER_JOB_TIMEOUT_SECONDS,
     RENDER_API_BASE,
     RENDER_CREATE_SERVICE_PATH,
     RENDER_DELETE_SERVICE_PATH_TEMPLATE,
@@ -256,6 +259,19 @@ def test_deploy_classification_and_service_health():
 
 def test_service_naming_is_deterministic_per_attempt():
     assert service_name_for_attempt(1, "r1") == "runtime-lab-issue1-r1"
+
+
+def test_job_poll_budget_covers_runner_timeout():
+    # Regression for run 36399649036: the Actions/controller poll loop gave
+    # up after 60*20s=1200s while the runner may legitimately work for up
+    # to RUNNER_JOB_TIMEOUT_SECONDS (45 minutes), producing a spurious
+    # "did not finish in time" failure on a healthy worker.
+    budget = JOB_POLL_MAX_ATTEMPTS * JOB_POLL_INTERVAL_SECONDS
+    assert budget >= RUNNER_JOB_TIMEOUT_SECONDS + 60
+    # The budget must still fit inside the 55-minute workflow envelope
+    # when deploy/health are fast (deploy went live in ~40s in the failed
+    # run); 140*20s=2800s leaves room for create/health/cleanup.
+    assert budget <= 55 * 60 - 300
 
 
 def test_shell_scripts_exist_and_reference_key_only_via_env():

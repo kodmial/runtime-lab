@@ -30,7 +30,10 @@ sys.path.insert(0, str(REPO_ROOT))
 from render_lifecycle import (  # noqa: E402
     API_RETRY_CAP_SECONDS,
     FALLBACK_MODEL,
+    JOB_POLL_INTERVAL_SECONDS,
+    JOB_POLL_MAX_ATTEMPTS,
     PREFERRED_MODEL,
+    RUNNER_JOB_TIMEOUT_SECONDS,
     is_rate_limited,
     is_retryable_render_status,
     parse_retry_after,
@@ -185,6 +188,31 @@ def test_region_validation_happens_before_any_creation():
     create_idx = job.find("/services")
     assert validate_idx != -1 and create_idx != -1
     assert validate_idx < create_idx
+
+
+def test_job_poll_loop_matches_lifecycle_budget_and_covers_runner_timeout():
+    # Regression for run 36399649036: render-job.sh polled only 60x20s
+    # while the runner may work up to RUNNER_JOB_TIMEOUT_SECONDS, so the
+    # shell must track JOB_POLL_MAX_ATTEMPTS instead of drifting.
+    import re
+
+    job = _read("render-job.sh")
+    assert "JOB_POLL_MAX_ATTEMPTS" in job
+    loop_bounds = [
+        int(value)
+        for value in re.findall(r"for \(\(i = 1; i <= (\d+); i\+\+\)\)", job)
+    ]
+    assert loop_bounds, "expected bounded poll loops in render-job.sh"
+    # The job-result poll is the largest bounded loop in the script
+    # (deploy polling uses DEPLOY_ATTEMPTS=60); it must equal the lifecycle
+    # constant so both paths share one timeout envelope.
+    assert max(loop_bounds) == JOB_POLL_MAX_ATTEMPTS
+    assert JOB_POLL_MAX_ATTEMPTS * JOB_POLL_INTERVAL_SECONDS >= (
+        RUNNER_JOB_TIMEOUT_SECONDS + 60
+    )
+    # The terminal poll guard must use the same bound, otherwise the loop
+    # exits early or never reports the timeout.
+    assert '"$i" -eq %d' % JOB_POLL_MAX_ATTEMPTS in job
 
 
 # ---------------------------------------------------------------------------

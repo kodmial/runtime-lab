@@ -399,7 +399,12 @@ CRON_MAY_CREATE_SERVICES = False
 # Bounded retries everywhere (no unbounded loops).
 DEPLOY_POLL_MAX_ATTEMPTS = 60
 DEPLOY_POLL_INTERVAL_SECONDS = 20
-JOB_POLL_MAX_ATTEMPTS = 60
+# Job polling must cover the full runner execution timeout
+# (RUNNER_JOB_TIMEOUT_SECONDS = 45 minutes) plus poll overhead, while still
+# fitting inside the 55-minute workflow envelope when deploy/health are fast
+# (run 36399649036 failed after only 60*20s=1200s while the runner may
+# legitimately work for up to 2700s): 140*20s=2800s covers 2700s + buffer.
+JOB_POLL_MAX_ATTEMPTS = 140
 JOB_POLL_INTERVAL_SECONDS = 20
 RUNNER_HEALTH_MAX_ATTEMPTS = 30
 RUNNER_HEALTH_INTERVAL_SECONDS = 10

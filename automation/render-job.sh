@@ -394,9 +394,13 @@ echo "Submitted runner job $JOB_ID."
 # Poll the job status/result (bounded; same worker, no new service).
 # A 429/5xx from the runner surfaces as an empty poll body and is retried
 # as not-finished within the same bounded loop; the worker is never replaced.
+# Budget 140x20s=2800s covers the runner execution timeout of 45 minutes
+# (see JOB_POLL_MAX_ATTEMPTS in automation/render_lifecycle.py); run
+# 36399649036 failed prematurely with only 60x20s=1200s while the runner was
+# still legitimately working.
 FALLBACK_MODEL="opencode/space-bunny-free"
 TRIED_FALLBACK="no"
-for ((i = 1; i <= 60; i++)); do
+for ((i = 1; i <= 140; i++)); do
   RESULT_JSON="$(curl -fsSL --max-time 30 "$SERVICE_URL/v1/jobs/$JOB_ID" \
     -H "Accept: application/json" 2>/dev/null || true)"
   STATUS="$(jq -r '.status // empty' <<<"$RESULT_JSON" 2>/dev/null || true)"
@@ -428,8 +432,8 @@ for ((i = 1; i <= 60; i++)); do
       exit 1
       ;;
     queued|running|"")
-      if [[ "$i" -eq 60 ]]; then
-        echo "::error::Runner job $JOB_ID did not finish in time." >&2
+      if [[ "$i" -eq 140 ]]; then
+        echo "::error::Runner job $JOB_ID did not finish in time (last status '${STATUS:-empty}')." >&2
         exit 1
       fi
       sleep 20
