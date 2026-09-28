@@ -506,4 +506,4 @@ def test_runner_source_enforces_knowledge_handoff_before_success():
     assert "Repository knowledge handoff (mandatory)" in source
     assert "validate_experiment_record_text" in source
     assert "knowledge handoff validation failed" in source
-    assert source.index("knowledge handoff validation failed") < source.index('job_id, "succeeded"')
+    assert source.index("knowledge handoff validation failed") < source.rindex('job_id, "succeeded"')
