@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 # Unconditional cleanup for the ephemeral Render service.
+#
+# TEMPORARY DEVELOPMENT HARNESS (issue #4).
+# GitHub Actions orchestration is a temporary development harness, not the final runtime architecture.
+# GitHub Actions is used here only as a temporary control plane so the Render
+# lifecycle and runner can be developed and tested before the direct
+# GitHub -> Render integration exists.
+#
 # Deletion is the primary cleanup mechanism; suspension is only an emergency
 # fallback if deletion temporarily fails, and deletion is still retried within
 # bounded limits. A successful run must prove the service no longer exists.
@@ -7,7 +14,9 @@
 # This script runs in an always() workflow step, covering success, runner
 # failure, timeout and partial provisioning failure whenever a service id
 # exists. Auth uses RENDER_API_KEY (mapped from the repository secret KEY
-# by the workflow); never printed.
+# by the workflow); never printed. Render 429/5xx responses are honored with
+# Retry-After backoff. This script performs no GitHub writes; the workflow
+# finalize step owns all issue/PR updates.
 set -euo pipefail
 
 : "${RENDER_API_KEY:?RENDER_API_KEY must be set by the workflow}"
@@ -31,22 +40,57 @@ fi
 
 echo "Deleting ephemeral Render service $SERVICE_ID."
 
+# raw_request <method> <url> [extra curl args...] -> prints HTTP code.
+# Honors Retry-After on 429/502/503/504 with bounded backoff (max 60s sleep).
+raw_request() {
+  local method="$1"
+  local url="$2"
+  shift 2
+  local attempt=1
+  local max_attempts=4
+  local code=""
+  while true; do
+    local header_file
+    header_file="$(mktemp)"
+    code="$(curl -sS -o /dev/null -D "$header_file" -w '%{http_code}' --max-time 30 -X "$method" \
+      "$url" \
+      -H "Accept: application/json" \
+      -H "Authorization: Bearer $RENDER_API_KEY" "$@" 2>/dev/null || true)"
+    local retry_after
+    retry_after="$(grep -i '^retry-after:' "$header_file" 2>/dev/null \
+      | tail -n 1 | cut -d: -f2- | tr -d ' \r\n' || true)"
+    rm -f "$header_file"
+    case "$code" in
+      429|502|503|504)
+        if [[ "$attempt" -lt "$max_attempts" ]]; then
+          local backoff
+          backoff="$(python3 - "$attempt" "${retry_after:-}" <<'PY'
+import sys
+sys.path.insert(0, "automation")
+from render_lifecycle import backoff_delay_for_attempt, parse_retry_after_seconds
+attempt = int(sys.argv[1])
+retry_after = parse_retry_after_seconds(sys.argv[2] if len(sys.argv) > 2 else "")
+print(backoff_delay_for_attempt(attempt, retry_after))
+PY
+)"
+          echo "Cleanup request $method $url returned HTTP $code (attempt $attempt/$max_attempts); backing off ${backoff}s." >&2
+          sleep "$backoff"
+          attempt=$((attempt + 1))
+          continue
+        fi
+        ;;
+    esac
+    echo "$code"
+    return 0
+  done
+}
+
 delete_once() {
-  local code
-  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -X DELETE \
-    "$API_BASE/services/$SERVICE_ID" \
-    -H "Accept: application/json" \
-    -H "Authorization: Bearer $RENDER_API_KEY" 2>/dev/null || true)"
-  echo "$code"
+  raw_request DELETE "$API_BASE/services/$SERVICE_ID"
 }
 
 verify_gone() {
-  local code
-  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
-    "$API_BASE/services/$SERVICE_ID" \
-    -H "Accept: application/json" \
-    -H "Authorization: Bearer $RENDER_API_KEY" 2>/dev/null || true)"
-  echo "$code"
+  raw_request GET "$API_BASE/services/$SERVICE_ID"
 }
 
 DELETE_CODE=""
@@ -71,10 +115,7 @@ fi
 # Emergency fallback only: suspend to stop burn, then keep retrying deletion.
 echo "Deletion not yet verified (HTTP $VERIFY_CODE); attempting suspend fallback." >&2
 for ((i = 1; i <= SUSPEND_FALLBACK_ATTEMPTS; i++)); do
-  SUSPEND_CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -X POST \
-    "$API_BASE/services/$SERVICE_ID/suspend" \
-    -H "Accept: application/json" \
-    -H "Authorization: Bearer $RENDER_API_KEY" 2>/dev/null || true)"
+  SUSPEND_CODE="$(raw_request POST "$API_BASE/services/$SERVICE_ID/suspend")"
   echo "Suspend fallback attempt $i/$SUSPEND_FALLBACK_ATTEMPTS returned HTTP $SUSPEND_CODE." >&2
   if [[ "$SUSPEND_CODE" == "202" || "$SUSPEND_CODE" == "404" || "$SUSPEND_CODE" == "410" ]]; then
     break

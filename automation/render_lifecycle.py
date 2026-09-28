@@ -1,5 +1,14 @@
 """Ephemeral Render execution lifecycle and GitHub <-> runner contract (issue #1).
 
+TEMPORARY DEVELOPMENT HARNESS (issue #4): GitHub Actions is used here only as
+a temporary control plane so the Render lifecycle and runner can be developed
+and tested before the direct GitHub -> Render integration exists. The final
+production path must not require an OpenCode GitHub Actions job; final cutover
+is implemented by later issues. The helpers in this module are factored so the
+future persistent Render controller can import and call them directly instead
+of going through the Actions shell wrappers in automation/render-job.sh and
+automation/render-cleanup.sh.
+
 P0 foundation: exactly one temporary Render web service per execution attempt,
 deleted unconditionally afterwards. Suspension is only an emergency fallback
 when deletion temporarily fails; the workflow must still retry deletion within
@@ -135,6 +144,53 @@ RENDER_RATE_LIMIT_HEADERS = (
     "RateLimit-Reset",
     "Retry-After",
 )
+
+# HTTP statuses the harness may retry with backoff (same request, same worker;
+# a retry must never provision a second Render service for the same attempt).
+# 429 means the caller hit a Render rate-limit bucket and must honor the
+# Retry-After response header when present. 502/503/504 are transient Render
+# edge failures that are safe to retry for idempotent reads; a retried service
+# creation must first check for the uniquely named service via list-services
+# and reuse it instead of issuing a second POST /v1/services.
+RETRIABLE_HTTP_STATUSES = frozenset({429, 502, 503, 504})
+# Upper bound for a single Retry-After sleep; larger values are clamped so one
+# throttled call cannot stall the bounded lifecycle budgets below.
+MAX_RETRY_AFTER_SECONDS = 60
+# Bounded 429/5xx retries per individual API call (not per lifecycle phase).
+API_CALL_MAX_ATTEMPTS = 4
+
+
+def parse_retry_after_seconds(raw: str | None) -> int:
+    """Parse a Retry-After header value into a clamped non-negative delay.
+
+    Accepts delta-seconds form. Unknown or missing values yield 0 (caller
+    falls back to its phase polling interval). Values above
+    MAX_RETRY_AFTER_SECONDS are clamped.
+    """
+    if raw is None:
+        return 0
+    text = raw.strip()
+    if not text:
+        return 0
+    # HTTP-date form is not emitted by the Render API; accept only seconds.
+    if not text.isdigit():
+        return 0
+    return max(0, min(int(text), MAX_RETRY_AFTER_SECONDS))
+
+
+def should_retry_http_status(status: int | None) -> bool:
+    """True when an API call may be retried with backoff (429 or 502/503/504)."""
+    return status in RETRIABLE_HTTP_STATUSES
+
+
+def backoff_delay_for_attempt(attempt: int, retry_after: int = 0) -> int:
+    """Bounded backoff for API-call retries: max(Retry-After, 2**attempt)."""
+    if attempt < 1:
+        raise ValueError("attempt must be a positive integer")
+    delay = 2**attempt
+    if retry_after > 0:
+        delay = max(delay, min(retry_after, MAX_RETRY_AFTER_SECONDS))
+    return min(delay, MAX_RETRY_AFTER_SECONDS)
 
 # ---------------------------------------------------------------------------
 # Free-tier guard: fail closed, never silently create a paid resource.
@@ -399,6 +455,78 @@ RUNNER_RESULT_TIMEOUT_SECONDS = 60
 
 RUNNER_JOB_STATUSES = frozenset({"queued", "running", "succeeded", "failed", "timed_out"})
 RUNNER_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timed_out"})
+
+# Marker documenting that the Actions-driven orchestration in
+# automation/render-job.sh and automation/render-cleanup.sh is a temporary
+# development harness, not the final runtime architecture. The persistent
+# Render controller (later issues) replaces the Actions control plane.
+TEMPORARY_HARNESS_MARKER = "temporary development harness"
+TEMPORARY_HARNESS_NOTE = (
+    "GitHub Actions orchestration is a temporary development harness, "
+    "not the final runtime architecture."
+)
+
+# Maximum issue body characters embedded in a runner task payload. Full issue
+# text is preferred, but unbounded bodies could overflow runner limits, so the
+# body is truncated with an explicit marker beyond this budget.
+MAX_TASK_BODY_CHARS = 6000
+
+
+def build_task_text(
+    issue_number: int,
+    execution_mode: str,
+    title: str = "",
+    body: str = "",
+) -> str:
+    """Build the runner task text from resolved issue title/body.
+
+    Falls back to a synthetic instruction when the issue API is unreachable
+    (offline tests, missing GitHub credentials); the fallback still carries
+    the exact issue number and execution mode so the runner can attribute
+    the job. Truncates very long bodies with an explicit marker.
+    """
+    if issue_number <= 0:
+        raise ValueError("issue_number must be a positive integer")
+    if execution_mode not in ("smoke", "e2e"):
+        raise ValueError("execution_mode must be smoke or e2e")
+    title = (title or "").strip()
+    body = (body or "").strip()
+    if body and len(body) > MAX_TASK_BODY_CHARS:
+        body = body[:MAX_TASK_BODY_CHARS] + "\n\n[... truncated ...]"
+    if title or body:
+        text = "Execute issue #%d in %s mode.\n\nTitle: %s" % (
+            issue_number,
+            execution_mode,
+            title or "(untitled)",
+        )
+        if body:
+            text += "\n\nSpecification:\n" + body
+        return text
+    return "Execute issue #%d in %s mode." % (issue_number, execution_mode)
+
+
+def is_plausible_base_sha(value: str | None) -> bool:
+    """True when a candidate base SHA looks like an exact git object id."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if len(text) not in (40, 64):
+        return False
+    return all(c in "0123456789abcdefABCDEF" for c in text)
+
+
+def resolve_base_sha(*candidates: str | None) -> str:
+    """Return the first plausible exact base SHA from ordered candidates.
+
+    Callers pass candidates in preference order (for example workflow
+    GITHUB_SHA, then local git HEAD, then the main ref API). Returns "" when
+    none is plausible; JobRequest treats an empty base_sha as absent rather
+    than failing the attempt.
+    """
+    for candidate in candidates:
+        if is_plausible_base_sha(candidate):
+            return candidate.strip()
+    return ""
 
 
 @dataclass(frozen=True)
