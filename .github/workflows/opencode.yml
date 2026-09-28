@@ -306,6 +306,7 @@ jobs:
           - Keep the change scoped to the failure.
           - If the failure is clearly transient infrastructure and no code change is justified, leave the repository unchanged.
           - Do not perform git commits, pushes, branch switches, rebases, resets, merges, or PR creation; the workflow owns Git state.
+          - Do not modify .github/workflows/**; this token intentionally has no Workflows repository permission.
           - Run the relevant checks locally when practical.
           - Keep comments in English.
           EOF
@@ -316,6 +317,12 @@ jobs:
             echo "No code change produced; rerunning the failed CI once."
             gh run rerun "$RUN_ID" --repo "$GITHUB_REPOSITORY" --failed
             exit 0
+          fi
+
+          if [[ -n "$(git status --porcelain -- .github/workflows)" ]]; then
+            echo "::error::CI repair attempted to modify .github/workflows/**."
+            git status --short -- .github/workflows
+            exit 1
           fi
 
           git add -A

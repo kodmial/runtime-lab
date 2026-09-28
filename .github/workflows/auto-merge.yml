@@ -79,22 +79,49 @@ jobs:
                 core.info(`PR #${pr.number}: conflict repair is already in progress/attempted.`);
                 return;
               }
+
+              const issueMatch = (pr.head.ref || '').match(/^opencode\/issue(\d+)-/);
+              if (!issueMatch) {
+                core.warning(`PR #${pr.number}: cannot map conflict repair to a source issue.`);
+                return;
+              }
+              const issueNumber = Number(issueMatch[1]);
+
+              // Do not locally merge main into an existing PR branch and push it.
+              // If main contains workflow-file changes, that push would require
+              // the GitHub App Workflows permission. Freeze this PR and rerun
+              // the issue from current main; issue-mode publishing creates a
+              // fresh remote ref from the current main SHA and replays only
+              // ordinary task changes.
               await github.rest.issues.addLabels({
-                owner, repo, issue_number: pr.number, labels: [conflictLock],
+                owner,
+                repo,
+                issue_number: pr.number,
+                labels: [conflictLock, noAutoMerge],
               });
               try {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pr.number,
+                  body:
+                    'Automatic merge conflict detected. This PR is frozen; ' +
+                    'the source issue will be regenerated from current main ' +
+                    'using the refs-first publication path.',
+                });
                 await github.rest.actions.createWorkflowDispatch({
                   owner,
                   repo,
                   workflow_id: 'opencode.yml',
                   ref: 'main',
                   inputs: {
-                    mode: 'resolve-conflict',
-                    pr_number: String(pr.number),
-                    head_ref: pr.head.ref,
+                    mode: 'issue',
+                    issue_number: String(issueNumber),
                   },
                 });
-                core.notice(`PR #${pr.number}: dispatched OpenCode conflict repair.`);
+                core.notice(
+                  `PR #${pr.number}: rerunning issue #${issueNumber} from current main.`
+                );
               } catch (err) {
                 try {
                   await github.rest.issues.removeLabel({
