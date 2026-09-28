@@ -114,8 +114,23 @@ jobs:
               --comment "Real Render smoke execution and mandatory cleanup completed successfully in workflow run $GITHUB_RUN_ID."
             gh workflow run issue-scheduler.yml --repo "$GITHUB_REPOSITORY" --ref main
           else
+            PR_JSON="$(gh pr list --repo "$GITHUB_REPOSITORY" --state all --limit 100 \
+              --json number,headRefName,state)"
+            PR_NUMBER="$(jq -r --arg prefix "opencode/issue$ISSUE_NUMBER-" \
+              '[.[] | select(.headRefName | startswith($prefix))][0].number // empty' \
+              <<<"$PR_JSON")"
+
+            if [[ -z "$PR_NUMBER" ]]; then
+              gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --add-label "automation:paused" >/dev/null 2>&1 || true
+              gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "Render E2E execution and cleanup succeeded in workflow run $GITHUB_RUN_ID, but no compatible opencode/issue${ISSUE_NUMBER}-... PR was found."
+              echo "::error::E2E mode completed without the required PR"
+              exit 1
+            fi
+
             gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
               --add-label "automation:in-progress" >/dev/null 2>&1 || true
             gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body "Render E2E execution and cleanup succeeded in workflow run $GITHUB_RUN_ID; waiting for the generated PR to pass CI and merge."
+              --body "Render E2E execution and cleanup succeeded in workflow run $GITHUB_RUN_ID; PR #$PR_NUMBER is now in the CI/merge chain."
           fi
