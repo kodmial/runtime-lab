@@ -122,6 +122,15 @@ except ImportError:  # pytest inserts automation/ on sys.path
     )
 
 try:  # pragma: no cover - import path depends on entrypoint
+    from automation.cgroup_memory import read_cgroup_snapshot
+except ImportError:  # pytest inserts automation/ on sys.path
+    try:
+        from cgroup_memory import read_cgroup_snapshot  # type: ignore[no-redef]
+    except ImportError:  # last resort: telemetry degrades, health stays up
+        def read_cgroup_snapshot() -> dict[str, Any]:  # type: ignore[misc]
+            return {"cgroup_version": "unknown", "memory_events": {}}
+
+try:  # pragma: no cover - import path depends on entrypoint
     from automation.opencode_runner import (
         CHECKOUT_SUBDIR,
         OPENCODE_CONFIG_CONTENT,
@@ -341,9 +350,15 @@ def read_resource_diagnostics() -> dict[str, Any]:
     """Best-effort lightweight process/resource signals (never secrets).
 
     Reads Linux /proc signals available on Render workers (VmRSS/VmHWM
-    from /proc/self/status, load average) plus the live thread count.
-    Returns {} entries only for signals that could be read; never raises,
-    so /health stays available under pressure.
+    from /proc/self/status, load average) plus the live thread count, and
+    the container-level cgroup snapshot (issue #57: total Render cgroup
+    memory charged to the whole worker, including the OpenCode child
+    process -- not just this Python process's RSS).
+
+    Process RSS/HWM and container cgroup usage are kept as separate
+    fields; RSS must never be confused with container usage. Returns {}
+    entries only for signals that could be read; never raises, so
+    /health stays available under pressure.
     """
     diagnostics: dict[str, Any] = {}
     try:
@@ -372,6 +387,10 @@ def read_resource_diagnostics() -> dict[str, Any]:
             diagnostics["loadavg_1m"] = handle.read().strip().split()[0]
     except (OSError, ValueError, IndexError):
         pass
+    try:
+        diagnostics["cgroup"] = read_cgroup_snapshot()
+    except Exception:
+        diagnostics["cgroup"] = {"cgroup_version": "unknown", "memory_events": {}}
     return diagnostics
 
 

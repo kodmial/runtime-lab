@@ -355,6 +355,98 @@ for ((i = 1; i <= 30; i++)); do
   sleep 10
 done
 
+# ---------------------------------------------------------------------------
+# Container memory telemetry (issue #57): external continuous sampling.
+# Starts here -- after the worker is healthy and before the OpenCode job is
+# submitted -- and runs until the job reaches a terminal state or cleanup
+# begins. The sampler lives on the GitHub Actions side (outside the Render
+# container) and stores JSONL samples there, so pre-restart telemetry
+# survives a Render restart that wipes in-process worker state. Sampling is
+# bounded (1s interval, self-terminating well inside the poll budget) and
+# stops on every terminal path via the EXIT trap below. The sampler only
+# fetches the unauthenticated /health endpoint and never handles secrets.
+# ---------------------------------------------------------------------------
+RENDER_MEMORY_SAMPLES_FILE="${RENDER_MEMORY_SAMPLES_FILE:-/tmp/runtime-lab-memory-samples-${ISSUE_NUMBER}-${GITHUB_RUN_ID:-local}.jsonl}"
+RENDER_MEMORY_SUMMARY_FILE="${RENDER_MEMORY_SUMMARY_FILE:-/tmp/runtime-lab-memory-summary-${ISSUE_NUMBER}-${GITHUB_RUN_ID:-local}.json}"
+RENDER_MEMORY_STOP_FILE="${RENDER_MEMORY_STOP_FILE:-/tmp/runtime-lab-memory-stop-${ISSUE_NUMBER}-${GITHUB_RUN_ID:-local}}"
+RENDER_MEMORY_INTERVAL="${RENDER_MEMORY_SAMPLE_INTERVAL_SECONDS:-1}"
+MEMORY_SAMPLER_PID=""
+memory_sampler_record_event() {
+  # Best-effort harness event marker (e.g. same-worker resubmission) with a
+  # timestamp around the transition; never fails the attempt.
+  local name="$1" detail="${2:-}"
+  python3 - "$RENDER_MEMORY_SAMPLES_FILE" "$name" "$detail" <<'PY' 2>/dev/null || true
+import sys
+sys.path.insert(0, "automation")
+from render_memory_sampler import event_marker
+event_marker(sys.argv[1], sys.argv[2], sys.argv[3])
+PY
+}
+memory_sampler_stop_and_summarize() {
+  # Stop the background sampler (bounded wait, then SIGKILL), emit the
+  # machine-readable + human-readable summary to the Actions log and the
+  # summary file, and best-effort merge the summary into the collected
+  # job result as memory_telemetry (extra keys are ignored by the result
+  # contract parser). Runs on every terminal path via the EXIT trap.
+  if [[ -n "$MEMORY_SAMPLER_PID" ]] && kill -0 "$MEMORY_SAMPLER_PID" 2>/dev/null; then
+    touch "$RENDER_MEMORY_STOP_FILE" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      kill -0 "$MEMORY_SAMPLER_PID" 2>/dev/null || break
+      sleep 1
+    done
+    kill -9 "$MEMORY_SAMPLER_PID" 2>/dev/null || true
+    wait "$MEMORY_SAMPLER_PID" 2>/dev/null || true
+  fi
+  MEMORY_SAMPLER_PID=""
+  if [[ -n "${RENDER_MEMORY_SAMPLES_FILE:-}" ]]; then
+    python3 - "$RENDER_MEMORY_SAMPLES_FILE" "$RENDER_MEMORY_SUMMARY_FILE" "$RENDER_MEMORY_INTERVAL" <<'PY' 2>&1 || true
+import sys
+sys.path.insert(0, "automation")
+from render_memory_sampler import read_samples, summarize_samples, render_human_summary
+import json
+samples = read_samples(sys.argv[1])
+summary = summarize_samples(samples, interval_seconds=float(sys.argv[3] or 1))
+print(render_human_summary(summary))
+if sys.argv[2]:
+    try:
+        with open(sys.argv[2], "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(summary, sort_keys=True, indent=2) + "\n")
+        print("Memory summary written to %s (%d samples)." % (sys.argv[2], summary.get("samples", 0)))
+    except OSError as exc:
+        print("Could not write memory summary file: %s" % exc)
+PY
+    # Best-effort evidence merge: attach the summary to the collected job
+    # result without changing its status/success contract fields.
+    if [[ -s "$RENDER_MEMORY_SUMMARY_FILE" && -s "${RENDER_RESULT_FILE:-}" ]]; then
+      python3 - "$RENDER_RESULT_FILE" "$RENDER_MEMORY_SUMMARY_FILE" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        result = json.load(handle)
+    with open(sys.argv[2], "r", encoding="utf-8") as handle:
+        summary = json.load(handle)
+    if isinstance(result, dict) and isinstance(summary, dict):
+        result["memory_telemetry"] = summary
+        with open(sys.argv[1], "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(result, sort_keys=True, indent=2) + "\n")
+except (OSError, ValueError):
+    pass
+PY
+    fi
+  fi
+}
+trap memory_sampler_stop_and_summarize EXIT
+rm -f "$RENDER_MEMORY_STOP_FILE" 2>/dev/null || true
+python3 automation/render_memory_sampler.py sample \
+  --base-url "$SERVICE_URL" \
+  --output "$RENDER_MEMORY_SAMPLES_FILE" \
+  --interval "$RENDER_MEMORY_INTERVAL" \
+  --max-seconds 2900 \
+  --stop-file "$RENDER_MEMORY_STOP_FILE" \
+  >/tmp/runtime-lab-memory-sampler-${ISSUE_NUMBER}-${GITHUB_RUN_ID:-local}.log 2>&1 &
+MEMORY_SAMPLER_PID="$!"
+echo "Memory sampler started (pid $MEMORY_SAMPLER_PID, interval ${RENDER_MEMORY_INTERVAL}s)."
+
 # Build the minimum job payload and submit it to the runner.
 JOB_PAYLOAD="$(python3 - "$ISSUE_NUMBER" "$REPO_URL" "$TASK_TEXT" "$BASE_SHA" \
   "$RENDER_REGION" "$OPENCODE_MODEL" "$EXECUTION_MODE" "${GITHUB_RUN_ID:-}" <<'PY'
@@ -510,6 +602,7 @@ PY
         JOB_ID="$(jq -r '.job_id // .jobId // empty' <<<"$SUBMIT_RESPONSE")"
         [[ -n "$JOB_ID" ]] || { echo "::error::Fallback submit returned no job id." >&2; exit 1; }
         echo "Submitted fallback runner job $JOB_ID."
+        memory_sampler_record_event "fallback_submitted" "job=$JOB_ID model=$FALLBACK_MODEL"
         # Later same-worker resubmissions must reuse the payload that is
         # actually in flight (fallback model), not the primary payload.
         JOB_PAYLOAD="$RETRY_PAYLOAD"
@@ -573,6 +666,7 @@ PY
             exit 1
           fi
           echo "Resubmitted runner job $JOB_ID (replaces lost job $LOST_JOB_ID)."
+          memory_sampler_record_event "job_resubmitted" "lost=$LOST_JOB_ID resubmitted=$JOB_ID count=$POLL_RESUBMITS"
           POLL_RESUBMITS=$((POLL_RESUBMITS + 1))
           POLL_UNKNOWN_COUNT=0
           POLL_EMPTY_COUNT=0
