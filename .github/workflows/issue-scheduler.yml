@@ -24,7 +24,7 @@ jobs:
     env:
       WIP_LIMIT: ${{ vars.AUTOMATION_WIP_LIMIT || '4' }}
       LEASE_MINUTES: ${{ vars.AUTOMATION_LEASE_MINUTES || '90' }}
-      MAX_DISPATCH_ATTEMPTS: ${{ vars.AUTOMATION_MAX_DISPATCH_ATTEMPTS || '2' }}
+      MAX_DISPATCH_ATTEMPTS: ${{ vars.AUTOMATION_MAX_DISPATCH_ATTEMPTS || '4' }}
 
     steps:
       - name: Reconcile state and dispatch ready issues
@@ -35,7 +35,7 @@ jobs:
             const repo = context.repo.repo;
             const wipLimit = Number.parseInt(process.env.WIP_LIMIT || '4', 10);
             const leaseMinutes = Number.parseInt(process.env.LEASE_MINUTES || '90', 10);
-            const maxAttempts = Number.parseInt(process.env.MAX_DISPATCH_ATTEMPTS || '2', 10);
+            const maxAttempts = Number.parseInt(process.env.MAX_DISPATCH_ATTEMPTS || '4', 10);
             const leaseMs = leaseMinutes * 60 * 1000;
 
             const priorities = ['priority:p0', 'priority:p1', 'priority:p2'];
