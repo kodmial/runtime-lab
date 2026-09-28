@@ -187,6 +187,18 @@ print(resolve_task_text(int(sys.argv[1]), sys.argv[2],
 PY
 )"
 
+# Record the submitted runner job id for later result/job-ID verification
+# during materialization (issue #5). Best effort: a missing state file
+# simply means the job id is verified from the collected result alone.
+record_job_id() {
+  local job_id="$1" tmp_state
+  if [[ -s "$RENDER_STATE_FILE" ]]; then
+    tmp_state="$(mktemp)"
+    jq --arg j "$job_id" '.jobId = $j' "$RENDER_STATE_FILE" > "$tmp_state" \
+      && mv "$tmp_state" "$RENDER_STATE_FILE"
+  fi
+}
+
 # One service creation per attempt: reuse an existing state file service id.
 # This is the "never retry by creating a second worker" enforcement: any
 # retry path below reuses SERVICE_ID from RENDER_STATE_FILE.
@@ -373,6 +385,7 @@ if [[ -z "$JOB_ID" ]]; then
   exit 1
 fi
 echo "Submitted runner job $JOB_ID."
+record_job_id "$JOB_ID"
 
 # Poll the job status/result (bounded; same worker, no new service).
 # A 429/5xx from the runner surfaces as an empty poll body and is retried
@@ -404,6 +417,7 @@ for ((i = 1; i <= 60; i++)); do
         JOB_ID="$(jq -r '.job_id // .jobId // empty' <<<"$SUBMIT_RESPONSE")"
         [[ -n "$JOB_ID" ]] || { echo "::error::Fallback submit returned no job id." >&2; exit 1; }
         echo "Submitted fallback runner job $JOB_ID."
+        record_job_id "$JOB_ID"
         continue
       fi
       printf '%s\n' "$RESULT_JSON" > "$RENDER_RESULT_FILE"
