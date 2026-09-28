@@ -288,7 +288,7 @@ def _write_lost_job_bin(directory, curl_log):
         'case "$URL" in\n'
         '  */owners*) emit 200 \'[{"id":"own-1"}]\';;\n'
         '  */v1/services/deploys/*|*/deploys/*) emit 200 \'{"status":"live"}\';;\n'
-  '  */v1/jobs/job-lost|*/v1/jobs/job-lost-2|*/v1/jobs/job-lost-3|*/v1/jobs/job-lost-4|*/v1/jobs/job-lost-5)'
+  '  */v1/jobs/job-lost|*/v1/jobs/job-lost-2|*/v1/jobs/job-lost-3|*/v1/jobs/job-lost-4|*/v1/jobs/job-lost-5|*/v1/jobs/job-lost-6)'
   ' emit 404 \'{"error":"unknown job"}\';;\n'
   '  */v1/jobs)'
   ' if [[ "$METHOD" == "POST" ]]; then'
@@ -297,7 +297,8 @@ def _write_lost_job_bin(directory, curl_log):
   ' elif [[ "$N" -le 2 ]]; then emit 201 \'{"job_id":"job-lost-2"}\';'
   ' elif [[ "$N" -le 3 ]]; then emit 201 \'{"job_id":"job-lost-3"}\';'
   ' elif [[ "$N" -le 4 ]]; then emit 201 \'{"job_id":"job-lost-4"}\';'
-  ' else emit 201 \'{"job_id":"job-lost-5"}\'; fi;'
+  ' elif [[ "$N" -le 5 ]]; then emit 201 \'{"job_id":"job-lost-5"}\';'
+  ' else emit 201 \'{"job_id":"job-lost-6"}\'; fi;'
         ' else emit 404 \'{"error":"x"}\'; fi;;\n'
         '  */health)'
         ' H=$(next_count "$LOG.health-count");'
@@ -338,10 +339,12 @@ def test_job_poll_fails_fast_when_runner_forgets_job(tmp_path):
     # run 36409152332, extended for run 36417263684 which lost both the
     # original and the first resubmission to consecutive restarts,
     # for run 36422228148 which lost the original plus both
-    # resubmissions to three consecutive proven restarts, and for run
+    # resubmissions to three consecutive proven restarts, for run
     # 36425019190 which lost the original plus all three
-    # resubmissions to four consecutive proven restarts), but a
-    # FIFTH consecutive loss still fails fast
+    # resubmissions to four consecutive proven restarts, and for run
+    # 36430429432 which lost the original plus all four
+    # resubmissions to a five-restart cluster), but a
+    # SIXTH consecutive loss still fails fast
     # with a loss diagnostic -- never a generic "did not finish in
     # time ... empty" timeout, and never a second Render service.
     env, state, result = _base_env(tmp_path)
@@ -358,21 +361,22 @@ def test_job_poll_fails_fast_when_runner_forgets_job(tmp_path):
     combined = proc.stdout + proc.stderr
     assert proc.returncode != 0, combined
     # Each proven loss triggers a same-worker resubmission until the
-    # bound of four is exhausted (run 36425019190).
+    # bound of five is exhausted (run 36430429432).
     assert "Resubmitted runner job job-lost-2 (replaces lost job job-lost)" in combined
     assert "Resubmitted runner job job-lost-3 (replaces lost job job-lost-2)" in combined
     assert "Resubmitted runner job job-lost-4 (replaces lost job job-lost-3)" in combined
     assert "Resubmitted runner job job-lost-5 (replaces lost job job-lost-4)" in combined
-    # Fifth consecutive loss fails fast with all ids, the exhausted
+    assert "Resubmitted runner job job-lost-6 (replaces lost job job-lost-5)" in combined
+    # Sixth consecutive loss fails fast with all ids, the exhausted
     # resubmit budget, and observed-restart evidence.
-    assert "no longer knows job job-lost-5" in combined
+    assert "no longer knows job job-lost-6" in combined
     assert "runner health: healthy" in combined
-    assert "resubmissions used: 4/4" in combined
+    assert "resubmissions used: 5/5" in combined
     assert "worker restart observed" in combined
     assert "did not finish in time" not in combined
     assert not result.exists() or result.read_text().strip() == ""
     calls = log.read_text()
-    assert calls.count("POST http://fake-runner.local/v1/jobs") == 5
+    assert calls.count("POST http://fake-runner.local/v1/jobs") == 6
     assert "POST https://api.render.com/v1/services" not in calls
 
 
@@ -869,6 +873,291 @@ def test_job_poll_recovers_after_four_consecutive_restarts(tmp_path):
     assert bodies.count("Harness title") == 5
 
 
+def _write_quint_restart_recovered_bin(directory, curl_log):
+    """Fake bin reproducing run 36430429432 with a successful sixth attempt.
+
+    Five consecutive proven worker restarts lose job-f1, job-f2, job-f3,
+    job-f4, and job-f5 (each poll is an unknown-job 404 while /health
+    stays healthy with a rotating instance id mirroring 7b01 -> 9eba ->
+    d5ae -> 91c8 -> 9adf -> c0de and uptimes 26.3 -> 55.3 -> 54.4 ->
+    53.3 -> 57.4 -> 58.1), and the fifth same-worker resubmission
+    (job-f6) polls as succeeded. All six submits carry the identical
+    task payload; no Render service is ever created.
+    """
+    bin_dir = Path(directory) / "bin-quint-recovered"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'LOG="%s"\n' % curl_log +
+        'OUT=""; METHOD="GET"; DATA=""; URL=""; WANT_CODE=""\n'
+        'ARGS=("$@")\n'
+        'i=0\n'
+        'while [[ $i -lt ${#ARGS[@]} ]]; do\n'
+        '  case "${ARGS[$i]}" in\n'
+        '    -o) OUT="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -X) METHOD="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -w) WANT_CODE="yes"; i=$((i+2));;\n'
+        '    -d|--data*) DATA="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -H|--max-time|--connect-timeout) i=$((i+2));;\n'
+        '    -*) i=$((i+1));;\n'
+        '    *) URL="${ARGS[$i]}"; i=$((i+1));;\n'
+        '  esac\n'
+        'done\n'
+        'if [[ -n "$DATA" && "$METHOD" == "GET" ]]; then METHOD="POST"; fi\n'
+        'echo "$METHOD $URL" >> "$LOG"\n'
+        'if [[ -n "$DATA" ]]; then echo "$METHOD $URL $DATA" >> "$LOG.bodies"; fi\n'
+        'emit() { local code="$1" body="$2";'
+        ' if [[ -n "$OUT" ]]; then printf "%s" "$body" > "$OUT";'
+        ' else printf "%s" "$body"; fi;'
+        ' if [[ -n "$WANT_CODE" ]]; then printf "%s" "$code"; fi; }\n'
+        'next_count() { local f="$1" n=0;'
+        ' [[ -f "$f" ]] && n=$(cat "$f"); n=$((n+1)); echo "$n" > "$f";'
+        ' printf "%s" "$n"; }\n'
+        'case "$URL" in\n'
+        '  */owners*) emit 200 \'[{"id":"own-1"}]\';;\n'
+        '  */v1/services/deploys/*|*/deploys/*) emit 200 \'{"status":"live"}\';;\n'
+        '  */v1/jobs/job-f1|*/v1/jobs/job-f2|*/v1/jobs/job-f3|*/v1/jobs/job-f4|*/v1/jobs/job-f5)'
+        ' emit 404 \'{"error":"unknown job"}\';;\n'
+        '  */v1/jobs/job-f6)'
+        ' emit 200 \'{"job_id":"job-f6","status":"succeeded","success":true,"summary":"done","metadata":{}}\';;\n'
+        '  */v1/jobs)'
+        ' if [[ "$METHOD" == "POST" ]]; then'
+        ' N=$(next_count "$LOG.post-count");'
+        ' if [[ "$N" -le 1 ]]; then emit 201 \'{"job_id":"job-f1"}\';'
+        ' elif [[ "$N" -le 2 ]]; then emit 201 \'{"job_id":"job-f2"}\';'
+        ' elif [[ "$N" -le 3 ]]; then emit 201 \'{"job_id":"job-f3"}\';'
+        ' elif [[ "$N" -le 4 ]]; then emit 201 \'{"job_id":"job-f4"}\';'
+        ' elif [[ "$N" -le 5 ]]; then emit 201 \'{"job_id":"job-f5"}\';'
+        ' else emit 201 \'{"job_id":"job-f6"}\'; fi;'
+        ' else emit 404 \'{"error":"x"}\'; fi;;\n'
+        '  */health)'
+        ' H=$(next_count "$LOG.health-count");'
+        ' if [[ "$H" -le 2 ]]; then'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-7b01","uptime_seconds":26.3,"jobs":{"total":1}}\';'
+        ' elif [[ "$H" -le 4 ]]; then'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-9eba","uptime_seconds":55.3,"jobs":{"total":0}}\';'
+        ' elif [[ "$H" -le 6 ]]; then'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-d5ae","uptime_seconds":54.4,"jobs":{"total":0}}\';'
+        ' elif [[ "$H" -le 8 ]]; then'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-91c8","uptime_seconds":53.3,"jobs":{"total":0}}\';'
+        ' elif [[ "$H" -le 10 ]]; then'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-9adf","uptime_seconds":57.4,"jobs":{"total":0}}\';'
+        ' else'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-c0de","uptime_seconds":58.1,"jobs":{"total":0}}\';'
+        ' fi;;\n'
+        '  */services/srv-existing)'
+        ' emit 200 \'{"serviceDetails":{"plan":"free","url":"http://fake-runner.local"}}\';;\n'
+        '  *) emit 200 \'{}\';;\n'
+        'esac\n'
+        'exit 0\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    sleep = bin_dir / "sleep"
+    sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    sleep.chmod(0o755)
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "issue" && "$2" == "view" ]]; then\n'
+        '  printf \'{"title":"Harness title","body":"Harness body"}\'\n'
+        "  exit 0\n"
+        "fi\n"
+        'echo "unexpected gh call: $*" >&2\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    return str(bin_dir)
+
+
+def test_job_poll_recovers_after_five_consecutive_restarts(tmp_path):
+    # Regression for run 36430429432: the original job plus all four
+    # resubmissions were lost to a five-restart cluster (instance 7b01
+    # -> 9eba -> d5ae -> 91c8 -> 9adf -> c0de; uptimes 26.3 -> 55.3 ->
+    # 54.4 -> 53.3 -> 57.4 -> 58.1, with live cgroup telemetry pinning
+    # the driver to 512 MB memory pressure). With a bound of five
+    # resubmissions the fifth resubmission succeeds on the same worker,
+    # with no second Render service.
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-quint-recovered.log"
+    env["PATH"] = _write_quint_restart_recovered_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    state.write_text(json.dumps({
+        "serviceId": "srv-existing",
+        "deployId": "dep-1",
+        "region": "oregon",
+        "model": PREFERRED_MODEL,
+        "plan": "free",
+    }))
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, combined
+    assert "Resubmitted runner job job-f2 (replaces lost job job-f1)" in combined
+    assert "Resubmitted runner job job-f3 (replaces lost job job-f2)" in combined
+    assert "Resubmitted runner job job-f4 (replaces lost job job-f3)" in combined
+    assert "Resubmitted runner job job-f5 (replaces lost job job-f4)" in combined
+    assert "Resubmitted runner job job-f6 (replaces lost job job-f5)" in combined
+    assert "worker restart observed" in combined
+    payload = json.loads(result.read_text())
+    assert payload["status"] == "succeeded"
+    assert payload["job_id"] == "job-f6"
+    calls = log.read_text()
+    assert calls.count("POST http://fake-runner.local/v1/jobs") == 6
+    assert "POST https://api.render.com/v1/services" not in calls
+    bodies = (tmp_path / "curl-quint-recovered.log.bodies").read_text()
+    assert bodies.count("Harness title") == 6
+
+
+def _write_transport_bin(directory, curl_log, *, fail_polls, fail_probes):
+    """Fake bin where job polls return HTTP 502 and /health probes fail.
+
+    Reproduces the terminal signature of run 36430429432 at the
+    HTTP-contract level: GET /v1/jobs/<id> answers 502 for the first
+    ``fail_polls`` polls (then succeeds), while the exit-code form of
+    /health (the wait loop plus the periodic transport re-probes) fails
+    for the first ``fail_probes`` probe calls after the initial healthy
+    wait-loop call (then succeeds). The stdout form of /health always
+    returns the submit-time baseline snapshot. ``fail_polls=10**9``
+    with ``fail_probes=10**9`` models a permanently dead worker.
+    """
+    bin_dir = Path(directory) / "bin-transport"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'LOG="%s"\n' % curl_log +
+        'FAIL_POLLS=%d\n' % fail_polls +
+        'FAIL_PROBES=%d\n' % fail_probes +
+        'OUT=""; METHOD="GET"; DATA=""; URL=""; WANT_CODE=""\n'
+        'ARGS=("$@")\n'
+        'i=0\n'
+        'while [[ $i -lt ${#ARGS[@]} ]]; do\n'
+        '  case "${ARGS[$i]}" in\n'
+        '    -o) OUT="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -D) i=$((i+2));;\n'
+        '    -X) METHOD="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -w) WANT_CODE="yes"; i=$((i+2));;\n'
+        '    -d|--data*) DATA="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -H|--max-time|--connect-timeout) i=$((i+2));;\n'
+        '    -*) i=$((i+1));;\n'
+        '    *) URL="${ARGS[$i]}"; i=$((i+1));;\n'
+        '  esac\n'
+        'done\n'
+        'if [[ -n "$DATA" && "$METHOD" == "GET" ]]; then METHOD="POST"; fi\n'
+        'echo "$METHOD $URL" >> "$LOG"\n'
+        'emit() { local code="$1" body="$2";'
+        ' if [[ -n "$OUT" ]]; then printf "%s" "$body" > "$OUT";'
+        ' else printf "%s" "$body"; fi;'
+        ' if [[ -n "$WANT_CODE" ]]; then printf "%s" "$code"; fi; }\n'
+        'next_count() { local f="$1" n=0;'
+        ' [[ -f "$f" ]] && n=$(cat "$f"); n=$((n+1)); echo "$n" > "$f";'
+        ' printf "%s" "$n"; }\n'
+        'case "$URL" in\n'
+        '  */owners*) emit 200 \'[{"id":"own-1"}]\';;\n'
+        '  */v1/services/deploys/*|*/deploys/*) emit 200 \'{"status":"live"}\';;\n'
+        '  */v1/jobs/job-tport)'
+        ' P=$(next_count "$LOG.poll-count");'
+        ' if [[ "$P" -le "$FAIL_POLLS" ]]; then emit 502 \'{"error":"bad gateway"}\';'
+        ' else emit 200 \'{"job_id":"job-tport","status":"succeeded","success":true,"summary":"done","metadata":{}}\'; fi;;\n'
+        '  */v1/jobs)'
+        ' if [[ "$METHOD" == "POST" ]]; then emit 201 \'{"job_id":"job-tport"}\';'
+        ' else emit 404 \'{"error":"x"}\'; fi;;\n'
+        '  */health)'
+        ' if [[ -n "$WANT_CODE" || -n "$OUT" ]]; then'
+        ' H=$(next_count "$LOG.health-probe-count");'
+        ' if [[ "$H" -le 1 ]]; then exit 0; fi;'
+        ' if [[ "$((H - 1))" -le "$FAIL_PROBES" ]]; then exit 1; fi;'
+        ' exit 0;'
+        ' fi;'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-base","uptime_seconds":26.3,"jobs":{"total":1}}\';;\n'
+        '  */services/srv-existing)'
+        ' emit 200 \'{"serviceDetails":{"plan":"free","url":"http://fake-runner.local"}}\';;\n'
+        '  *) emit 200 \'{}\';;\n'
+        'esac\n'
+        'exit 0\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    sleep = bin_dir / "sleep"
+    sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    sleep.chmod(0o755)
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "issue" && "$2" == "view" ]]; then\n'
+        '  printf \'{"title":"Harness title","body":"Harness body"}\'\n'
+        "  exit 0\n"
+        "fi\n"
+        'echo "unexpected gh call: $*" >&2\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    return str(bin_dir)
+
+
+def test_job_poll_survives_transient_transport_down_window(tmp_path):
+    # Regression for run 36430429432: the attempt failed on the FIRST
+    # failed /health probe after only five consecutive HTTP 502 polls,
+    # but a Free restart produces exactly that transient signature while
+    # the replacement boots. Fourteen consecutive 502s with the first
+    # two probes failing must NOT fail fast: the third probe succeeds
+    # and the fifteenth poll succeeds on the same worker.
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-transport-transient.log"
+    env["PATH"] = _write_transport_bin(
+        tmp_path, log, fail_polls=14, fail_probes=2) + os.pathsep + env.get("PATH", "")
+    state.write_text(json.dumps({
+        "serviceId": "srv-existing",
+        "deployId": "dep-1",
+        "region": "oregon",
+        "model": PREFERRED_MODEL,
+        "plan": "free",
+    }))
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, combined
+    assert "failed probe 1/3" in combined
+    assert "failed probe 2/3" in combined
+    assert "mid-restart" in combined
+    assert "failing fast" not in combined
+    payload = json.loads(result.read_text())
+    assert payload["status"] == "succeeded"
+    assert payload["job_id"] == "job-tport"
+    calls = log.read_text()
+    assert "POST https://api.render.com/v1/services" not in calls
+
+
+def test_job_poll_fails_fast_after_sustained_transport_unhealthiness(tmp_path):
+    # The other half of run 36430429432: a worker that never comes back
+    # must still fail fast with a diagnostic -- after sustained
+    # unhealthiness (3 consecutive failed probes = 15 consecutive 502
+    # polls, ~5 minutes), never by waiting out the full 140-poll
+    # budget, and never by provisioning a second Render service.
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-transport-sustained.log"
+    env["PATH"] = _write_transport_bin(
+        tmp_path, log, fail_polls=10 ** 9, fail_probes=10 ** 9) + os.pathsep + env.get("PATH", "")
+    state.write_text(json.dumps({
+        "serviceId": "srv-existing",
+        "deployId": "dep-1",
+        "region": "oregon",
+        "model": PREFERRED_MODEL,
+        "plan": "free",
+    }))
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, combined
+    assert "3 consecutive probes" in combined
+    assert "15 consecutive times" in combined
+    assert "failing fast" in combined
+    assert not result.exists() or result.read_text().strip() == ""
+    calls = log.read_text()
+    assert calls.count("GET http://fake-runner.local/v1/jobs/job-tport") == 15
+    assert "POST https://api.render.com/v1/services" not in calls
+
+
 def _write_instance_change_bin(directory, curl_log):
     """Fake bin reproducing run 36410676408 (issue #41).
 
@@ -914,7 +1203,7 @@ def _write_instance_change_bin(directory, curl_log):
         'case "$URL" in\n'
         '  */owners*) emit 200 \'[{"id":"own-1"}]\';;\n'
         '  */v1/services/deploys/*|*/deploys/*) emit 200 \'{"status":"live"}\';;\n'
-  '  */v1/jobs/job-41a|*/v1/jobs/job-41b|*/v1/jobs/job-41c|*/v1/jobs/job-41d|*/v1/jobs/job-41e)'
+  '  */v1/jobs/job-41a|*/v1/jobs/job-41b|*/v1/jobs/job-41c|*/v1/jobs/job-41d|*/v1/jobs/job-41e|*/v1/jobs/job-41f)'
   ' emit 404 \'{"error":"unknown job"}\';;\n'
   '  */v1/jobs)'
   ' if [[ "$METHOD" == "POST" ]]; then'
@@ -923,7 +1212,8 @@ def _write_instance_change_bin(directory, curl_log):
   ' elif [[ "$N" -le 2 ]]; then emit 201 \'{"job_id":"job-41b"}\';'
   ' elif [[ "$N" -le 3 ]]; then emit 201 \'{"job_id":"job-41c"}\';'
   ' elif [[ "$N" -le 4 ]]; then emit 201 \'{"job_id":"job-41d"}\';'
-  ' else emit 201 \'{"job_id":"job-41e"}\'; fi;'
+  ' elif [[ "$N" -le 5 ]]; then emit 201 \'{"job_id":"job-41e"}\';'
+  ' else emit 201 \'{"job_id":"job-41f"}\'; fi;'
   ' else emit 404 \'{"error":"x"}\'; fi;;\n'
   '  */health)'
   ' H=$(next_count "$LOG.health-count");'
@@ -937,8 +1227,10 @@ def _write_instance_change_bin(directory, curl_log):
   ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-ddd444","uptime_seconds":12.7,"jobs":{"total":0}}\';'
   ' elif [[ "$H" -le 10 ]]; then'
   ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-eee555","uptime_seconds":18.4,"jobs":{"total":0}}\';'
-  ' else'
+  ' elif [[ "$H" -le 12 ]]; then'
   ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-fff666","uptime_seconds":22.1,"jobs":{"total":0}}\';'
+  ' else'
+  ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-ggg777","uptime_seconds":27.9,"jobs":{"total":0}}\';'
   ' fi;;\n'
         '  */services/srv-existing)'
         ' emit 200 \'{"serviceDetails":{"plan":"free","url":"http://fake-runner.local"}}\';;\n'
@@ -972,9 +1264,11 @@ def test_job_poll_proves_restart_from_instance_change_despite_greater_uptime(tmp
     # "current < prior" detector wrongly reported "same worker process
     # lifetime". The instance id must prove the replacement instead.
     # Extended for run 36417263684 (two consecutive proven restarts),
-    # run 36422228148 (three consecutive proven restarts) and run
-    # 36425019190 (four consecutive proven restarts consume all four
-    # resubmissions before the fifth loss fails fast).
+    # run 36422228148 (three consecutive proven restarts), run
+    # 36425019190 (four consecutive proven restarts consume four
+    # resubmissions) and run 36430429432 (five consecutive proven
+    # restarts consume all five resubmissions before the sixth loss
+    # fails fast).
     env, state, result = _base_env(tmp_path)
     log = tmp_path / "curl-instance.log"
     env["PATH"] = _write_instance_change_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
@@ -992,16 +1286,17 @@ def test_job_poll_proves_restart_from_instance_change_despite_greater_uptime(tmp
     assert "Resubmitted runner job job-41c (replaces lost job job-41b)" in combined
     assert "Resubmitted runner job job-41d (replaces lost job job-41c)" in combined
     assert "Resubmitted runner job job-41e (replaces lost job job-41d)" in combined
-    assert "no longer knows job job-41e" in combined
+    assert "Resubmitted runner job job-41f (replaces lost job job-41e)" in combined
+    assert "no longer knows job job-41f" in combined
     assert "runner health: healthy" in combined
-    assert "resubmissions used: 4/4" in combined
+    assert "resubmissions used: 5/5" in combined
     # The restart is proven by instance identity despite greater uptime.
     assert "worker restart observed" in combined
     assert "instance" in combined
     assert "same worker process lifetime" not in combined
     assert "did not finish in time" not in combined
     calls = log.read_text()
-    assert calls.count("POST http://fake-runner.local/v1/jobs") == 5
+    assert calls.count("POST http://fake-runner.local/v1/jobs") == 6
     assert "POST https://api.render.com/v1/services" not in calls
 
 

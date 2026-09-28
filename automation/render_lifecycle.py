@@ -504,8 +504,20 @@ JOB_POLL_INTERVAL_SECONDS = 20
 # the full budget only masks the cause. The controller therefore fails fast
 # after this many consecutive unknown-job polls, and re-probes /health after
 # every this-many consecutive transport failures.
+#
+# Run 36430429432 then proved a single failed /health probe after only five
+# consecutive transport errors (HTTP 502) is too hair-trigger to be
+# terminal: a Free restart/OOM-replacement produces exactly that transient
+# signature (Render proxy 502s while the old process is dead plus /health
+# failing while the replacement boots, ~60s spin-up per RENDER_DOC_FREE_TIER)
+# but the worker usually answers again well inside the unchanged 140-iteration
+# budget. The controller therefore fails fast on transport errors only after
+# this many CONSECUTIVE failed /health probes; a single failed probe is
+# retried within budget, and any healthy probe (or any poll that reaches the
+# worker again) resets the streak.
 JOB_POLL_UNKNOWN_JOB_THRESHOLD = 3
 JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY = 5
+JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES = 3
 # Same-worker job resubmission bound for proven job loss.
 #
 # Run 36409152332 submitted a job that polled as pending for ~2 minutes
@@ -552,7 +564,22 @@ JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY = 5
 # resubmissions (five job attempts total) convert a quadruple-restart
 # cluster into retries, while a fifth consecutive loss still fails
 # fast.
-JOB_POLL_MAX_JOB_RESUBMITS = 4
+#
+# Run 36430429432 then proved four resubmissions are not enough when the
+# cluster grows to five: the original job (instance 7b01eddc7d40) plus
+# all four resubmissions were lost to four consecutive proven restarts
+# (9eba933f33fa -> d5aef13e888a -> 91c8fea12ee0 -> 9adf1bd5433a), and
+# the fifth job died in a transport-error down-window (five consecutive
+# HTTP 502 polls with /health also failing) that is effectively a fifth
+# restart. The first live issue-57 container telemetry on that run
+# (cgroup limit/current/peak all 512.0 MB, Python RSS only ~32 MB,
+# memory.events max +434) proves the driver is memory pressure from the
+# ~600-615 MB agent peak measured in issue #52, not generic host
+# maintenance. Five bounded same-worker resubmissions (six job attempts
+# total) convert a quintuple-restart cluster into retries within the
+# unchanged 140x20s budget, while a sixth consecutive loss still fails
+# fast.
+JOB_POLL_MAX_JOB_RESUBMITS = 5
 # Poll outcome vocabulary for one job-status attempt (controller side).
 JOB_POLL_OUTCOMES = frozenset({
     "succeeded",
@@ -893,6 +920,23 @@ def should_probe_runner_health(consecutive_transport_errors: int) -> bool:
     except (TypeError, ValueError):
         return False
     return count > 0 and count % JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY == 0
+
+
+def should_fail_fast_on_transport(consecutive_unhealthy_probes: int) -> bool:
+    """True once consecutive failed /health probes prove the worker is down.
+
+    A single failed probe after a handful of transport errors is only proof
+    of a transient down-window (run 36430429432: five HTTP 502 polls with
+    one failed probe while a Free replacement booted); sustained failed
+    probes across JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES re-probe points
+    (default 3 x 5 = 15 consecutive transport errors, ~5 minutes) prove
+    the worker is not coming back within budget.
+    """
+    try:
+        count = int(consecutive_unhealthy_probes)
+    except (TypeError, ValueError):
+        return False
+    return count >= JOB_POLL_TRANSPORT_MAX_UNHEALTHY_PROBES
 
 
 def should_resubmit_after_job_loss(resubmits_used: int) -> bool:
