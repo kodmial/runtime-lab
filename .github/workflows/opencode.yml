@@ -141,18 +141,18 @@ jobs:
 
           # Validate mandatory knowledge handoff record before accepting the run.
           python3 - "$ISSUE_NUMBER" "$GITHUB_RUN_ID" <<'PY'
-import pathlib, sys
-sys.path.insert(0, "automation")
-from render_lifecycle import experiment_record_path, validate_experiment_record_text
-issue = int(sys.argv[1])
-run_id = sys.argv[2]
-path = pathlib.Path(experiment_record_path(issue, run_id))
-if not path.is_file():
-    raise SystemExit("mandatory knowledge handoff record is missing: %s" % path)
-text = path.read_text(encoding="utf-8")
-validate_experiment_record_text(text, issue, run_id)
-print("Validated knowledge handoff:", path)
-PY
+          import pathlib, sys
+          sys.path.insert(0, "automation")
+          from render_lifecycle import experiment_record_path, validate_experiment_record_text
+          issue = int(sys.argv[1])
+          run_id = sys.argv[2]
+          path = pathlib.Path(experiment_record_path(issue, run_id))
+          if not path.is_file():
+              raise SystemExit("mandatory knowledge handoff record is missing: %s" % path)
+          text = path.read_text(encoding="utf-8")
+          validate_experiment_record_text(text, issue, run_id)
+          print("Validated knowledge handoff:", path)
+          PY
 
           CURRENT_BRANCH="$(git branch --show-current)"
           if [[ "$CURRENT_BRANCH" != "$BRANCH" ]]; then
