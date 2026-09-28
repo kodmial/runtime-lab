@@ -20,7 +20,9 @@ permissions:
   statuses: write
 
 concurrency:
-  group: runtime-lab-render-${{ inputs.issue_number }}
+  # Development invariant from issues #1/#4: only one automation-owned
+  # ephemeral Render worker may exist at a time.
+  group: runtime-lab-render-ephemeral
   cancel-in-progress: false
 
 jobs:
