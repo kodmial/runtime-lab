@@ -514,11 +514,21 @@ JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY = 5
 # (RENDER_DOC_FREE_TIER) and runner jobs live only in worker process
 # memory, so a restart wipes the submitted job id forever. The submit
 # payload is fully reproducible, so the controller resubmits it at most
-# this many times on the SAME worker (never a second Render service):
-# one transient restart becomes a retry instead of a total attempt
-# failure, while a second consecutive loss still fails fast with full
-# diagnostics (both job ids, resubmit count, restart evidence).
-JOB_POLL_MAX_JOB_RESUBMITS = 1
+# this many times on the SAME worker (never a second Render service).
+#
+# Run 36417263684 then proved one resubmission is not enough when
+# restarts cluster: the original job (instance fe21f53ff840) was lost to
+# a restart (b7c7865bf540), the single allowed resubmission (job
+# 55f1882cd7074e5a9b328e9a6085d077) was lost to a second restart
+# (4e9b50b43378), and the attempt failed fast with resubmissions used
+# 1/1. The vendor contract ("Render might restart a Free web service at
+# any time") permits consecutive restarts, and run 36410676408 showed
+# the same double-loss signature. Two bounded same-worker resubmissions
+# (three job attempts total) convert a double-restart cluster into
+# retries within the unchanged 140-iteration poll budget, while a third
+# consecutive loss still fails fast with full diagnostics (all job ids,
+# resubmit count, restart evidence).
+JOB_POLL_MAX_JOB_RESUBMITS = 2
 # Poll outcome vocabulary for one job-status attempt (controller side).
 JOB_POLL_OUTCOMES = frozenset({
     "succeeded",

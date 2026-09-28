@@ -206,7 +206,9 @@ def test_job_poll_resubmits_once_on_same_worker_after_proven_loss():
     # for ~2 minutes, then turned into a permanent unknown-job 404 while
     # the runner stayed healthy (documented anytime-restart of Free
     # workers wipes the in-memory job). The loop must resubmit the same
-    # payload once on the SAME worker and only then fail fast.
+    # payload on the SAME worker (bounded resubmissions; run 36417263684
+    # proved a single retry is insufficient when restarts cluster) and
+    # only then fail fast.
     job = _read("render-job.sh")
     assert "JOB_POLL_MAX_JOB_RESUBMITS" in job
     # Issue #41: identity comes from the instance id first, wall-clock
@@ -286,13 +288,14 @@ def _write_lost_job_bin(directory, curl_log):
         'case "$URL" in\n'
         '  */owners*) emit 200 \'[{"id":"own-1"}]\';;\n'
         '  */v1/services/deploys/*|*/deploys/*) emit 200 \'{"status":"live"}\';;\n'
-        '  */v1/jobs/job-lost|*/v1/jobs/job-lost-2)'
+        '  */v1/jobs/job-lost|*/v1/jobs/job-lost-2|*/v1/jobs/job-lost-3)'
         ' emit 404 \'{"error":"unknown job"}\';;\n'
         '  */v1/jobs)'
         ' if [[ "$METHOD" == "POST" ]]; then'
         ' N=$(next_count "$LOG.post-count");'
         ' if [[ "$N" -le 1 ]]; then emit 201 \'{"job_id":"job-lost"}\';'
-        ' else emit 201 \'{"job_id":"job-lost-2"}\'; fi;'
+        ' elif [[ "$N" -le 2 ]]; then emit 201 \'{"job_id":"job-lost-2"}\';'
+        ' else emit 201 \'{"job_id":"job-lost-3"}\'; fi;'
         ' else emit 404 \'{"error":"x"}\'; fi;;\n'
         '  */health)'
         ' H=$(next_count "$LOG.health-count");'
@@ -328,9 +331,11 @@ def _write_lost_job_bin(directory, curl_log):
 
 
 def test_job_poll_fails_fast_when_runner_forgets_job(tmp_path):
-    # End-to-end at the shell/HTTP level: one bounded same-worker
-    # resubmission is attempted after proven job loss (regression for
-    # run 36409152332), but a SECOND consecutive loss still fails fast
+    # End-to-end at the shell/HTTP level: bounded same-worker
+    # resubmissions are attempted after proven job loss (regression for
+    # run 36409152332, extended for run 36417263684 which lost both the
+    # original and the first resubmission to consecutive restarts), but a
+    # THIRD consecutive loss still fails fast
     # with a loss diagnostic -- never a generic "did not finish in
     # time ... empty" timeout, and never a second Render service.
     env, state, result = _base_env(tmp_path)
@@ -346,18 +351,20 @@ def test_job_poll_fails_fast_when_runner_forgets_job(tmp_path):
     proc = _run("render-job.sh", env, str(REPO_ROOT))
     combined = proc.stdout + proc.stderr
     assert proc.returncode != 0, combined
-    # First loss triggers exactly one same-worker resubmission.
+    # First loss triggers a same-worker resubmission, and the second
+    # consecutive loss triggers a second one (run 36417263684).
     assert "Resubmitted runner job job-lost-2 (replaces lost job job-lost)" in combined
-    # Second consecutive loss fails fast with both ids, the exhausted
+    assert "Resubmitted runner job job-lost-3 (replaces lost job job-lost-2)" in combined
+    # Third consecutive loss fails fast with all ids, the exhausted
     # resubmit budget, and observed-restart evidence.
-    assert "no longer knows job job-lost-2" in combined
+    assert "no longer knows job job-lost-3" in combined
     assert "runner health: healthy" in combined
-    assert "resubmissions used: 1/1" in combined
+    assert "resubmissions used: 2/2" in combined
     assert "worker restart observed" in combined
     assert "did not finish in time" not in combined
     assert not result.exists() or result.read_text().strip() == ""
     calls = log.read_text()
-    assert calls.count("POST http://fake-runner.local/v1/jobs") == 2
+    assert calls.count("POST http://fake-runner.local/v1/jobs") == 3
     assert "POST https://api.render.com/v1/services" not in calls
 
 
@@ -476,16 +483,137 @@ def test_job_poll_recovers_via_one_same_worker_resubmission(tmp_path):
     assert bodies.count("Harness title") == 2
 
 
+def _write_double_restart_recovered_bin(directory, curl_log):
+    """Fake bin reproducing run 36417263684 with a successful third attempt.
+
+    Two consecutive proven worker restarts lose job-r1 and job-r2 (each
+    poll is an unknown-job 404 while /health stays healthy with a
+    rotating instance id), and the second same-worker resubmission
+    (job-r3) polls as succeeded. All three submits carry the identical
+    task payload; no Render service is ever created.
+    """
+    bin_dir = Path(directory) / "bin-double-recovered"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'LOG="%s"\n' % curl_log +
+        'OUT=""; METHOD="GET"; DATA=""; URL=""; WANT_CODE=""\n'
+        'ARGS=("$@")\n'
+        'i=0\n'
+        'while [[ $i -lt ${#ARGS[@]} ]]; do\n'
+        '  case "${ARGS[$i]}" in\n'
+        '    -o) OUT="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -D) HDR="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -X) METHOD="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -w) WANT_CODE="yes"; i=$((i+2));;\n'
+        '    -d|--data*) DATA="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -H|--max-time|--connect-timeout) i=$((i+2));;\n'
+        '    -*) i=$((i+1));;\n'
+        '    *) URL="${ARGS[$i]}"; i=$((i+1));;\n'
+        '  esac\n'
+        'done\n'
+        'if [[ -n "$DATA" && "$METHOD" == "GET" ]]; then METHOD="POST"; fi\n'
+        'echo "$METHOD $URL" >> "$LOG"\n'
+        'if [[ -n "$DATA" ]]; then echo "$METHOD $URL $DATA" >> "$LOG.bodies"; fi\n'
+        'emit() { local code="$1" body="$2";'
+        ' if [[ -n "$OUT" ]]; then printf "%s" "$body" > "$OUT";'
+        ' else printf "%s" "$body"; fi;'
+        ' if [[ -n "$WANT_CODE" ]]; then printf "%s" "$code"; fi; }\n'
+        'next_count() { local f="$1" n=0;'
+        ' [[ -f "$f" ]] && n=$(cat "$f"); n=$((n+1)); echo "$n" > "$f";'
+        ' printf "%s" "$n"; }\n'
+        'case "$URL" in\n'
+        '  */owners*) emit 200 \'[{"id":"own-1"}]\';;\n'
+        '  */v1/services/deploys/*|*/deploys/*) emit 200 \'{"status":"live"}\';;\n'
+        '  */v1/jobs/job-r1|*/v1/jobs/job-r2)'
+        ' emit 404 \'{"error":"unknown job"}\';;\n'
+        '  */v1/jobs/job-r3)'
+        ' emit 200 \'{"job_id":"job-r3","status":"succeeded","success":true,"summary":"done","metadata":{}}\';;\n'
+        '  */v1/jobs)'
+        ' if [[ "$METHOD" == "POST" ]]; then'
+        ' N=$(next_count "$LOG.post-count");'
+        ' if [[ "$N" -le 1 ]]; then emit 201 \'{"job_id":"job-r1"}\';'
+        ' elif [[ "$N" -le 2 ]]; then emit 201 \'{"job_id":"job-r2"}\';'
+        ' else emit 201 \'{"job_id":"job-r3"}\'; fi;'
+        ' else emit 404 \'{"error":"x"}\'; fi;;\n'
+        '  */health)'
+        ' H=$(next_count "$LOG.health-count");'
+        ' if [[ "$H" -le 2 ]]; then'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-fe21","uptime_seconds":11.1,"jobs":{"total":1}}\';'
+        ' elif [[ "$H" -le 4 ]]; then'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-b7c7","uptime_seconds":52.5,"jobs":{"total":0}}\';'
+        ' else'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-4e9b","uptime_seconds":43.2,"jobs":{"total":0}}\';'
+        ' fi;;\n'
+        '  */services/srv-existing)'
+        ' emit 200 \'{"serviceDetails":{"plan":"free","url":"http://fake-runner.local"}}\';;\n'
+        '  *) emit 200 \'{}\';;\n'
+        'esac\n'
+        'exit 0\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    sleep = bin_dir / "sleep"
+    sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    sleep.chmod(0o755)
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "issue" && "$2" == "view" ]]; then\n'
+        '  printf \'{"title":"Harness title","body":"Harness body"}\'\n'
+        "  exit 0\n"
+        "fi\n"
+        'echo "unexpected gh call: $*" >&2\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    return str(bin_dir)
+
+
+def test_job_poll_recovers_after_two_consecutive_restarts(tmp_path):
+    # Regression for run 36417263684: the original job and the first
+    # same-worker resubmission were both lost to consecutive proven
+    # worker restarts (instance fe21 -> b7c7 -> 4e9b). With a bound of
+    # two resubmissions the second resubmission succeeds on the same
+    # worker, with no second Render service.
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-double-recovered.log"
+    env["PATH"] = _write_double_restart_recovered_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    state.write_text(json.dumps({
+        "serviceId": "srv-existing",
+        "deployId": "dep-1",
+        "region": "oregon",
+        "model": PREFERRED_MODEL,
+        "plan": "free",
+    }))
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, combined
+    assert "Resubmitted runner job job-r2 (replaces lost job job-r1)" in combined
+    assert "Resubmitted runner job job-r3 (replaces lost job job-r2)" in combined
+    assert "worker restart observed" in combined
+    payload = json.loads(result.read_text())
+    assert payload["status"] == "succeeded"
+    assert payload["job_id"] == "job-r3"
+    calls = log.read_text()
+    assert calls.count("POST http://fake-runner.local/v1/jobs") == 3
+    assert "POST https://api.render.com/v1/services" not in calls
+    bodies = (tmp_path / "curl-double-recovered.log.bodies").read_text()
+    assert bodies.count("Harness title") == 3
+
+
 def _write_instance_change_bin(directory, curl_log):
     """Fake bin reproducing run 36410676408 (issue #41).
 
-    Both jobs are lost to consecutive worker replacements while /health
+    Three jobs are lost to consecutive worker replacements while /health
     stays healthy, but the replacement uptimes are numerically GREATER
-    than the old snapshot (25.9 -> 48.9 -> 60.3): only the instance id
+    than the old snapshot (25.9 -> 48.9 -> 60.3 -> 12.7): only the instance id
     (and wall-clock drift) proves the restart. The script must report
     "worker restart observed" with instance evidence -- never "same
-    worker process lifetime" -- resubmit once on the same worker, then
-    fail fast on the second consecutive loss without a second service.
+    worker process lifetime" -- resubmit twice on the same worker, then
+    fail fast on the third consecutive loss without a second service.
     """
     bin_dir = Path(directory) / "bin-instance"
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -520,13 +648,14 @@ def _write_instance_change_bin(directory, curl_log):
         'case "$URL" in\n'
         '  */owners*) emit 200 \'[{"id":"own-1"}]\';;\n'
         '  */v1/services/deploys/*|*/deploys/*) emit 200 \'{"status":"live"}\';;\n'
-        '  */v1/jobs/job-41a|*/v1/jobs/job-41b)'
+        '  */v1/jobs/job-41a|*/v1/jobs/job-41b|*/v1/jobs/job-41c)'
         ' emit 404 \'{"error":"unknown job"}\';;\n'
         '  */v1/jobs)'
         ' if [[ "$METHOD" == "POST" ]]; then'
         ' N=$(next_count "$LOG.post-count");'
         ' if [[ "$N" -le 1 ]]; then emit 201 \'{"job_id":"job-41a"}\';'
-        ' else emit 201 \'{"job_id":"job-41b"}\'; fi;'
+        ' elif [[ "$N" -le 2 ]]; then emit 201 \'{"job_id":"job-41b"}\';'
+        ' else emit 201 \'{"job_id":"job-41c"}\'; fi;'
         ' else emit 404 \'{"error":"x"}\'; fi;;\n'
         '  */health)'
         ' H=$(next_count "$LOG.health-count");'
@@ -534,8 +663,10 @@ def _write_instance_change_bin(directory, curl_log):
         ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-aaa111","uptime_seconds":25.9,"jobs":{"total":1}}\';'
         ' elif [[ "$H" -le 4 ]]; then'
         ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-bbb222","uptime_seconds":48.9,"jobs":{"total":0}}\';'
-        ' else'
+        ' elif [[ "$H" -le 6 ]]; then'
         ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-ccc333","uptime_seconds":60.3,"jobs":{"total":0}}\';'
+        ' else'
+        ' emit 200 \'{"status":"ok","ready":true,"instance_id":"instance-ddd444","uptime_seconds":12.7,"jobs":{"total":0}}\';'
         ' fi;;\n'
         '  */services/srv-existing)'
         ' emit 200 \'{"serviceDetails":{"plan":"free","url":"http://fake-runner.local"}}\';;\n'
@@ -568,6 +699,8 @@ def test_job_poll_proves_restart_from_instance_change_despite_greater_uptime(tmp
     # -> 60.3 are all numerically increasing, so the legacy
     # "current < prior" detector wrongly reported "same worker process
     # lifetime". The instance id must prove the replacement instead.
+    # Extended for run 36417263684: two consecutive proven restarts
+    # consume both resubmissions before the third loss fails fast.
     env, state, result = _base_env(tmp_path)
     log = tmp_path / "curl-instance.log"
     env["PATH"] = _write_instance_change_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
@@ -582,16 +715,17 @@ def test_job_poll_proves_restart_from_instance_change_despite_greater_uptime(tmp
     combined = proc.stdout + proc.stderr
     assert proc.returncode != 0, combined
     assert "Resubmitted runner job job-41b (replaces lost job job-41a)" in combined
-    assert "no longer knows job job-41b" in combined
+    assert "Resubmitted runner job job-41c (replaces lost job job-41b)" in combined
+    assert "no longer knows job job-41c" in combined
     assert "runner health: healthy" in combined
-    assert "resubmissions used: 1/1" in combined
+    assert "resubmissions used: 2/2" in combined
     # The restart is proven by instance identity despite greater uptime.
     assert "worker restart observed" in combined
     assert "instance" in combined
     assert "same worker process lifetime" not in combined
     assert "did not finish in time" not in combined
     calls = log.read_text()
-    assert calls.count("POST http://fake-runner.local/v1/jobs") == 2
+    assert calls.count("POST http://fake-runner.local/v1/jobs") == 3
     assert "POST https://api.render.com/v1/services" not in calls
 
 

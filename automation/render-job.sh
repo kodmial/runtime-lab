@@ -411,16 +411,20 @@ echo "Submitted runner job $JOB_ID."
 # same budget with periodic /health re-probes plus a diagnostic final
 # error instead of a bare "last status 'empty'".
 #
-# Job-loss recovery (regression for run 36409152332): that run polled a
+# Job-loss recovery (regression for run 36409152332, extended for run
+# 36417263684): that run polled a
 # submitted job as pending for ~2 minutes before it turned into a
 # permanent unknown-job 404 with a healthy runner. Render may restart a
 # Free web service at any time (see RENDER_DOC_FREE_TIER in
 # automation/render_lifecycle.py) and the runner keeps jobs only in
 # worker process memory, so a restart wipes the submitted job id while
 # /health answers 200 again on the fresh process. Because the submit
-# payload is fully reproducible, one bounded same-worker resubmission
-# (JOB_POLL_MAX_JOB_RESUBMITS, never a second Render service) converts a
-# transient restart into a retry; a second consecutive loss still fails
+# payload is fully reproducible, bounded same-worker resubmissions
+# (JOB_POLL_MAX_JOB_RESUBMITS, never a second Render service) convert
+# transient restarts into retries; run 36417263684 lost both the
+# original and the first resubmission to two consecutive proven
+# restarts, so the bound is two resubmissions and a third consecutive
+# loss still fails
 # fast. A submit-time /health snapshot (uptime_seconds) is compared with
 # the loss-time reading via detect_worker_restart() so the diagnostic
 # states whether a restart was actually observed.
@@ -549,10 +553,12 @@ prior, current, prior_inst, current_inst, prior_wall, current_wall = (
 print(format_restart_evidence(prior, current, prior_inst, current_inst, prior_wall, current_wall))
 PY
 )"
-        # Same-worker resubmission (regression for run 36409152332): the
+        # Same-worker resubmission (regression for run 36409152332,
+        # extended for run 36417263684): the
         # payload is fully reproducible and the worker is healthy again,
-        # so retry once on the SAME worker instead of failing the whole
-        # attempt on a transient restart. Never creates a second service.
+        # so retry up to JOB_POLL_MAX_JOB_RESUBMITS times on the SAME
+        # worker instead of failing the whole
+        # attempt on transient restarts. Never creates a second service.
         if [[ "$RUNNER_HEALTH" == "healthy" && "$POLL_RESUBMITS" -lt "$POLL_MAX_RESUBMITS" ]]; then
           echo "Runner lost job $JOB_ID ($RESTART_EVIDENCE); resubmitting the same payload on the same worker (resubmission $((POLL_RESUBMITS + 1))/$POLL_MAX_RESUBMITS, no new service)."
           LOST_JOB_ID="$JOB_ID"
