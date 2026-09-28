@@ -249,6 +249,36 @@ def test_job_poll_resubmits_on_same_worker_while_budget_remains():
     assert 'JOB_PAYLOAD="$RETRY_PAYLOAD"' in job
 
 
+def test_job_poll_envelope_honors_resolved_lifecycle_constants():
+    # Regression for run 36493364897: while verifying that run's
+    # storm path, the poll loop resolved POLL_MAX_ATTEMPTS (plus the
+    # transport/storm thresholds) from render_lifecycle but then
+    # ignored the resolved budget in the loop bound, the three
+    # terminal-iteration checks, and the poll sleeps (hardcoded
+    # `140` / `sleep 20`), and POLL_UNKNOWN_THRESHOLD had no numeric
+    # fallback at all. Any future change to JOB_POLL_MAX_ATTEMPTS or
+    # JOB_POLL_INTERVAL_SECONDS would then silently diverge the loop
+    # from the reported budget -- the same resolved-but-ignored class
+    # as the issue #113 storm-threshold fix. The envelope must honor
+    # the resolved values, with lifecycle defaults on corrupt values.
+    job = _read("render-job.sh")
+    assert "JOB_POLL_MAX_ATTEMPTS" in job
+    assert "JOB_POLL_INTERVAL_SECONDS" in job
+    assert "POLL_INTERVAL_SECONDS" in job
+    assert "for ((i = 1; i <= POLL_MAX_ATTEMPTS; i++))" in job
+    assert "i <= 140" not in job
+    assert '"$i" -eq 140' not in job
+    assert job.count('"$i" -eq "$POLL_MAX_ATTEMPTS"') == 3
+    assert "sleep 20" not in job
+    assert job.count('sleep "$POLL_INTERVAL_SECONDS"') == 3
+    assert '[[ "$POLL_MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || POLL_MAX_ATTEMPTS=140' in job
+    assert '[[ "$POLL_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || POLL_INTERVAL_SECONDS=20' in job
+    assert '[[ "$POLL_UNKNOWN_THRESHOLD" =~ ^[0-9]+$ ]] || POLL_UNKNOWN_THRESHOLD=3' in job
+    # Resolved values stay consistent with the lifecycle module.
+    assert JOB_POLL_MAX_ATTEMPTS == 140
+    assert JOB_POLL_INTERVAL_SECONDS == 20
+
+
 def test_job_poll_loop_distinguishes_empty_from_pending():
     # Regression for run 36402447309: the poll loop treated an empty status
     # (curl -f collapsing 404/5xx/connection errors into "") as
@@ -1666,25 +1696,25 @@ def test_job_poll_loop_matches_lifecycle_budget_and_covers_runner_timeout():
     # Regression for run 36399649036: render-job.sh polled only 60x20s
     # while the runner may work up to RUNNER_JOB_TIMEOUT_SECONDS, so the
     # shell must track JOB_POLL_MAX_ATTEMPTS instead of drifting.
-    import re
+    # Regression for run 36493364897: the bound must honor the
+    # shell-resolved POLL_MAX_ATTEMPTS (validated numeric, lifecycle
+    # default on corrupt values) instead of duplicating the lifecycle
+    # constant as a literal -- a resolved value and its use must never
+    # silently diverge.
 
     job = _read("render-job.sh")
     assert "JOB_POLL_MAX_ATTEMPTS" in job
-    loop_bounds = [
-        int(value)
-        for value in re.findall(r"for \(\(i = 1; i <= (\d+); i\+\+\)\)", job)
-    ]
-    assert loop_bounds, "expected bounded poll loops in render-job.sh"
-    # The job-result poll is the largest bounded loop in the script
-    # (deploy polling uses DEPLOY_ATTEMPTS=60); it must equal the lifecycle
-    # constant so both paths share one timeout envelope.
-    assert max(loop_bounds) == JOB_POLL_MAX_ATTEMPTS
+    assert "POLL_MAX_ATTEMPTS" in job
+    assert "for ((i = 1; i <= POLL_MAX_ATTEMPTS; i++))" in job
+    assert "for ((i = 1; i <= 140; i++))" not in job, \
+        "poll loop bound must honor POLL_MAX_ATTEMPTS, not a literal"
     assert JOB_POLL_MAX_ATTEMPTS * JOB_POLL_INTERVAL_SECONDS >= (
         RUNNER_JOB_TIMEOUT_SECONDS + 60
     )
-    # The terminal poll guard must use the same bound, otherwise the loop
-    # exits early or never reports the timeout.
-    assert '"$i" -eq %d' % JOB_POLL_MAX_ATTEMPTS in job
+    # The terminal poll guards must use the same resolved bound,
+    # otherwise the loop exits early or never reports the timeout.
+    assert '"$i" -eq "$POLL_MAX_ATTEMPTS"' in job
+    assert '"$i" -eq %d' % JOB_POLL_MAX_ATTEMPTS not in job
 
 
 # ---------------------------------------------------------------------------

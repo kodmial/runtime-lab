@@ -518,7 +518,13 @@ echo "Submitted runner job $JOB_ID."
 # Budget 140x20s=2800s covers the runner execution timeout of 45 minutes
 # (see JOB_POLL_MAX_ATTEMPTS in automation/render_lifecycle.py); run
 # 36399649036 failed prematurely with only 60x20s=1200s while the runner was
-# still legitimately working.
+# still legitimately working. The loop bound, the terminal-iteration
+# checks, and the poll sleeps all honor the shell-resolved
+# POLL_MAX_ATTEMPTS / POLL_INTERVAL_SECONDS (validated numeric, lifecycle
+# defaults on corrupt values) instead of duplicating the lifecycle
+# constants as literals: a resolved value and its use must never
+# silently diverge (regression for run 36493364897, same class as the
+# issue #113 storm-threshold fix).
 #
 # Poll-outcome discipline (regression for run 36402447309): that run polled
 # an empty status for the full budget because `curl -fsSL ... || true`
@@ -612,6 +618,13 @@ from render_lifecycle import JOB_POLL_MAX_ATTEMPTS
 print(JOB_POLL_MAX_ATTEMPTS)
 PY
 )"
+POLL_INTERVAL_SECONDS="$(python3 - <<'PY'
+import sys
+sys.path.insert(0, "automation")
+from render_lifecycle import JOB_POLL_INTERVAL_SECONDS
+print(JOB_POLL_INTERVAL_SECONDS)
+PY
+)"
 POLL_STORM_THRESHOLD="$(python3 - <<'PY'
 import sys
 sys.path.insert(0, "automation")
@@ -620,6 +633,8 @@ print(JOB_POLL_RESTART_STORM_THRESHOLD)
 PY
 )"
 [[ "$POLL_MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || POLL_MAX_ATTEMPTS=140
+[[ "$POLL_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || POLL_INTERVAL_SECONDS=20
+[[ "$POLL_UNKNOWN_THRESHOLD" =~ ^[0-9]+$ ]] || POLL_UNKNOWN_THRESHOLD=3
 [[ "$POLL_MAX_UNHEALTHY" =~ ^[0-9]+$ ]] || POLL_MAX_UNHEALTHY=1
 [[ "$POLL_HEALTH_EVERY" =~ ^[0-9]+$ ]] || POLL_HEALTH_EVERY=5
 [[ "$POLL_STORM_THRESHOLD" =~ ^[0-9]+$ ]] || POLL_STORM_THRESHOLD=3
@@ -635,7 +650,7 @@ SUBMIT_HEALTH_JSON="$(curl -sS --max-time 10 "$SERVICE_URL/health" \
 SUBMIT_UPTIME="$(jq -r '.uptime_seconds // empty' <<<"$SUBMIT_HEALTH_JSON" 2>/dev/null || true)"
 SUBMIT_INSTANCE="$(jq -r '.instance_id // .runner_instance_id // empty' <<<"$SUBMIT_HEALTH_JSON" 2>/dev/null || true)"
 SUBMIT_WALL="$(date +%s 2>/dev/null || true)"
-for ((i = 1; i <= 140; i++)); do
+for ((i = 1; i <= POLL_MAX_ATTEMPTS; i++)); do
   POLL_BODY_FILE="$(mktemp)"
   POLL_LAST_CODE="$(curl -sS -o "$POLL_BODY_FILE" -w '%{http_code}' --max-time 30 \
     "$SERVICE_URL/v1/jobs/$JOB_ID" -H "Accept: application/json" 2>/dev/null || true)"
@@ -696,11 +711,11 @@ PY
       POLL_UNKNOWN_COUNT=0
       POLL_EMPTY_COUNT=0
       POLL_UNHEALTHY_COUNT=0
-      if [[ "$i" -eq 140 ]]; then
+      if [[ "$i" -eq "$POLL_MAX_ATTEMPTS" ]]; then
         echo "::error::Runner job $JOB_ID did not finish in time (last status '${STATUS:-empty}')." >&2
         exit 1
       fi
-      sleep 20
+      sleep "$POLL_INTERVAL_SECONDS"
       ;;
     unknown_job)
       POLL_UNKNOWN_COUNT=$((POLL_UNKNOWN_COUNT + 1))
@@ -865,11 +880,11 @@ PY
         echo "::error::Runner no longer knows job $JOB_ID (HTTP $POLL_LAST_CODE on $POLL_UNKNOWN_COUNT consecutive polls; runner health: $RUNNER_HEALTH; resubmissions used: $POLL_RESUBMITS; poll $i/$POLL_MAX_ATTEMPTS, budget exhausted; $RESTART_EVIDENCE). Jobs live in worker process memory, so a worker restart loses the job permanently; failing fast instead of waiting out the full poll budget." >&2
         exit 1
       fi
-      if [[ "$i" -eq 140 ]]; then
+      if [[ "$i" -eq "$POLL_MAX_ATTEMPTS" ]]; then
         echo "::error::Runner job $JOB_ID did not finish in time (last status '${STATUS:-empty}', HTTP $POLL_LAST_CODE, $POLL_UNKNOWN_COUNT consecutive unknown-job polls, $POLL_RESUBMITS resubmission(s) used)." >&2
         exit 1
       fi
-      sleep 20
+      sleep "$POLL_INTERVAL_SECONDS"
       ;;
     transport_error)
       POLL_EMPTY_COUNT=$((POLL_EMPTY_COUNT + 1))
@@ -892,11 +907,11 @@ PY
           echo "Job $JOB_ID poll hit $POLL_EMPTY_COUNT consecutive transport failures (last HTTP $POLL_LAST_CODE) and the runner health check is failing (failed probe $POLL_UNHEALTHY_COUNT/$POLL_MAX_UNHEALTHY); continuing within the poll budget in case the worker is mid-restart." >&2
         fi
       fi
-      if [[ "$i" -eq 140 ]]; then
+      if [[ "$i" -eq "$POLL_MAX_ATTEMPTS" ]]; then
         echo "::error::Runner job $JOB_ID did not finish in time (last HTTP $POLL_LAST_CODE, last status '${STATUS:-empty}', $POLL_EMPTY_COUNT consecutive transport failures)." >&2
         exit 1
       fi
-      sleep 20
+      sleep "$POLL_INTERVAL_SECONDS"
       ;;
     *)
       echo "::error::Runner returned unknown job status '$STATUS' (HTTP $POLL_LAST_CODE)." >&2
