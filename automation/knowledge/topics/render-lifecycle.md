@@ -67,6 +67,11 @@
 - Step-0 hermetic re-measurement (pinned 1.18.33, base `ceab65e`): `--version` peak tree 195,636 kB (~191 MB, family 1), consistent with #52 (~177-200 MB); real-agent network peak not re-measured here (gated `--include-network` + Docker 512m trials per removal group A-D against #78 when it lands). Artifact: `automation/benchmark-results/coding-variant-issue-79-step0.json`.
 - Fork drift observed: spec base `9000e7f` vs live `main` `ae343e8` — rebase the PR patch onto fresh `main` and re-verify `index.ts`/`registry.ts`/`bootstrap.ts` excerpts before opening.
 
+## Direct headless (issue #89)
+
+- Direct-headless contract: a dedicated fork entrypoint (`run-direct`, build `build:direct`, out `dist/direct`) that keeps the existing provider/session/agent/tool loop and bypasses only internal HTTP/server/SDK plumbing — in-process `app.fetch()` dispatch, the full instance HTTP route table, `Server.listen()` TCP/mDNS, share-sync/models-fetch HTTP, the MCP SDK stack, and lazified unused `@ai-sdk/*` providers. No custom provider rewrite (fail-closed). Orthogonal to #79 (tool stripping) and #80 (output bounding) by construction, so tracks stay combinable. Contract: `automation/opencode_direct_headless.py`; fork change: `automation/patches/issue-89-fork-change.md`; tests: `automation/test_opencode_direct_headless.py`. Evidence: `../experiments/issue-89-run-36455160907.md`.
+- Measured here (pinned 1.18.33, step-0 hermetic): `opencode --version` peak tree 182,612 kB, runner_server tree ~22 MB, startup walls ~0.6s identical with step-0 direct config on/off — config flags alone do not move startup/RSS; the saving must come from the fork-side direct binary (needs a bun fork builder; live normal-vs-direct binary delta pending fork CI). Telemetry reuses exactly the 22 #81 qualification fields; correctness uses the same FOO_LIMIT workload (maps to q1-small-edit).
+
 ## Provider fleet (issue #64)
 
 - The persistent controller also serves the vendor-independent provider fleet control plane (`automation/provider_routes.py`): `GET /v1/provider-routes/{pool}` publishes active `base_url`/generation/readiness, `POST /v1/provider-routes/{pool}/rotate` rotates single-flight on client-observed 307 exhaustion. The controller carries only control/metadata traffic; prompts/completions never flow through it.
