@@ -79,6 +79,17 @@ def _payload(**overrides):
     return body
 
 
+def _legacy_payload(**overrides):
+    """Payload forcing the legacy single-command path (explicit command).
+
+    Unit tests for the #2 state machine/HTTP contract use this so they stay
+    fast and offline; OpenCode pipeline behavior is covered by
+    automation/test_opencode_runner.py with fakes.
+    """
+    overrides.setdefault("command", ["sh", "-c", "echo synthetic-ok"])
+    return _payload(**overrides)
+
+
 def _manager(tmp_path, **kwargs):
     kwargs.setdefault("workspace_root", str(tmp_path / "ws"))
     kwargs.setdefault("job_timeout_seconds", 10.0)
@@ -103,7 +114,7 @@ def _wait_terminal(manager, job_id, timeout=15.0):
 
 def test_state_machine_allows_only_legal_edges(tmp_path):
     manager = _manager(tmp_path)
-    record, created = manager.submit(_payload())
+    record, created = manager.submit(_legacy_payload())
     assert created
     assert record.status in ("queued", "running")
     if manager.get(record.job_id).status == "queued":
@@ -125,7 +136,7 @@ def test_state_machine_allows_only_legal_edges(tmp_path):
 
 def test_synthetic_job_transitions_to_succeeded(tmp_path):
     manager = _manager(tmp_path)
-    record, _ = manager.submit(_payload())
+    record, _ = manager.submit(_legacy_payload())
     # Submit returns immediately while execution proceeds asynchronously.
     assert record.status in ("queued", "running")
     final = _wait_terminal(manager, record.job_id)
@@ -188,8 +199,8 @@ def test_concurrent_jobs_get_isolated_workspaces(tmp_path):
             return CommandResult(returncode=0, stdout="done", stderr="")
 
     manager = _manager(tmp_path, command_runner=BlockingRunner())
-    first, _ = manager.submit(_payload())
-    second, _ = manager.submit(_payload())
+    first, _ = manager.submit(_legacy_payload())
+    second, _ = manager.submit(_legacy_payload())
     assert first.job_id != second.job_id
     assert first.workspace != second.workspace
     assert started.wait(timeout=15)
@@ -210,7 +221,7 @@ def test_concurrent_jobs_get_isolated_workspaces(tmp_path):
 def test_duplicate_idempotency_key_does_not_execute_twice(tmp_path):
     runner = CountingRunner()
     manager = _manager(tmp_path, command_runner=runner)
-    payload = _payload(idempotency_key="key-123")
+    payload = _legacy_payload(idempotency_key="key-123")
     first, created_first = manager.submit(payload, "key-123")
     second, created_second = manager.submit(dict(payload), "key-123")
     assert created_first is True
@@ -259,12 +270,12 @@ def test_unknown_region_rejected_without_command(tmp_path):
 
 def test_model_recorded_in_metadata_and_defaults(tmp_path):
     manager = _manager(tmp_path)
-    without_model = _payload()
+    without_model = _legacy_payload()
     del without_model["metadata"]["model"]
     record, _ = manager.submit(without_model)
     final = _wait_terminal(manager, record.job_id)
     assert final.metadata["model"] == PREFERRED_MODEL
-    fallback = _payload()
+    fallback = _legacy_payload()
     fallback["metadata"] = dict(fallback["metadata"])
     fallback["metadata"]["model"] = FALLBACK_MODEL
     second, _ = manager.submit(fallback)
@@ -421,7 +432,7 @@ def test_health_distinguishes_not_ready(live):
 def test_submit_returns_quickly_and_result_is_pollable(live):
     server, _ = live
     started = time.time()
-    status, body = _http("POST", server.base_url + "/v1/jobs", _payload())
+    status, body = _http("POST", server.base_url + "/v1/jobs", _legacy_payload())
     elapsed = time.time() - started
     assert status == 201
     assert body["job_id"]
@@ -461,8 +472,8 @@ def test_unknown_job_returns_404(live):
 def test_duplicate_submit_via_header_returns_same_job(live):
     server, _ = live
     headers = {"Idempotency-Key": "header-key-1"}
-    first_status, first = _http("POST", server.base_url + "/v1/jobs", _payload(), headers)
-    second_status, second = _http("POST", server.base_url + "/v1/jobs", _payload(), headers)
+    first_status, first = _http("POST", server.base_url + "/v1/jobs", _legacy_payload(), headers)
+    second_status, second = _http("POST", server.base_url + "/v1/jobs", _legacy_payload(), headers)
     assert first_status == 201
     assert second_status == 200
     assert first["job_id"] == second["job_id"]
