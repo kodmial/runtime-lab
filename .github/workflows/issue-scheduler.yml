@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      WIP_LIMIT: ${{ vars.AUTOMATION_WIP_LIMIT || '2' }}
+      WIP_LIMIT: ${{ vars.AUTOMATION_WIP_LIMIT || '4' }}
       LEASE_MINUTES: ${{ vars.AUTOMATION_LEASE_MINUTES || '90' }}
       MAX_DISPATCH_ATTEMPTS: ${{ vars.AUTOMATION_MAX_DISPATCH_ATTEMPTS || '2' }}
 
@@ -33,7 +33,7 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const wipLimit = Number.parseInt(process.env.WIP_LIMIT || '2', 10);
+            const wipLimit = Number.parseInt(process.env.WIP_LIMIT || '4', 10);
             const leaseMinutes = Number.parseInt(process.env.LEASE_MINUTES || '90', 10);
             const maxAttempts = Number.parseInt(process.env.MAX_DISPATCH_ATTEMPTS || '2', 10);
             const leaseMs = leaseMinutes * 60 * 1000;
