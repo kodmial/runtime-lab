@@ -2,8 +2,15 @@ name: Issue scheduler
 
 on:
   workflow_dispatch:
+  # Event-driven wake-up for human/PAT/App pushes to main. Automated merges
+  # also dispatch this workflow explicitly because GITHUB_TOKEN suppresses
+  # most follow-up workflow events.
+  push:
+    branches: [main]
   schedule:
-    - cron: "*/15 * * * *"
+    # Safety net only; normal progress should not depend on cron.
+    # Offset from :00 to reduce GitHub scheduler load/drop risk.
+    - cron: "7,22,37,52 * * * *"
   issues:
     types: [opened, reopened, closed, labeled, unlabeled]
   pull_request_target:
