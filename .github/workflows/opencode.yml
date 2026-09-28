@@ -129,6 +129,7 @@ jobs:
           - Run the relevant local checks when practical.
           - Keep all comments and commit-facing text in English.
           - Do not add unrelated automation outside the issue scope.
+          - Do not modify .github/workflows/**. Stable workflow envelopes are provisioned separately because the Actions token cannot push workflow-file changes; put mutable automation logic under automation/ or normal source files.
           - Do not perform git commits, pushes, branch switches, rebases, resets, or PR creation; the workflow owns Git state.
           EOF
           )"
