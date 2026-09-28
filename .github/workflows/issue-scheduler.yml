@@ -1,0 +1,234 @@
+name: Issue scheduler
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+  issues:
+    types: [opened, reopened, closed, labeled, unlabeled]
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: runtime-lab-issue-scheduler
+  cancel-in-progress: false
+
+jobs:
+  schedule:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      WIP_LIMIT: ${{ vars.AUTOMATION_WIP_LIMIT || '2' }}
+      LEASE_MINUTES: ${{ vars.AUTOMATION_LEASE_MINUTES || '45' }}
+      MAX_DISPATCH_ATTEMPTS: ${{ vars.AUTOMATION_MAX_DISPATCH_ATTEMPTS || '2' }}
+
+    steps:
+      - name: Reconcile state and dispatch ready issues
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const wipLimit = Number.parseInt(process.env.WIP_LIMIT || '2', 10);
+            const leaseMinutes = Number.parseInt(process.env.LEASE_MINUTES || '45', 10);
+            const maxAttempts = Number.parseInt(process.env.MAX_DISPATCH_ATTEMPTS || '2', 10);
+            const leaseMs = leaseMinutes * 60 * 1000;
+
+            const priorities = ['priority:p0', 'priority:p1', 'priority:p2'];
+            const rank = new Map(priorities.map((name, i) => [name, i]));
+            const inProgress = 'automation:in-progress';
+            const paused = 'automation:paused';
+            const marker = '<!-- runtime-lab-scheduler-dispatch -->';
+
+            const labelSpecs = [
+              ['priority:p0', 'B60205', 'P0 — critical work.'],
+              ['priority:p1', 'D93F0B', 'P1 — high-priority planned work.'],
+              ['priority:p2', 'FBCA04', 'P2 — normal planned work.'],
+              [inProgress, '1D76DB', 'Reserved or actively handled by automation.'],
+              [paused, '6A737D', 'Automation stopped after repeated failed dispatches.'],
+            ];
+            for (const [name, color, description] of labelSpecs) {
+              try {
+                await github.rest.issues.createLabel({owner, repo, name, color, description});
+              } catch (err) {
+                if (err.status !== 422) throw err;
+              }
+            }
+
+            const issues = (await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', per_page: 100,
+            })).filter(issue => !issue.pull_request);
+
+            const labels = new Map(
+              issues.map(issue => [
+                issue.number,
+                new Set((issue.labels || []).map(label =>
+                  typeof label === 'string' ? label : label.name
+                )),
+              ])
+            );
+
+            async function addLabel(number, name) {
+              if (labels.get(number)?.has(name)) return;
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: number, labels: [name],
+              });
+              labels.get(number)?.add(name);
+            }
+
+            async function removeLabel(number, name) {
+              if (!labels.get(number)?.has(name)) return;
+              try {
+                await github.rest.issues.removeLabel({
+                  owner, repo, issue_number: number, name,
+                });
+              } catch (err) {
+                if (err.status !== 404) throw err;
+              }
+              labels.get(number)?.delete(name);
+            }
+
+            // Migrate the P0/P1/P2 prefix already used by runtime-lab issues
+            // into scheduler labels so the ordering remains deterministic.
+            for (const issue of issues) {
+              const current = [...labels.get(issue.number)].filter(x => rank.has(x));
+              if (current.length) continue;
+              const text = issue.title + '\n' + (issue.body || '');
+              const match = text.match(/(?:^|\n)\s*(?:##\s*Priority\s*\n\s*)?P([0-2])\b/i);
+              if (match) await addLabel(issue.number, 'priority:p' + match[1]);
+            }
+
+            const allPrs = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'all', per_page: 100,
+            });
+
+            const prsByIssue = new Map();
+            for (const pr of allPrs) {
+              const match = (pr.head.ref || '').match(/^opencode\/issue(\d+)-/);
+              if (!match) continue;
+              const issueNumber = Number(match[1]);
+              if (!prsByIssue.has(issueNumber)) prsByIssue.set(issueNumber, []);
+              prsByIssue.get(issueNumber).push(pr);
+            }
+
+            const active = new Set();
+            for (const issue of issues) {
+              const prs = (prsByIssue.get(issue.number) || [])
+                .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+              const openPr = prs.find(pr => pr.state === 'open');
+              if (openPr) {
+                active.add(issue.number);
+                await addLabel(issue.number, inProgress);
+                continue;
+              }
+
+              const mergedPr = prs.find(pr => pr.merged_at);
+              if (mergedPr) {
+                await removeLabel(issue.number, inProgress);
+                try {
+                  await github.rest.issues.update({
+                    owner, repo, issue_number: issue.number,
+                    state: 'closed', state_reason: 'completed',
+                  });
+                } catch (_) {}
+                continue;
+              }
+
+              if (!labels.get(issue.number).has(inProgress)) continue;
+
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: issue.number, per_page: 100,
+              });
+              const dispatches = comments
+                .filter(comment => (comment.body || '').includes(marker))
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+              const latest = dispatches[0];
+              if (!latest) {
+                await removeLabel(issue.number, inProgress);
+                continue;
+              }
+
+              const age = Date.now() - new Date(latest.created_at).getTime();
+              if (age < leaseMs) {
+                active.add(issue.number);
+                continue;
+              }
+
+              if (dispatches.length >= maxAttempts) {
+                await removeLabel(issue.number, inProgress);
+                await addLabel(issue.number, paused);
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issue.number,
+                  body: marker + '\nAutomation paused after ' + dispatches.length +
+                    ' dispatch attempts without an open PR. Remove `automation:paused` to retry.',
+                });
+              } else {
+                await removeLabel(issue.number, inProgress);
+              }
+            }
+
+            const freeSlots = Math.max(0, wipLimit - active.size);
+            core.info('WIP: ' + active.size + '/' + wipLimit + '; free slots: ' + freeSlots);
+            if (!freeSlots) return;
+
+            const candidates = [];
+            for (const issue of issues) {
+              const set = labels.get(issue.number);
+              if (set.has(paused) || active.has(issue.number)) continue;
+              const p = [...set].filter(x => rank.has(x)).sort((a,b) => rank.get(a)-rank.get(b))[0] || null;
+              candidates.push({issue, priority: p, rank: p ? rank.get(p) : priorities.length});
+            }
+            candidates.sort((a, b) => a.rank - b.rank || a.issue.number - b.issue.number);
+
+            const selected = [];
+            for (const candidate of candidates) {
+              if (selected.length >= freeSlots) break;
+              let blockers = [];
+              try {
+                const {data} = await github.request(
+                  'GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by',
+                  {
+                    owner, repo, issue_number: candidate.issue.number,
+                    headers: {'X-GitHub-Api-Version': '2022-11-28'},
+                  }
+                );
+                blockers = Array.isArray(data) ? data : (data.blocked_by || []);
+              } catch (err) {
+                if (err.status !== 404) throw err;
+              }
+              const openBlockers = blockers.filter(item => item.state === 'open');
+              if (openBlockers.length) {
+                core.info('Skipping #' + candidate.issue.number + ': blocked by ' +
+                  openBlockers.map(item => '#' + item.number).join(', '));
+                continue;
+              }
+              selected.push(candidate);
+            }
+
+            for (const {issue, priority} of selected) {
+              await addLabel(issue.number, inProgress);
+              const previous = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: issue.number, per_page: 100,
+              });
+              const attempt = previous.filter(c => (c.body || '').includes(marker)).length + 1;
+
+              try {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issue.number,
+                  body: marker + '\nDispatch attempt ' + attempt + ' (' +
+                    (priority || 'no explicit priority') + ').',
+                });
+                await github.rest.actions.createWorkflowDispatch({
+                  owner, repo, workflow_id: 'opencode.yml', ref: 'main',
+                  inputs: {mode: 'issue', issue_number: String(issue.number)},
+                });
+                core.notice('Dispatched issue #' + issue.number + ' to OpenCode.');
+              } catch (err) {
+                await removeLabel(issue.number, inProgress);
+                throw err;
+              }
+            }
