@@ -179,8 +179,25 @@ jobs:
             for (const issue of issues) {
               const set = labels.get(issue.number);
               if (set.has(paused) || active.has(issue.number)) continue;
-              const p = [...set].filter(x => rank.has(x)).sort((a,b) => rank.get(a)-rank.get(b))[0] || null;
-              candidates.push({issue, priority: p, rank: p ? rank.get(p) : priorities.length});
+
+              const issuePriorities = [...set]
+                .filter(name => rank.has(name))
+                .sort((a, b) => rank.get(a) - rank.get(b));
+
+              // Only explicitly prioritized work enters the automatic queue.
+              // Issues without priority:p0/p1/p2 remain untouched until a
+              // priority is assigned (or inferred above from an explicit
+              // P0/P1/P2 declaration in the issue text).
+              if (issuePriorities.length === 0) {
+                core.info(
+                  'Skipping #' + issue.number +
+                  ': no priority:p0/p1/p2 label.'
+                );
+                continue;
+              }
+
+              const p = issuePriorities[0];
+              candidates.push({issue, priority: p, rank: rank.get(p)});
             }
             candidates.sort((a, b) => a.rank - b.rank || a.issue.number - b.issue.number);
 
