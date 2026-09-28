@@ -225,7 +225,7 @@ jobs:
               // are populated, so parallel WIP cannot start dependent work early.
               const readinessDependencyNumbers = [
                 ...new Set(
-                  [...(candidate.issue.body || '').matchAll(/#(\\d+)\\s+is completed\\b/gi)]
+                  [...(candidate.issue.body || '').matchAll(/#(\d+)\s+is completed\b/gi)]
                     .map(match => Number(match[1]))
                     .filter(number =>
                       Number.isInteger(number) &&
