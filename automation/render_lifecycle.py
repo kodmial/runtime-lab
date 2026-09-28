@@ -118,6 +118,12 @@ RENDER_DOC_SUSPEND_SERVICE = "https://api-docs.render.com/reference/suspend-serv
 RENDER_DOC_RETRIEVE_DEPLOY = "https://api-docs.render.com/reference/retrieve-deploy"
 RENDER_DOC_LIST_DEPLOYS = "https://api-docs.render.com/reference/list-deploys"
 RENDER_DOC_RATE_LIMITING = "https://api-docs.render.com/reference/rate-limiting"
+# Free-tier platform behavior (restart-anytime, ephemeral filesystem,
+# spin-down on idle): verified against the live vendor doc during the
+# issue #33 repair (run 36409152332). The runner keeps jobs only in
+# worker process memory, so a documented anytime-restart wipes the polled
+# job id permanently while /health stays healthy.
+RENDER_DOC_FREE_TIER = "https://render.com/docs/free"
 
 RENDER_DOC_URLS = (
     RENDER_DOC_API_OVERVIEW,
@@ -130,6 +136,7 @@ RENDER_DOC_URLS = (
     RENDER_DOC_RETRIEVE_DEPLOY,
     RENDER_DOC_LIST_DEPLOYS,
     RENDER_DOC_RATE_LIMITING,
+    RENDER_DOC_FREE_TIER,
 )
 
 # ---------------------------------------------------------------------------
@@ -478,6 +485,19 @@ JOB_POLL_INTERVAL_SECONDS = 20
 # every this-many consecutive transport failures.
 JOB_POLL_UNKNOWN_JOB_THRESHOLD = 3
 JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY = 5
+# Same-worker job resubmission bound for proven job loss.
+#
+# Run 36409152332 submitted a job that polled as pending for ~2 minutes
+# and then turned into a permanent unknown-job 404 while the runner
+# stayed healthy: Render may restart a Free web service at any time
+# (RENDER_DOC_FREE_TIER) and runner jobs live only in worker process
+# memory, so a restart wipes the submitted job id forever. The submit
+# payload is fully reproducible, so the controller resubmits it at most
+# this many times on the SAME worker (never a second Render service):
+# one transient restart becomes a retry instead of a total attempt
+# failure, while a second consecutive loss still fails fast with full
+# diagnostics (both job ids, resubmit count, restart evidence).
+JOB_POLL_MAX_JOB_RESUBMITS = 1
 # Poll outcome vocabulary for one job-status attempt (controller side).
 JOB_POLL_OUTCOMES = frozenset({
     "succeeded",
@@ -803,6 +823,35 @@ def should_probe_runner_health(consecutive_transport_errors: int) -> bool:
     except (TypeError, ValueError):
         return False
     return count > 0 and count % JOB_POLL_TRANSPORT_HEALTH_CHECK_EVERY == 0
+
+
+def should_resubmit_after_job_loss(resubmits_used: int) -> bool:
+    """True while the same-worker resubmission budget is not exhausted."""
+    try:
+        used = int(resubmits_used)
+    except (TypeError, ValueError):
+        return False
+    return used < JOB_POLL_MAX_JOB_RESUBMITS
+
+
+def detect_worker_restart(prior_uptime: object,
+                           current_uptime: object) -> bool | None:
+    """Compare runner /health uptime readings across a job loss.
+
+    The runner reports ``uptime_seconds`` (seconds since the worker
+    process started) on ``GET /health``. Returns True when both readings
+    parse and the current reading is smaller (the worker process
+    restarted, resetting its uptime clock and wiping the in-memory job);
+    False when both parse and the clock kept advancing (same process
+    lifetime, so the job was dropped another way); None when either
+    reading is missing or unparsable (no restart evidence either way).
+    """
+    try:
+        prior = float(str(prior_uptime).strip())
+        current = float(str(current_uptime).strip())
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return current < prior
 
 
 # ---------------------------------------------------------------------------

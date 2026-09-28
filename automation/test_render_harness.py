@@ -201,6 +201,26 @@ def test_region_validation_happens_before_any_creation():
     assert validate_idx < create_idx
 
 
+def test_job_poll_resubmits_once_on_same_worker_after_proven_loss():
+    # Regression for run 36409152332: a submitted job polled as pending
+    # for ~2 minutes, then turned into a permanent unknown-job 404 while
+    # the runner stayed healthy (documented anytime-restart of Free
+    # workers wipes the in-memory job). The loop must resubmit the same
+    # payload once on the SAME worker and only then fail fast.
+    job = _read("render-job.sh")
+    assert "JOB_POLL_MAX_JOB_RESUBMITS" in job
+    assert "detect_worker_restart" in job
+    assert "Resubmitted runner job" in job
+    assert "resubmissions used" in job
+    # The resubmission posts to the worker's own job endpoint (same
+    # service); it must never provision a second Render service.
+    assert "$SERVICE_URL/v1/jobs" in job
+    assert "no new service" in job
+    # The fallback path now tracks the in-flight payload so a later
+    # loss-resubmission retries the fallback model, not the primary one.
+    assert 'JOB_PAYLOAD="$RETRY_PAYLOAD"' in job
+
+
 def test_job_poll_loop_distinguishes_empty_from_pending():
     # Regression for run 36402447309: the poll loop treated an empty status
     # (curl -f collapsing 404/5xx/connection errors into "") as
@@ -219,12 +239,14 @@ def test_job_poll_loop_distinguishes_empty_from_pending():
 
 
 def _write_lost_job_bin(directory, curl_log):
-    """Fake bin where the runner answers 404 for a submitted job poll.
+    """Fake bin where the runner loses every submitted job after 404s.
 
-    Reproduces run 36402447309 at the HTTP-contract level: submit returns
-    a job id, but every GET /v1/jobs/<id> is the runner's documented
-    unknown-job 404 (e.g. worker restart lost the in-memory job) while
-    /health stays healthy.
+    Reproduces run 36409152332 at the HTTP-contract level: each submit
+    returns a fresh job id, but every GET /v1/jobs/<id> is the runner's
+    documented unknown-job 404 (worker restart wiped the in-memory job)
+    while /health stays healthy. /health reports a shrinking uptime
+    (300s before the loss, 9s after) so the script's restart evidence
+    must conclude a worker restart was observed.
     """
     bin_dir = Path(directory) / "bin-lost"
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -253,15 +275,27 @@ def _write_lost_job_bin(directory, curl_log):
         ' if [[ -n "$OUT" ]]; then printf "%s" "$body" > "$OUT";'
         ' else printf "%s" "$body"; fi;'
         ' if [[ -n "$WANT_CODE" ]]; then printf "%s" "$code"; fi; }\n'
+        'next_count() { local f="$1" n=0;'
+        ' [[ -f "$f" ]] && n=$(cat "$f"); n=$((n+1)); echo "$n" > "$f";'
+        ' printf "%s" "$n"; }\n'
         'case "$URL" in\n'
         '  */owners*) emit 200 \'[{"id":"own-1"}]\';;\n'
         '  */v1/services/deploys/*|*/deploys/*) emit 200 \'{"status":"live"}\';;\n'
-        '  */v1/jobs/job-lost)'
-        ' emit 404 \'{"error":"unknown job: job-lost"}\';;\n'
+        '  */v1/jobs/job-lost|*/v1/jobs/job-lost-2)'
+        ' emit 404 \'{"error":"unknown job"}\';;\n'
         '  */v1/jobs)'
         ' if [[ "$METHOD" == "POST" ]]; then'
-        ' emit 201 \'{"job_id":"job-lost"}\'; else emit 404 \'{"error":"x"}\'; fi;;\n'
-        '  */health) exit 0;;\n'
+        ' N=$(next_count "$LOG.post-count");'
+        ' if [[ "$N" -le 1 ]]; then emit 201 \'{"job_id":"job-lost"}\';'
+        ' else emit 201 \'{"job_id":"job-lost-2"}\'; fi;'
+        ' else emit 404 \'{"error":"x"}\'; fi;;\n'
+        '  */health)'
+        ' H=$(next_count "$LOG.health-count");'
+        ' if [[ "$H" -le 2 ]]; then'
+        ' emit 200 \'{"status":"ok","ready":true,"uptime_seconds":300,"jobs":{"total":1}}\';'
+        ' else'
+        ' emit 200 \'{"status":"ok","ready":true,"uptime_seconds":9,"jobs":{"total":0}}\';'
+        ' fi;;\n'
         '  */services/srv-existing)'
         ' emit 200 \'{"serviceDetails":{"plan":"free","url":"http://fake-runner.local"}}\';;\n'
         '  *) emit 200 \'{}\';;\n'
@@ -289,9 +323,11 @@ def _write_lost_job_bin(directory, curl_log):
 
 
 def test_job_poll_fails_fast_when_runner_forgets_job(tmp_path):
-    # End-to-end at the shell/HTTP level: a persistent unknown-job 404
-    # must fail fast with a loss diagnostic, not wait out the poll budget
-    # and report a generic "did not finish in time ... empty" timeout.
+    # End-to-end at the shell/HTTP level: one bounded same-worker
+    # resubmission is attempted after proven job loss (regression for
+    # run 36409152332), but a SECOND consecutive loss still fails fast
+    # with a loss diagnostic -- never a generic "did not finish in
+    # time ... empty" timeout, and never a second Render service.
     env, state, result = _base_env(tmp_path)
     log = tmp_path / "curl-lost.log"
     env["PATH"] = _write_lost_job_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
@@ -305,10 +341,134 @@ def test_job_poll_fails_fast_when_runner_forgets_job(tmp_path):
     proc = _run("render-job.sh", env, str(REPO_ROOT))
     combined = proc.stdout + proc.stderr
     assert proc.returncode != 0, combined
-    assert "no longer knows job job-lost" in combined
+    # First loss triggers exactly one same-worker resubmission.
+    assert "Resubmitted runner job job-lost-2 (replaces lost job job-lost)" in combined
+    # Second consecutive loss fails fast with both ids, the exhausted
+    # resubmit budget, and observed-restart evidence.
+    assert "no longer knows job job-lost-2" in combined
     assert "runner health: healthy" in combined
+    assert "resubmissions used: 1/1" in combined
+    assert "worker restart observed" in combined
     assert "did not finish in time" not in combined
     assert not result.exists() or result.read_text().strip() == ""
+    calls = log.read_text()
+    assert calls.count("POST http://fake-runner.local/v1/jobs") == 2
+    assert "POST https://api.render.com/v1/services" not in calls
+
+
+def _write_recovered_job_bin(directory, curl_log):
+    """Fake bin where the first job is lost but the resubmission succeeds.
+
+    Reproduces the transient-restart case of run 36409152332: submit #1
+    returns job-lost (every poll is an unknown-job 404), the single
+    same-worker resubmission returns job-retry, and job-retry polls as
+    succeeded. Both submits must carry the identical task payload.
+    """
+    bin_dir = Path(directory) / "bin-recovered"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'LOG="%s"\n' % curl_log +
+        'OUT=""; METHOD="GET"; DATA=""; URL=""; WANT_CODE=""\n'
+        'ARGS=("$@")\n'
+        'i=0\n'
+        'while [[ $i -lt ${#ARGS[@]} ]]; do\n'
+        '  case "${ARGS[$i]}" in\n'
+        '    -o) OUT="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -D) HDR="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -X) METHOD="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -w) WANT_CODE="yes"; i=$((i+2));;\n'
+        '    -d|--data*) DATA="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -H|--max-time|--connect-timeout) i=$((i+2));;\n'
+        '    -*) i=$((i+1));;\n'
+        '    *) URL="${ARGS[$i]}"; i=$((i+1));;\n'
+        '  esac\n'
+        'done\n'
+        'if [[ -n "$DATA" && "$METHOD" == "GET" ]]; then METHOD="POST"; fi\n'
+        'echo "$METHOD $URL" >> "$LOG"\n'
+        'if [[ -n "$DATA" ]]; then echo "$METHOD $URL $DATA" >> "$LOG.bodies"; fi\n'
+        'emit() { local code="$1" body="$2";'
+        ' if [[ -n "$OUT" ]]; then printf "%s" "$body" > "$OUT";'
+        ' else printf "%s" "$body"; fi;'
+        ' if [[ -n "$WANT_CODE" ]]; then printf "%s" "$code"; fi; }\n'
+        'next_count() { local f="$1" n=0;'
+        ' [[ -f "$f" ]] && n=$(cat "$f"); n=$((n+1)); echo "$n" > "$f";'
+        ' printf "%s" "$n"; }\n'
+        'case "$URL" in\n'
+        '  */owners*) emit 200 \'[{"id":"own-1"}]\';;\n'
+        '  */v1/services/deploys/*|*/deploys/*) emit 200 \'{"status":"live"}\';;\n'
+        '  */v1/jobs/job-lost)'
+        ' emit 404 \'{"error":"unknown job: job-lost"}\';;\n'
+        '  */v1/jobs/job-retry)'
+        ' emit 200 \'{"job_id":"job-retry","status":"succeeded","success":true,"summary":"done","metadata":{}}\';;\n'
+        '  */v1/jobs)'
+        ' if [[ "$METHOD" == "POST" ]]; then'
+        ' N=$(next_count "$LOG.post-count");'
+        ' if [[ "$N" -le 1 ]]; then emit 201 \'{"job_id":"job-lost"}\';'
+        ' else emit 201 \'{"job_id":"job-retry"}\'; fi;'
+        ' else emit 404 \'{"error":"x"}\'; fi;;\n'
+        '  */health)'
+        ' H=$(next_count "$LOG.health-count");'
+        ' if [[ "$H" -le 2 ]]; then'
+        ' emit 200 \'{"status":"ok","ready":true,"uptime_seconds":300,"jobs":{"total":1}}\';'
+        ' else'
+        ' emit 200 \'{"status":"ok","ready":true,"uptime_seconds":9,"jobs":{"total":0}}\';'
+        ' fi;;\n'
+        '  */services/srv-existing)'
+        ' emit 200 \'{"serviceDetails":{"plan":"free","url":"http://fake-runner.local"}}\';;\n'
+        '  *) emit 200 \'{}\';;\n'
+        'esac\n'
+        'exit 0\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    sleep = bin_dir / "sleep"
+    sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    sleep.chmod(0o755)
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "issue" && "$2" == "view" ]]; then\n'
+        '  printf \'{"title":"Harness title","body":"Harness body"}\'\n'
+        "  exit 0\n"
+        "fi\n"
+        'echo "unexpected gh call: $*" >&2\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    return str(bin_dir)
+
+
+def test_job_poll_recovers_via_one_same_worker_resubmission(tmp_path):
+    # The repair itself, end-to-end: a transient worker restart loses
+    # the first job id, the loop resubmits once on the same worker, and
+    # the attempt succeeds with the resubmitted job's result.
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-recovered.log"
+    env["PATH"] = _write_recovered_job_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    state.write_text(json.dumps({
+        "serviceId": "srv-existing",
+        "deployId": "dep-1",
+        "region": "oregon",
+        "model": PREFERRED_MODEL,
+        "plan": "free",
+    }))
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, combined
+    assert "Resubmitted runner job job-retry (replaces lost job job-lost)" in combined
+    assert "worker restart observed" in combined
+    payload = json.loads(result.read_text())
+    assert payload["status"] == "succeeded"
+    assert payload["job_id"] == "job-retry"
+    calls = log.read_text()
+    assert calls.count("POST http://fake-runner.local/v1/jobs") == 2
+    assert "POST https://api.render.com/v1/services" not in calls
+    # Both submits carry the identical task payload (same issue text).
+    bodies = (tmp_path / "curl-recovered.log.bodies").read_text()
+    assert bodies.count("Harness title") == 2
 
 
 def test_job_poll_loop_matches_lifecycle_budget_and_covers_runner_timeout():
