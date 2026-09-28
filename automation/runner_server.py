@@ -477,7 +477,7 @@ class JobManager:
         probe_target = (
             self.opencode_bin
             if self.opencode_bin and self.opencode_bin != "opencode"
-            else (explicit_override or None)
+            else (explicit_override or find_opencode_binary() or None)
         )
         ready, resolved_path, version_detail = probe_opencode_readiness(
             probe_target if (probe_target and os.path.isabs(probe_target)) else None
