@@ -1,0 +1,68 @@
+{
+  "archs": ["linux-x64", "linux-arm64"],
+  "baseline": {
+    "deploy_artifact": ".opencode-bin/opencode",
+    "note": "The upstream pinned binary stays the reversible A/B baseline only; a qualified experiment run must never silently fall back to it when an artifact is requested.",
+    "pinned_version": "1.18.33"
+  },
+  "build": {
+    "build_command_template": "bun run {script}",
+    "build_scripts": [
+      "packages/opencode/script/build.ts",
+      "packages/opencode/script/build-lite.ts",
+      "packages/opencode/script/build-coding.ts",
+      "packages/opencode/script/build-direct.ts"
+    ],
+    "install_command": "bun install --frozen-lockfile",
+    "required_arch": "linux-x64",
+    "toolchain": "Bun compile/release path (bun install plus bun run script/build*.ts producing opencode-linux-<arch>)"
+  },
+  "deploy_layout": {
+    "artifacts_dir": ".opencode-artifacts",
+    "binary_name": "opencode",
+    "fingerprint_name": "fingerprint.json",
+    "note": "Each experiment artifact lives under .opencode-artifacts/<artifact-id>/ with its fingerprint.json beside the binary; concurrent artifacts never share a path.",
+    "per_artifact_path": ".opencode-artifacts/<artifact-id>/opencode"
+  },
+  "env": {
+    "artifact_id": "OPENCODE_ARTIFACT_ID",
+    "artifact_ref": "OPENCODE_ARTIFACT_REF",
+    "artifact_sha256": "OPENCODE_ARTIFACT_SHA256"
+  },
+  "fork_base_sha": "9000e7fc8d96c845512f7c73122431418a71d4e4",
+  "fork_repo": "kodmial/opencode",
+  "immutable_reference": {
+    "example": "github-release:kodmial/opencode@opencode-9000e7fc8d96-linux-x64",
+    "forbidden": ["latest", "main", "stable", "HEAD"],
+    "format": "github-release:<releases-repo>@<artifact-tag>",
+    "tag_format": "opencode-<fork-sha12>-<arch>"
+  },
+  "known_tracks": ["source-stripped", "bounded-output", "direct-headless"],
+  "mutable_refs_rejected": ["latest", "main", "master", "dev", "stable", "HEAD", "next", "current"],
+  "pinned_opencode_version": "1.18.33",
+  "readiness": {
+    "no_fallback": "A requested experiment artifact that is missing, non-executable or checksum-mismatched fails readiness; the runner never falls back to the baseline and never runs a network installer for it.",
+    "requires": ["artifact binary present and executable", "SHA-256 equals the requested fingerprint", "requested version string equals the running binary version"]
+  },
+  "required_fingerprint_keys": [
+    "schema",
+    "fork_repo",
+    "fork_ref",
+    "fork_commit_sha",
+    "upstream_base_commit",
+    "upstream_tag",
+    "pinned_version",
+    "arch",
+    "build_script",
+    "build_toolchain",
+    "binary_sha256",
+    "build_identity",
+    "artifact_id",
+    "artifact_tag",
+    "artifact_reference"
+  ],
+  "schema": "runtime-lab-opencode-artifact-spec/v1",
+  "upstream_base_commit": "75e1e7ae310dc36c86c920e8997d0e1181e24a88",
+  "upstream_repo": "anomalyco/opencode",
+  "upstream_tag": "v1.18.33"
+}
