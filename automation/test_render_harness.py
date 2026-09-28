@@ -1957,6 +1957,61 @@ def _write_exact_artifact_bin(directory, curl_log):
     return str(bin_dir)
 
 
+def _write_exact_artifact_bin_issue110(directory, curl_log):
+    """Fake bin whose issue declares the exact contract in #110 phrasing.
+
+    Reproduces the source-issue #110 shape behind run 36498921649
+    (repair issue #121): the same numeric Actions artifact id, source
+    workflow run, and sha256 archive digest as #106, but phrased as
+    "Source workflow run" / "Artifact ID" / "Artifact archive digest"
+    with a "Source SHA" line and a retention-expiry line. The Render
+    path cannot deliver workflow artifacts, so the pre-creation gate
+    must refuse the attempt before any Render service is created --
+    in seconds with zero Render cost, instead of the ~11-minute
+    substituted-binary storm the pre-gate base burned.
+    """
+    bin_dir = Path(directory) / "bin-artifact-110"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'LOG="%s"\n' % curl_log +
+        'echo "GET $*" >> "$LOG"\n'
+        'printf "%s" "{}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    sleep = bin_dir / "sleep"
+    sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    sleep.chmod(0o755)
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "issue" && "$2" == "view" ]]; then\n'
+        "  printf '%s' "
+        "'{\"title\":\"P0: Fresh Render run -- execute exact OpenCode PR #12 artifact\","
+        "\"body\":\"Exact immutable artifact under test. Do not rebuild OpenCode. "
+        "Source SHA: 8ed6c749577d534c55ba9555ba4918ea8be95a97. "
+        "Source workflow run: 36492639568. "
+        "Artifact name: opencode-coding-linux-x64. "
+        "Artifact ID: 11001896223. "
+        "Artifact archive digest: "
+        "sha256:8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df. "
+        "Artifact retention expiry: 2026-10-28. "
+        "Download exact artifact ID 11001896223 from source run 36492639568. "
+        "Verify before launch. "
+        "Never silently fall back to another OpenCode binary.\"}'\n"
+        "  exit 0\n"
+        "fi\n"
+        'echo "unexpected gh call: $*" >&2\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    return str(bin_dir)
+
+
 def test_job_gate_references_exact_artifact_helpers_before_creation():
     # Static placement: the exact-artifact gate must decide before any
     # Render service can be created, so a blocked attempt costs nothing.
@@ -1982,6 +2037,31 @@ def test_job_refuses_exact_workflow_artifact_before_creation(tmp_path):
     assert proc.returncode != 0, combined
     assert "infrastructure-blocked" in combined
     assert "11001896223" in combined
+    assert "baseline binary" in combined
+    # No Render service was created and no state was recorded.
+    assert not log.exists() or "api.render.com/v1/services" not in log.read_text()
+    assert not state.exists() or "srv-" not in state.read_text()
+    assert not result.exists() or result.read_text().strip() == ""
+
+
+def test_job_refuses_issue110_exact_artifact_before_creation(tmp_path):
+    # Regression for run 36498921649 (repair issue #121): source issue
+    # #110 pins the same exact PR #12 artifact as #106 but with
+    # distinct phrasing ("Source workflow run", "Artifact ID",
+    # "Artifact archive digest", "Source SHA", plus a retention-expiry
+    # line). The pre-gate base burned ~11 minutes and four restarts on
+    # the substituted baseline binary for this contract; the gated
+    # path must refuse it in seconds with zero Render cost, exactly as
+    # the live run did (execute=failure, cleanup=success, no service).
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-artifact-110.log"
+    env["PATH"] = _write_exact_artifact_bin_issue110(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, combined
+    assert "infrastructure-blocked" in combined
+    assert "11001896223" in combined
+    assert "36492639568" in combined
     assert "baseline binary" in combined
     # No Render service was created and no state was recorded.
     assert not log.exists() or "api.render.com/v1/services" not in log.read_text()
