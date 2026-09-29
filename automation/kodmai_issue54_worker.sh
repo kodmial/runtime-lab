@@ -122,13 +122,27 @@ if git diff --no-ext-diff -- . ':!.github/workflows' | grep -Eiq '(github_pat_[A
   exit 32
 fi
 
-if [[ -z "$(git status --porcelain)" ]]; then
-  private_comment "<!-- bridge-task-needs-retry:54 --> Acceptance marker existed but no durable repository changes were produced. A fresh worker should continue."
+if [[ "$(git branch --show-current)" != "$BRANCH" ]]; then
+  echo "Rejected: agent changed the primary branch unexpectedly."
   exit 33
 fi
 
-git add -A
-git commit -m "test: reproduce historical Zen live path" >/dev/null 2>&1
+# The agent may already have committed its result locally. A clean working tree
+# is therefore not evidence that nothing was produced. Accept either uncommitted
+# durable changes or commits ahead of origin/main.
+dirty=false
+if [[ -n "$(git status --porcelain)" ]]; then
+  dirty=true
+  git add -A
+  git commit -m "test: reproduce historical Zen live path" >/dev/null 2>&1
+fi
+
+ahead="$(git rev-list --count origin/main..HEAD)"
+if [[ "$ahead" -eq 0 ]]; then
+  private_comment "<!-- bridge-task-needs-retry:54 --> Acceptance marker existed but the private branch contains no commit beyond current main. A fresh worker should continue."
+  exit 34
+fi
+
 git push -u origin "HEAD:$BRANCH" >/dev/null 2>&1
 
 PR_URL="$(gh pr create   --repo "$TARGET_REPO"   --base main   --head "$BRANCH"   --title "Prove historical Zen live path from clean runner"   --body "External worker result for #54. Private source and agent transcript were never uploaded to the public control repository. Sanitized acceptance evidence is contained in this private PR.\n\nCloses #54")"
