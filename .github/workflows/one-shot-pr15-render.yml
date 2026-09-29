@@ -11,13 +11,13 @@ permissions:
 
 jobs:
   publish:
-    if: github.event.head_commit.message == 'ops: run one-shot PR15 Render publish'
+    if: ${{ github.event.head_commit.message == 'ops: run one-shot PR15 Render publish' }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
       SOURCE_SHA: 842157c38db9f8178ed0eee7af32f7536fe2346e
       EXPECTED_SHA: 4e310bbdfab9b3fed5f95adabc1afe23b462be741a929901f058258e80328ded
-      EXPECTED_VERSION: 1.18.33
+      EXPECTED_VERSION: "1.18.33"
       EXPECTED_BYTES: "171222496"
     steps:
       - name: Checkout runtime-lab controller
@@ -66,8 +66,8 @@ jobs:
       - name: Populate issue 141 and dispatch Render directly
         env:
           GH_TOKEN: ${{ secrets.TAP_PAT || github.token }}
-          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
-          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.upload.outputs['artifact-id'] }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs['artifact-digest'] }}
         shell: bash
         run: |
           set -euo pipefail
