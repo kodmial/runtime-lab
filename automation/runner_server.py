@@ -180,6 +180,83 @@ except ImportError:  # pytest inserts automation/ on sys.path
     )
 
 try:  # pragma: no cover - import path depends on entrypoint
+    from automation.exact_artifact_delivery import (  # type: ignore[import-not-found]
+        EXACT_ARTIFACT_POST_PATH,
+        EXACT_ENV_ARCHIVE_SHA,
+        EXACT_ENV_BINARY_SHA,
+        EXACT_ENV_ID,
+        EXACT_ENV_NAME,
+        EXACT_ENV_RUN,
+        EXACT_ENV_VERSION,
+        EXACT_PUSH_MAX_BYTES,
+        build_exact_artifact_identity,
+        build_exact_evidence,
+        capture_proc_identity,
+        exact_artifact_abs_path,
+        materialize_exact_bytes,
+        sha256_of_file,
+        validate_exact_identity,
+        verify_binary_file,
+        verify_proc_exe_sha,
+    )
+except ImportError:  # pytest inserts automation/ on sys.path
+    try:
+        from exact_artifact_delivery import (  # type: ignore[no-redef]
+            EXACT_ARTIFACT_POST_PATH,
+            EXACT_ENV_ARCHIVE_SHA,
+            EXACT_ENV_BINARY_SHA,
+            EXACT_ENV_ID,
+            EXACT_ENV_NAME,
+            EXACT_ENV_RUN,
+            EXACT_ENV_VERSION,
+            EXACT_PUSH_MAX_BYTES,
+            build_exact_artifact_identity,
+            build_exact_evidence,
+            capture_proc_identity,
+            exact_artifact_abs_path,
+            materialize_exact_bytes,
+            sha256_of_file,
+            validate_exact_identity,
+            verify_binary_file,
+            verify_proc_exe_sha,
+        )
+    except ImportError:  # last resort: exact mode unavailable, fail closed per job
+        EXACT_ARTIFACT_POST_PATH = "/v1/exact-artifact"
+        EXACT_PUSH_MAX_BYTES = 256 * 1024 * 1024
+        EXACT_ENV_ID = "OPENCODE_EXACT_ARTIFACT_ID"
+        EXACT_ENV_BINARY_SHA = "OPENCODE_EXACT_ARTIFACT_SHA256"
+        EXACT_ENV_ARCHIVE_SHA = "OPENCODE_EXACT_ARCHIVE_SHA256"
+        EXACT_ENV_RUN = "OPENCODE_EXACT_SOURCE_RUN"
+        EXACT_ENV_VERSION = "OPENCODE_EXACT_VERSION"
+        EXACT_ENV_NAME = "OPENCODE_EXACT_ARTIFACT_NAME"
+
+        def build_exact_artifact_identity():  # type: ignore[misc]
+            raise ValueError("exact artifact support unavailable")
+
+        def validate_exact_identity(identity):  # type: ignore[misc]
+            raise ValueError("exact artifact support unavailable")
+
+        def exact_artifact_abs_path(*args, **kwargs):  # type: ignore[misc]
+            raise ValueError("exact artifact support unavailable")
+
+        def materialize_exact_bytes(*args, **kwargs):  # type: ignore[misc]
+            raise ValueError("exact artifact support unavailable")
+
+        def verify_binary_file(*args, **kwargs):  # type: ignore[misc]
+            raise ValueError("exact artifact support unavailable")
+
+        def capture_proc_identity(*args, **kwargs):  # type: ignore[misc]
+            raise ValueError("exact artifact support unavailable")
+
+        def verify_proc_exe_sha(*args, **kwargs):  # type: ignore[misc]
+            raise ValueError("exact artifact support unavailable")
+
+        def build_exact_evidence(*args, **kwargs):  # type: ignore[misc]
+            raise ValueError("exact artifact support unavailable")
+
+        def sha256_of_file(*args, **kwargs):  # type: ignore[misc]
+            raise ValueError("exact artifact support unavailable")
+try:  # pragma: no cover - import path depends on entrypoint
     from automation.opencode_artifacts import (
         ENV_ARTIFACT_ID,
         ENV_ARTIFACT_REF,
@@ -263,6 +340,16 @@ ENV_REGION_ALT = "WORKER_REGION"
 ENV_DEFAULT_MODEL = "RUNNER_DEFAULT_MODEL"
 ENV_OPENCODE_BIN = "RUNNER_OPENCODE_BIN"
 ENV_ALLOW_RUNTIME_INSTALL = "RUNNER_ALLOW_RUNTIME_INSTALL"
+# Exact workflow artifact selection (issue #128): expected checksums boot
+# with the worker via the create-service start command; the verified bytes
+# arrive via POST /v1/exact-artifact before the job is submitted. The
+# worker never holds a GitHub credential for this path.
+ENV_EXACT_ARTIFACT_ID = "OPENCODE_EXACT_ARTIFACT_ID"
+ENV_EXACT_BINARY_SHA = "OPENCODE_EXACT_ARTIFACT_SHA256"
+ENV_EXACT_ARCHIVE_SHA = "OPENCODE_EXACT_ARCHIVE_SHA256"
+ENV_EXACT_SOURCE_RUN = "OPENCODE_EXACT_SOURCE_RUN"
+ENV_EXACT_VERSION = "OPENCODE_EXACT_VERSION"
+ENV_EXACT_NAME = "OPENCODE_EXACT_ARTIFACT_NAME"
 # Optional exact-version pin for a requested experiment artifact (issue #86):
 # when set alongside OPENCODE_ARTIFACT_ID/SHA256, readiness additionally
 # requires the running artifact binary to report this version string.
@@ -554,6 +641,45 @@ def resolve_opencode_bin(raw: str | None) -> str:
     return found or "opencode"
 
 
+def _read_spool_bounded(path: str) -> str:
+    """Read a spool file with O(bound) memory (issue #80 stream bound).
+
+    Reads at most ~4x the stream bound in bytes, then head/tail truncates
+    to the stream bound in chars. Never raises: unreadable spools read
+    as "".
+    """
+    try:
+        limit = max(1, int(stream_output_limit()))
+    except Exception:
+        limit = 32768
+    try:
+        total = max(0, os.path.getsize(path))
+    except OSError:
+        return ""
+    if total == 0:
+        return ""
+    window = max(limit * 4, limit + 1024)
+    head_n = window // 2
+    tail_n = window - head_n
+    try:
+        with open(path, "rb") as handle:
+            if total <= head_n + tail_n:
+                raw = handle.read(head_n + tail_n + 1)
+                text = raw.decode("utf-8", errors="replace")
+                return _truncate(text, limit)
+            head = handle.read(head_n)
+            handle.seek(max(0, total - tail_n))
+            tail = handle.read(tail_n + 1)
+        combo = (
+            head.decode("utf-8", errors="replace")
+            + "\n...[spool-truncated %d bytes]...\n" % (total - head_n - tail_n)
+            + tail.decode("utf-8", errors="replace")
+        )
+        return _truncate(combo, limit)
+    except OSError:
+        return ""
+
+
 def read_resource_diagnostics() -> dict[str, Any]:
     """Best-effort lightweight process/resource signals (never secrets).
 
@@ -602,6 +728,109 @@ def read_resource_diagnostics() -> dict[str, Any]:
     return diagnostics
 
 
+def resolve_requested_exact_artifact(env: object = None) -> dict[str, str] | None:
+    """Resolve the expected exact workflow artifact from the environment.
+
+    Returns ``None`` in ordinary mode (no ``OPENCODE_EXACT_*`` selection).
+    Fails closed on partial selection: any exact env key without the full
+    supported conjunction is a configuration error, never a silent
+    baseline. The validated identity carries no credential material.
+    """
+    source = os.environ if env is None else env
+    if not hasattr(source, "get"):
+        raise ValueError("env must be a mapping")
+    get = lambda name: str(source.get(name, "") or "").strip()
+    artifact_id = get(ENV_EXACT_ARTIFACT_ID)
+    binary_sha = get(ENV_EXACT_BINARY_SHA).lower()
+    archive_sha = get(ENV_EXACT_ARCHIVE_SHA).lower()
+    run = get(ENV_EXACT_SOURCE_RUN)
+    version = get(ENV_EXACT_VERSION)
+    name = get(ENV_EXACT_NAME)
+    if not any([artifact_id, binary_sha, archive_sha, run, version, name]):
+        return None
+    candidate = {
+        "artifact_id": artifact_id,
+        "artifact_name": name or "opencode-coding-linux-x64",
+        "source_run_id": run,
+        "archive_sha256": archive_sha,
+        "binary_sha256": binary_sha,
+        "version": version,
+    }
+    return dict(validate_exact_identity(candidate))
+
+
+def exact_job_identity_from_payload(payload: Mapping[str, Any]) -> dict[str, str] | None:
+    """Extract and validate the per-job exact identity, if the job selects it.
+
+    Returns ``None`` for ordinary jobs. Raises ``ValueError`` on partial
+    or unsupported identities (fail closed before any OpenCode start).
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    raw = payload.get("exact_artifact")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("exact_artifact must be a mapping")
+    return dict(validate_exact_identity(dict(raw)))
+
+
+def store_exact_artifact_bytes(
+    data: bytes, identity: Mapping[str, str], base_dir: str | None = None
+) -> tuple[str, str]:
+    """Materialize pushed bytes at the deterministic absolute path.
+
+    Validates ``identity`` (full supported conjunction), writes ``data``
+    with :func:`materialize_exact_bytes`, and returns ``(path, sha256)``.
+    Enforces the push size bound. Never touches credentials.
+    """
+    validated = validate_exact_identity(dict(identity))
+    if not isinstance(data, (bytes, bytearray)) or not bytes(data):
+        raise ValueError("exact artifact push body must be non-empty bytes")
+    if len(bytes(data)) > EXACT_PUSH_MAX_BYTES:
+        raise ValueError(
+            "exact artifact push body too large (%d > %d bytes)"
+            % (len(bytes(data)), EXACT_PUSH_MAX_BYTES)
+        )
+    try:
+        from automation.exact_artifact_delivery import (  # type: ignore[import-not-found]
+            EXACT_PUSH_MAX_BYTES as _MAX,
+        )
+    except ImportError:
+        try:
+            from exact_artifact_delivery import (  # type: ignore[no-redef]
+                EXACT_PUSH_MAX_BYTES as _MAX,
+            )
+        except ImportError:
+            _MAX = EXACT_PUSH_MAX_BYTES
+    if len(bytes(data)) > int(_MAX):
+        raise ValueError("exact artifact push body exceeds the transport bound")
+    dest = exact_artifact_abs_path(validated["artifact_id"], base_dir=base_dir)
+    return materialize_exact_bytes(bytes(data), dest, validated["binary_sha256"])
+
+
+def probe_exact_version(binary_abs_path: str, expected_version: str) -> str:
+    """Run ``<abs> --version`` and require the exact expected version."""
+    if not os.path.isabs(binary_abs_path):
+        raise ValueError("exact binary path must be absolute")
+    completed = subprocess.run(
+        [binary_abs_path, "--version"],
+        timeout=60.0,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    output = ((completed.stdout or "") + " " + (completed.stderr or "")).strip()
+    version = output.split()[0] if output else ""
+    if completed.returncode != 0 or not version:
+        raise ValueError("exact --version probe failed: %s" % output[:200])
+    if version != expected_version:
+        raise ValueError(
+            "exact --version %r does not equal the expected %r" % (version, expected_version)
+        )
+    return version
+
+
 # ---------------------------------------------------------------------------
 # Job state machine + manager.
 # ---------------------------------------------------------------------------
@@ -631,6 +860,12 @@ class JobRecord:
     repository_url: str = ""
     base_ref: str = ""
     base_sha: str = ""
+    # Exact workflow artifact (issue #128): per-job machine-readable
+    # identity plus durable process-identity evidence. Both ride in the
+    # terminal result so the controller preserves proof outside the
+    # ephemeral worker.
+    exact_artifact: dict[str, Any] = field(default_factory=dict)
+    exact_evidence: dict[str, Any] = field(default_factory=dict)
 
 
 def check_transition(old: str, new: str) -> None:
@@ -663,6 +898,7 @@ class JobManager:
         max_retained_jobs: Optional[int] = None,
         requested_artifact: Optional[Mapping[str, str]] = None,
         requested_artifact_version: Optional[str] = None,
+        requested_exact_artifact: Optional[Mapping[str, str]] = None,
     ) -> None:
         if job_timeout_seconds <= 0:
             raise ValueError("job_timeout_seconds must be positive")
@@ -724,6 +960,24 @@ class JobManager:
             self.requested_artifact_version = str(
                 os.environ.get(ENV_EXPECTED_ARTIFACT_VERSION, "") or ""
             ).strip()
+        # Exact workflow-artifact selection (issue #128): expected
+        # checksums boot with the worker via OPENCODE_EXACT_* env. The
+        # verified bytes arrive via POST /v1/exact-artifact before the job
+        # is submitted, so env selection alone never gates readiness --
+        # each exact job verifies presence + checksum before starting
+        # OpenCode and fails closed otherwise. Partial env selection
+        # fails closed here, never as a silent baseline at job time.
+        if requested_exact_artifact is not None:
+            if not isinstance(requested_exact_artifact, Mapping):
+                raise ValueError("requested_exact_artifact must be a mapping")
+            try:
+                self.requested_exact_artifact: Optional[dict[str, str]] = dict(
+                    validate_exact_identity(dict(requested_exact_artifact))
+                )
+            except ValueError as exc:
+                raise ValueError("invalid requested_exact_artifact: %s" % exc) from exc
+        else:
+            self.requested_exact_artifact = resolve_requested_exact_artifact()
         self.start_time = start_time if start_time is not None else time.time()
         # Unique process/manager identity (issue #41): a fresh uuid per
         # manager startup proves a restart/replacement directly, even when
@@ -872,6 +1126,203 @@ class JobManager:
                 )
         return binary
 
+    # -- exact workflow artifacts (issue #128) ------------------------------
+
+    def _ensure_exact_binary(self, identity: Mapping[str, str]) -> str:
+        """Resolve the exact binary at its deterministic absolute path.
+
+        Zero fallback: only ``exact_artifact_abs_path`` for this identity
+        is consulted (absolute, executable, checksum-verified). Missing or
+        mismatched bytes raise before any OpenCode process starts. PATH,
+        the repo ``.opencode-bin``, ``$HOME/.opencode/bin``, installers,
+        the issue-#86 per-artifact path and the upstream baseline are
+        never consulted here.
+        """
+        validated = validate_exact_identity(dict(identity))
+        expected_sha = validated["binary_sha256"]
+        expected_version = validated["version"]
+        binary = exact_artifact_abs_path(validated["artifact_id"])
+        if not os.path.isabs(binary):
+            raise ValueError("exact binary path must be absolute: %r" % binary)
+        if not os.path.isfile(binary):
+            raise FileNotFoundError(
+                "exact artifact %s not materialized at %s; deliver it via "
+                "POST %s before submitting the job (controller-side "
+                "credentialed fetch, verified push, no rebuild)"
+                % (validated["artifact_id"], binary, EXACT_ARTIFACT_POST_PATH)
+            )
+        verify_binary_file(binary, expected_sha)
+        version = probe_exact_version(binary, expected_version)
+        if version != expected_version:
+            raise ValueError(
+                "exact artifact version mismatch: expected %r, running %r"
+                % (expected_version, version)
+            )
+        return binary
+
+    def _exact_materialized_state(self) -> dict[str, Any]:
+        """Best-effort materialization state for /health (never raises)."""
+        identity = getattr(self, "requested_exact_artifact", None)
+        if not identity:
+            return {"expected": False}
+        try:
+            path = exact_artifact_abs_path(str(identity.get("artifact_id", "")))
+        except ValueError as exc:
+            return {"expected": True, "present": False, "detail": str(exc)[:200]}
+        try:
+            actual = sha256_of_file(path)
+            return {
+                "expected": True,
+                "present": True,
+                "path": path,
+                "sha256": actual,
+                "matches": actual == str(identity.get("binary_sha256", "")).lower(),
+            }
+        except OSError as exc:
+            return {"expected": True, "present": False, "path": path,
+                    "detail": str(exc)[:200]}
+
+    def _run_exact_opencode_attempt(
+        self,
+        *,
+        binary_abs_path: str,
+        model: str,
+        task_text: str,
+        cwd: str,
+        workspace: str,
+        timeout: float,
+        expected_sha256: str,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Run one exact OpenCode attempt by absolute path with /proc proof.
+
+        Uses ``Popen`` directly (never the generic command-runner fallback
+        paths) so the child PID is available, captures
+        ``/proc/<pid>/exe`` realpath + SHA + cmdline + parent evidence
+        while the child runs, and fails closed when the executing SHA
+        differs from ``expected_sha256``. Output is spool-backed and
+        bounded (issue #80). Returns ``(CommandResult-like, evidence)``.
+        """
+        if not os.path.isabs(binary_abs_path):
+            raise ValueError("exact OpenCode must be launched by absolute path")
+        argv = build_opencode_command(model, task_text, opencode_bin=binary_abs_path)
+        if not os.path.isabs(argv[0]) or argv[0] != binary_abs_path:
+            raise ValueError("exact OpenCode argv[0] must be the absolute binary path")
+        assert_fresh_session_command(argv)
+        try:
+            try:
+                from automation.opencode_runner import (  # type: ignore[import-not-found]
+                    scrubbed_env_for_worker as _scrubbed,
+                )
+                from automation.opencode_runner import (  # type: ignore[import-not-found]
+                    assert_worker_env_clean as _assert_clean,
+                )
+                from automation.opencode_runner import (  # type: ignore[import-not-found]
+                    fresh_session_env as _fresh_env,
+                )
+                from automation.opencode_runner import (  # type: ignore[import-not-found]
+                    sanitize_output as _sanitize,
+                )
+            except ImportError:
+                from opencode_runner import (  # type: ignore[no-redef]
+                    scrubbed_env_for_worker as _scrubbed,
+                )
+                from opencode_runner import (  # type: ignore[no-redef]
+                    assert_worker_env_clean as _assert_clean,
+                )
+                from opencode_runner import (  # type: ignore[no-redef]
+                    fresh_session_env as _fresh_env,
+                )
+                from opencode_runner import (  # type: ignore[no-redef]
+                    sanitize_output as _sanitize,
+                )
+        except ImportError:
+            from opencode_runner import scrubbed_env_for_worker as _scrubbed  # type: ignore[no-redef]
+            from opencode_runner import assert_worker_env_clean as _assert_clean  # type: ignore[no-redef]
+            from opencode_runner import fresh_session_env as _fresh_env  # type: ignore[no-redef]
+            from opencode_runner import sanitize_output as _sanitize  # type: ignore[no-redef]
+        child_env = _scrubbed()
+        try:
+            session_env = _fresh_env(_session_scope_dir(workspace))
+            child_env.update(session_env)
+            db_path = session_env.get("OPENCODE_DB", "")
+            if db_path:
+                os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        except Exception:
+            pass
+        _assert_clean(child_env)
+        try:
+            budget = max(0.1, float(timeout))
+        except (TypeError, ValueError):
+            budget = 60.0
+        out_fd, out_path = tempfile.mkstemp(prefix="exact-stdout-", suffix=".log")
+        err_fd, err_path = tempfile.mkstemp(prefix="exact-stderr-", suffix=".log")
+        os.close(out_fd)
+        os.close(err_fd)
+        proc_identity: dict[str, str] = {}
+        file_sha = sha256_of_file(binary_abs_path)
+        proc = None
+        try:
+            with open(out_path, "wb") as out_handle, open(err_path, "wb") as err_handle:
+                proc = subprocess.Popen(
+                    argv, cwd=cwd, stdout=out_handle, stderr=err_handle,
+                    text=False, env=child_env,
+                )
+                pid = int(proc.pid)
+                try:
+                    proc_identity = dict(capture_proc_identity(pid))
+                except FileNotFoundError:
+                    proc_identity = {
+                        "pid": str(pid),
+                        "ppid": str(os.getpid()),
+                        "parent_pid": str(os.getpid()),
+                        "exe_realpath": os.path.realpath(binary_abs_path),
+                        "exe_sha256": file_sha,
+                        "cmdline": " ".join(argv)[:4000],
+                        "exe_source": "file (process exited before /proc read)",
+                    }
+                verify_proc_exe_sha(proc_identity, expected_sha256)
+                try:
+                    proc.wait(timeout=budget)
+                    timed_out = False
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    try:
+                        proc.wait(timeout=10)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+                    timed_out = True
+                returncode = int(proc.returncode)
+        finally:
+            pass
+        try:
+            stdout_text = _read_spool_bounded(out_path)
+            stderr_text = _read_spool_bounded(err_path)
+        finally:
+            for path in (out_path, err_path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        combined = _sanitize((stdout_text or "") + ("\n" if stdout_text or stderr_text else "") + (stderr_text or ""))
+        bounded = _bound_stream(combined)
+        result = CommandResult(
+            returncode=returncode, stdout=stdout_text, stderr=stderr_text,
+            timed_out=timed_out,
+        )
+        # Attach the bounded combined view plus identity for the caller.
+        result_combined = bounded
+        evidence = build_exact_evidence(
+            binary_abs_path, file_sha, proc_identity, argv, version="",
+        )
+        evidence["cmdline"] = str(proc_identity.get("cmdline", ""))[:4000]
+        return result, {"evidence": evidence, "proc_identity": proc_identity,
+                        "file_sha256": file_sha, "combined": result_combined,
+                        "pid": pid}
+
+
     # -- introspection ----------------------------------------------------
 
     def uptime_seconds(self, now: Optional[float] = None) -> float:
@@ -917,6 +1368,12 @@ class JobManager:
             "allow_runtime_install": bool(
                 getattr(self, "allow_runtime_install", True)
             ),
+            # Exact workflow artifact (issue #128): booted expectation plus
+            # materialization state. Bytes arrive via POST /v1/exact-artifact
+            # after boot, so expectation alone never gates readiness -- each
+            # exact job verifies presence + checksum before starting.
+            "exact_artifact": dict(getattr(self, "requested_exact_artifact", None) or {}),
+            "exact_materialized": self._exact_materialized_state(),
         }
 
     def job_counts(self) -> dict[str, int]:
@@ -954,6 +1411,33 @@ class JobManager:
         if payload.get("model"):
             return str(payload["model"]).strip()
         return self.default_model
+
+    def _exact_identity_for_job(self, payload: Mapping[str, Any]) -> dict[str, str] | None:
+        """Effective exact identity for one job (payload wins, env is fallback).
+
+        Returns ``None`` for ordinary jobs. Raises ``ValueError`` when a
+        job selects an exact artifact but the selection is partial,
+        unsupported, or disagrees with the worker's booted expectation --
+        fail closed before any OpenCode start, never a silent baseline.
+        """
+        payload_identity = exact_job_identity_from_payload(payload)
+        env_identity = getattr(self, "requested_exact_artifact", None)
+        if payload_identity is None and env_identity is None:
+            return None
+        if payload_identity is not None and env_identity is not None:
+            if (
+                payload_identity.get("artifact_id") != env_identity.get("artifact_id")
+                or payload_identity.get("binary_sha256", "").lower()
+                != str(env_identity.get("binary_sha256", "")).lower()
+            ):
+                raise ValueError(
+                    "job exact_artifact disagrees with the worker's expected "
+                    "exact artifact; refusing to substitute"
+                )
+            return dict(payload_identity)
+        return dict(payload_identity) if payload_identity is not None else dict(
+            env_identity or {}
+        )
 
     def _validate_submit_payload(self, payload: Mapping[str, Any]) -> tuple[str, int, str, str, float, str, str, str]:
         """Validate shape.
@@ -1035,6 +1519,27 @@ class JobManager:
                     return existing, False
 
         task_text, issue_number, region, model, timeout, repository_url, base_ref, base_sha = self._validate_submit_payload(payload)
+        # Exact-artifact selection is validated before any worker process
+        # starts (fail closed on partial/unsupported identity, never a
+        # silent baseline). Invalid selection becomes a terminal
+        # rejection, not an execution.
+        try:
+            job_exact = self._exact_identity_for_job(payload)
+        except ValueError as exc:
+            record = self._store_terminal_rejection(
+                payload=payload,
+                key=key,
+                task_text=task_text,
+                issue_number=issue_number,
+                region=region,
+                model=model,
+                timeout=timeout,
+                repository_url=repository_url,
+                base_ref=base_ref,
+                base_sha=base_sha,
+                error="invalid exact_artifact selection: %s" % exc,
+            )
+            return record, True
 
         # Region policy is enforced BEFORE any command execution. A forbidden
         # region produces a deterministic failed job; the command runner is
@@ -1065,6 +1570,7 @@ class JobManager:
         metadata = self._build_metadata(
             payload, issue_number, region, model, timeout,
             repository_url=repository_url, base_ref=base_ref, base_sha=base_sha,
+            exact_artifact=job_exact,
         )
         now = time.time()
         record = JobRecord(
@@ -1082,6 +1588,7 @@ class JobManager:
             repository_url=repository_url,
             base_ref=base_ref,
             base_sha=base_sha,
+            exact_artifact=dict(job_exact) if job_exact else {},
         )
         # Record the task inside the isolated workspace before execution so
         # isolation is observable even for the default synthetic command.
@@ -1164,6 +1671,7 @@ class JobManager:
         repository_url: str = "",
         base_ref: str = "",
         base_sha: str = "",
+        exact_artifact: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         incoming = payload.get("metadata")
         metadata: dict[str, Any] = {}
@@ -1197,6 +1705,18 @@ class JobManager:
             metadata["base_ref"] = base_ref
         if base_sha:
             metadata["base_sha"] = base_sha
+        # Exact-artifact identity (issue #128): machine-readable proof of
+        # which immutable bytes the job must run. Survives in the terminal
+        # result so the controller preserves it outside the worker.
+        if exact_artifact:
+            metadata["exact_artifact"] = dict(exact_artifact)
+        elif isinstance(payload.get("exact_artifact"), Mapping):
+            try:
+                metadata["exact_artifact"] = dict(
+                    validate_exact_identity(dict(payload["exact_artifact"]))
+                )
+            except ValueError:
+                pass
         return metadata
 
     # -- state machine ------------------------------------------------------
@@ -1498,28 +2018,83 @@ class JobManager:
                              exit_code=None)
                 return
 
-        # -- provision/resolve the OpenCode CLI ------------------------------
+        # -- resolve exact vs ordinary mode before provisioning ---------------
+        # Exact mode (issue #128) is selected by the per-job identity
+        # recorded at submit time. Ordinary jobs keep the historical
+        # resolution order (override > deploy artifact > PATH > HOME >
+        # installer/baseline) unchanged.
+        job_exact: dict[str, str] | None = None
         try:
-            remaining = self._remaining(deadline)
-            if remaining <= 0:
-                raise TimeoutError("job timed out")
-            opencode_bin = self._ensure_opencode_binary(record.workspace, remaining)
-        except TimeoutError:
-            self._finish(job_id, "timed_out", summary="",
-                         error="job timed out after %.1f seconds" % timeout,
-                         exit_code=124)
-            return
-        except FileNotFoundError as exc:
+            stored = getattr(record, "exact_artifact", None)
+            if stored:
+                job_exact = dict(validate_exact_identity(dict(stored)))
+            else:
+                job_exact = self._exact_identity_for_job(payload)
+                if job_exact:
+                    record.exact_artifact = dict(job_exact)
+                    with self._lock:
+                        record.metadata["exact_artifact"] = dict(job_exact)
+        except ValueError as exc:
             self._finish(job_id, "failed", summary="",
-                         error="%s" % _truncate(sanitize_output(str(exc))),
-                         exit_code=127)
-            return
-        except Exception as exc:
-            self._finish(job_id, "failed", summary="",
-                         error="execution failed: %s" % sanitize_output(str(exc))[:1000])
+                         error="invalid exact_artifact selection: %s"
+                         % sanitize_output(str(exc))[:1000],
+                         exit_code=None)
             return
 
+        # -- provision/resolve the OpenCode CLI ------------------------------
+        opencode_bin = ""
+        exact_evidence: dict[str, Any] = {}
+        if job_exact is not None:
+            # Zero fallback: only the deterministic absolute path with a
+            # matching SHA-256 (plus the exact --version) is accepted.
+            # Missing/mismatched bytes fail closed before any start.
+            try:
+                remaining = self._remaining(deadline)
+                if remaining <= 0:
+                    raise TimeoutError("job timed out")
+                opencode_bin = self._ensure_exact_binary(job_exact)
+                if not os.path.isabs(opencode_bin):
+                    raise ValueError("exact binary path must be absolute")
+            except TimeoutError:
+                self._finish(job_id, "timed_out", summary="",
+                             error="job timed out after %.1f seconds" % timeout,
+                             exit_code=124)
+                return
+            except (FileNotFoundError, ValueError) as exc:
+                self._finish(job_id, "failed", summary="",
+                             error="exact artifact not runnable: %s"
+                             % _truncate(sanitize_output(str(exc))),
+                             exit_code=127)
+                return
+            except Exception as exc:
+                self._finish(job_id, "failed", summary="",
+                             error="execution failed: %s" % sanitize_output(str(exc))[:1000])
+                return
+        else:
+            try:
+                remaining = self._remaining(deadline)
+                if remaining <= 0:
+                    raise TimeoutError("job timed out")
+                opencode_bin = self._ensure_opencode_binary(record.workspace, remaining)
+            except TimeoutError:
+                self._finish(job_id, "timed_out", summary="",
+                             error="job timed out after %.1f seconds" % timeout,
+                             exit_code=124)
+                return
+            except FileNotFoundError as exc:
+                self._finish(job_id, "failed", summary="",
+                             error="%s" % _truncate(sanitize_output(str(exc))),
+                             exit_code=127)
+                return
+            except Exception as exc:
+                self._finish(job_id, "failed", summary="",
+                             error="execution failed: %s" % sanitize_output(str(exc))[:1000])
+                return
+
         # -- invoke OpenCode (preferred, then one same-worker fallback) ------
+        # Exact mode launches the absolute path via Popen with /proc
+        # identity capture per attempt; ordinary mode keeps the generic
+        # command-runner path unchanged.
         models_to_try = [requested_model]
         if requested_model == PREFERRED_MODEL:
             models_to_try.append(FALLBACK_MODEL)
@@ -1528,6 +2103,7 @@ class JobManager:
         last_exit: Optional[int] = None
         first_error = ""
         opencode_timed_out = False
+        exact_attempt_evidence: dict[str, Any] = {}
         for attempt_index, model in enumerate(models_to_try):
             try:
                 validate_worker_region(region)
@@ -1535,6 +2111,59 @@ class JobManager:
                 self._finish(job_id, "failed", summary="",
                              error="region %r is forbidden for Muse jobs (%s)" % (region, exc))
                 return
+            if job_exact is not None:
+                try:
+                    remaining = self._remaining(deadline)
+                    if remaining <= 0:
+                        raise TimeoutError("job timed out")
+                    attempt_result, attempt_info = self._run_exact_opencode_attempt(
+                        binary_abs_path=opencode_bin,
+                        model=model,
+                        task_text=task_text,
+                        cwd=checkout_dir,
+                        workspace=record.workspace,
+                        timeout=remaining,
+                        expected_sha256=str(job_exact.get("binary_sha256", "")),
+                    )
+                except TimeoutError:
+                    opencode_timed_out = True
+                    break
+                except ValueError as exc:
+                    # /proc mismatch, credential leak, or non-absolute
+                    # launch: fail closed, never fall back to another
+                    # binary.
+                    self._finish(job_id, "failed", summary="",
+                                 error="exact process identity failure: %s"
+                                 % sanitize_output(str(exc))[:1000],
+                                 exit_code=None,
+                                 exact_evidence=exact_attempt_evidence or None)
+                    return
+                except Exception as exc:
+                    self._finish(job_id, "failed", summary="",
+                                 error="execution failed: %s" % sanitize_output(str(exc))[:1000])
+                    return
+                combined = str(attempt_info.get("combined", "") or "")
+                last_output = combined
+                last_exit = int(attempt_result.returncode)
+                executed_model = model
+                exact_attempt_evidence = dict(attempt_info.get("evidence", {}) or {})
+                exact_attempt_evidence["attempt_model"] = model
+                if attempt_result.timed_out:
+                    opencode_timed_out = True
+                    break
+                if attempt_result.returncode == 0:
+                    first_error = ""
+                    break
+                if (
+                    attempt_index == 0
+                    and model == PREFERRED_MODEL
+                    and len(models_to_try) > 1
+                    and is_model_unavailable_error(combined)
+                ):
+                    first_error = _truncate(combined)
+                    continue
+                first_error = _truncate(combined)
+                break
             try:
                 cmd = build_opencode_command(model, task_text, opencode_bin=opencode_bin)
             except ValueError as exc:
@@ -1597,6 +2226,7 @@ class JobManager:
                 exit_code=last_exit if last_exit is not None else 124,
                 output=_truncate(last_output, _MAX_OUTPUT_CHARS),
                 changes=changes, executed_model=executed_model,
+                exact_evidence=exact_attempt_evidence or None,
             )
             return
 
@@ -1616,6 +2246,7 @@ class JobManager:
                 error="opencode exited with code %d: %s" % (last_exit, detail),
                 exit_code=last_exit, output=output,
                 changes=changes, executed_model=executed_model,
+                exact_evidence=exact_attempt_evidence or None,
             )
             return
 
@@ -1647,6 +2278,7 @@ class JobManager:
                     % sanitize_output(str(exc))[:1000],
                     exit_code=None, output=output,
                     changes=changes, executed_model=executed_model,
+                    exact_evidence=exact_attempt_evidence or None,
                 )
                 return
 
@@ -1658,20 +2290,23 @@ class JobManager:
             self._finish(job_id, "timed_out", summary="",
                          error="job timed out after %.1f seconds" % timeout,
                          exit_code=124, output=output,
-                         changes=changes, executed_model=executed_model)
+                         changes=changes, executed_model=executed_model,
+                         exact_evidence=exact_attempt_evidence or None)
             return
         except Exception as exc:
             self._finish(job_id, "failed", summary="",
                          error="execution failed: %s" % sanitize_output(str(exc))[:1000],
                          exit_code=None, output=output,
-                         changes=[], executed_model=executed_model)
+                         changes=[], executed_model=executed_model,
+                         exact_evidence=exact_attempt_evidence or None)
             return
         if result.timed_out:
             changes = self._best_effort_changes(checkout_dir)
             self._finish(job_id, "timed_out", summary="",
                          error="job timed out after %.1f seconds" % timeout,
                          exit_code=result.returncode, output=output,
-                         changes=changes, executed_model=executed_model)
+                         changes=changes, executed_model=executed_model,
+                         exact_evidence=exact_attempt_evidence or None)
             return
         if result.returncode != 0:
             detail = sanitize_output(result.stderr.strip() or result.stdout.strip() or "status failed")
@@ -1679,7 +2314,8 @@ class JobManager:
                          error="change detection failed (code %d): %s"
                          % (result.returncode, _truncate(detail)),
                          exit_code=result.returncode, output=output,
-                         changes=[], executed_model=executed_model)
+                         changes=[], executed_model=executed_model,
+                         exact_evidence=exact_attempt_evidence or None)
             return
         try:
             changes = build_changes(result.stdout or "", checkout_dir)
@@ -1687,7 +2323,8 @@ class JobManager:
             self._finish(job_id, "failed", summary="",
                          error="change extraction failed: %s" % sanitize_output(str(exc))[:1000],
                          exit_code=None, output=output,
-                         changes=[], executed_model=executed_model)
+                         changes=[], executed_model=executed_model,
+                         exact_evidence=exact_attempt_evidence or None)
             return
         change_summary = summarize_changes(changes)
         if not changes:
@@ -1697,6 +2334,7 @@ class JobManager:
         self._finish(
             job_id, "succeeded", summary=summary, error="", exit_code=0,
             output=output, changes=changes, executed_model=executed_model,
+            exact_evidence=exact_attempt_evidence or None,
         )
 
     def _best_effort_changes(self, checkout_dir: str) -> list[dict[str, Any]]:
@@ -1715,6 +2353,7 @@ class JobManager:
         self, job_id: str, status: str, summary: str, error: str, exit_code: Optional[int] = None,
         output: str = "", changes: Optional[list[dict[str, Any]]] = None,
         executed_model: str = "",
+        exact_evidence: Optional[Mapping[str, Any]] = None,
     ) -> None:
         evicted_workspaces: list[str] = []
         with self._lock:
@@ -1736,6 +2375,19 @@ class JobManager:
             if executed_model:
                 record.executed_model = executed_model
                 record.metadata["executed_model"] = executed_model
+            # Exact/process identity evidence (issue #128): durable proof
+            # returned in the terminal result so the controller preserves
+            # it outside the ephemeral worker.
+            if exact_evidence is not None:
+                record.exact_evidence = dict(exact_evidence)
+                record.metadata["exact_evidence"] = dict(exact_evidence)
+                for key in ("exe_realpath", "exe_sha256", "pid", "file_sha256",
+                            "binary_sha256", "artifact_id", "cmdline"):
+                    value = dict(exact_evidence).get(key, "")
+                    if value:
+                        record.metadata["exact_" + key] = value
+            if record.exact_artifact and "exact_artifact" not in record.metadata:
+                record.metadata["exact_artifact"] = dict(record.exact_artifact)
             record.updated_at = time.time()
             # Bound accumulated history: without eviction every terminal
             # job's output/error/changes plus its workspace clone stays
@@ -1781,13 +2433,24 @@ class JobManager:
 
     def to_result_dict(self, record: JobRecord) -> dict[str, Any]:
         executed = record.executed_model or str(record.metadata.get("model", ""))
+        metadata = dict(record.metadata)
+        # Exact/process identity evidence (issue #128) is part of the
+        # durable terminal result: the controller persists the whole
+        # result outside the ephemeral worker, so restarts/OOMs cannot
+        # erase proof. Kept compatible with the cgroup/instance
+        # telemetry path (memory_telemetry merges alongside, never
+        # overwriting these keys).
+        if record.exact_artifact and "exact_artifact" not in metadata:
+            metadata["exact_artifact"] = dict(record.exact_artifact)
+        if record.exact_evidence and "exact_evidence" not in metadata:
+            metadata["exact_evidence"] = dict(record.exact_evidence)
         return {
             "job_id": record.job_id,
             "status": record.status,
             "success": record.success,
             "summary": record.summary,
             "error": record.error,
-            "metadata": dict(record.metadata),
+            "metadata": metadata,
             "exit_code": record.exit_code,
             "output": record.output,
             "changes": [dict(item) for item in record.changes],
@@ -1798,6 +2461,8 @@ class JobManager:
             # Top-level process identity mirrors the metadata copy so
             # controllers need not dig into metadata to prove restarts.
             "runner_instance_id": str(record.metadata.get("runner_instance_id", "")),
+            "exact_artifact": dict(record.exact_artifact),
+            "exact_evidence": dict(record.exact_evidence),
         }
 
 
@@ -1889,6 +2554,9 @@ class RunnerHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         manager = self.manager
         path = self._path_only()
+        if path == EXACT_ARTIFACT_POST_PATH:
+            self._handle_exact_artifact_post()
+            return
         if path != RUNNER_SUBMIT_JOB_PATH:
             self._send_json(404, {"error": "not found"})
             return
@@ -1914,6 +2582,85 @@ class RunnerHandler(BaseHTTPRequestHandler):
             self._send_json(200, body)
         else:
             self._send_json(201, body)
+
+    def _handle_exact_artifact_post(self) -> None:
+        """Accept verified exact-artifact bytes (controller push transport).
+
+        Request: ``application/octet-stream`` body (the exact binary
+        bytes) with identity headers (``X-Exact-Artifact-Id``,
+        ``X-Exact-Artifact-Sha256``, ``X-Exact-Source-Run``,
+        ``X-Exact-Archive-Sha256``, ``X-Exact-Version``,
+        ``X-Exact-Artifact-Name``). The handler validates the full
+        supported identity, materializes the bytes at the deterministic
+        absolute path, verifies the SHA-256, and returns the path + sha.
+        Missing/mismatched artifacts fail closed with 400/409; the body
+        is bounded by the transport limit. No GitHub credential is
+        accepted or required here -- the controller fetched with its own
+        credential before pushing bytes.
+        """
+        manager = self.manager
+        if manager is None:
+            self._send_json(503, {"error": "runner is not ready", "ready": False})
+            return
+        lowered = {str(k).lower(): v for k, v in dict(self.headers).items()}
+        identity = {
+            "artifact_id": str(lowered.get("x-exact-artifact-id", "") or "").strip(),
+            "artifact_name": str(lowered.get("x-exact-artifact-name", "") or "").strip()
+            or "opencode-coding-linux-x64",
+            "source_run_id": str(lowered.get("x-exact-source-run", "") or "").strip(),
+            "archive_sha256": str(lowered.get("x-exact-archive-sha256", "") or "").strip().lower(),
+            "binary_sha256": str(lowered.get("x-exact-artifact-sha256", "") or "").strip().lower(),
+            "version": str(lowered.get("x-exact-version", "") or "").strip(),
+        }
+        try:
+            validated = validate_exact_identity(identity)
+        except ValueError as exc:
+            self._send_json(400, {"error": "invalid exact artifact identity: %s" % exc})
+            return
+        expected = getattr(manager, "requested_exact_artifact", None)
+        if expected and (
+            validated.get("artifact_id") != expected.get("artifact_id")
+            or validated.get("binary_sha256", "").lower()
+            != str(expected.get("binary_sha256", "")).lower()
+        ):
+            self._send_json(
+                409,
+                {"error": "pushed exact artifact disagrees with the worker expectation"},
+            )
+            return
+        length = self.headers.get("Content-Length")
+        try:
+            count = int(str(length or "").strip())
+        except ValueError:
+            self._send_json(400, {"error": "exact push requires Content-Length"})
+            return
+        if count <= 0 or count > EXACT_PUSH_MAX_BYTES:
+            self._send_json(400, {"error": "exact push body size out of bounds"})
+            return
+        try:
+            data = self.rfile.read(count)
+        except Exception as exc:
+            self._send_json(400, {"error": "could not read exact push body: %s" % exc})
+            return
+        if not data or len(data) != count:
+            self._send_json(400, {"error": "short exact push body"})
+            return
+        try:
+            path, sha = store_exact_artifact_bytes(bytes(data), validated)
+        except ValueError as exc:
+            self._send_json(409, {"error": "exact artifact rejected: %s" % exc})
+            return
+        except OSError as exc:
+            self._send_json(500, {"error": "could not materialize exact artifact: %s" % exc})
+            return
+        self._send_json(201, {
+            "ok": True,
+            "artifact_id": validated["artifact_id"],
+            "source_run_id": validated["source_run_id"],
+            "path": path,
+            "sha256": sha,
+            "version": validated["version"],
+        })
 
     # Only GET/POST are part of the contract.
     def do_PUT(self) -> None:  # noqa: N802
@@ -1969,6 +2716,7 @@ def build_manager_from_env(
             if os.environ.get(ENV_ALLOW_RUNTIME_INSTALL) not in (None, "")
             else None
         ),
+        requested_exact_artifact=resolve_requested_exact_artifact(),
     )
 
 
