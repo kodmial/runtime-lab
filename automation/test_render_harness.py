@@ -2121,3 +2121,83 @@ def test_job_refuses_issue110_exact_artifact_before_creation(tmp_path):
     assert payload["superseded"] is True
     assert payload["successor"]["successor_artifact_id"] == "11004835952"
     assert payload["successor"]["successor_source_run_id"] == "36498663107"
+
+
+def test_job_names_superseded_hold_before_exact_gate():
+    # Static placement for repair issue #161 (run 36632062583): that
+    # run executed at a base already containing the #154
+    # superseded_dispatch_guard, yet the retired #106 body
+    # redispatched and refused identically while minting one more P0
+    # repair, because the scheduler envelope and the repair-reset
+    # unpause never consult decide_eligible. The executor -- the one
+    # production chokepoint this repository owns -- must therefore
+    # name the retired-contract hold FIRST with one stable
+    # machine-greppable verdict line, while the exact-artifact gate
+    # stays the single refusal choke point. Ordinary and
+    # supported-contract bodies must never trip the hold (locked at
+    # the Python level in test_render_lifecycle.py).
+    job = _read("render-job.sh")
+    assert "superseded_dispatch_guard" in job
+    assert "held-superseded" in job
+    assert "SUPERSEDED_HOLD_JSON" in job
+    assert job.index("superseded_dispatch_guard") < job.index(
+        "EXACT_ARTIFACT_BLOCKER")
+    assert job.index("held-superseded") < job.index(
+        "One service creation per attempt")
+    # The hold is advisory and read-only: no GitHub writes are added.
+    assert "gh issue edit" not in job
+    assert "gh issue comment" not in job
+    assert "gh issue close" not in job
+
+
+def test_job_emits_hold_verdict_for_retired_contract(tmp_path):
+    # Live regression for run 36632062583 (repair issue #161): the
+    # retired #106-shaped body must emit the stable hold verdict naming
+    # both the retired contract and its successor, then refuse through
+    # the unchanged exact-artifact gate with zero Render cost.
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-hold.log"
+    env["PATH"] = _write_exact_artifact_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, combined
+    assert "held-superseded" in combined
+    assert "11001896223" in combined
+    assert "36492639568" in combined
+    assert "11004835952" in combined
+    assert "36498663107" in combined
+    # The hold names the verdict; the gate still owns the refusal.
+    assert combined.index("held-superseded") < combined.index(
+        "infrastructure-blocked")
+    assert "baseline binary" in combined
+    assert not log.exists() or "api.render.com/v1/services" not in log.read_text()
+    assert not state.exists() or "srv-" not in state.read_text()
+    payload = json.loads(result.read_text())
+    assert payload["status"] == "infrastructure-blocked"
+    assert payload["permanent"] is True
+    assert payload["superseded"] is True
+    assert payload["successor"]["successor_artifact_id"] == "11004835952"
+
+
+def test_job_emits_hold_verdict_for_retired_contract_issue110(tmp_path):
+    # Same hold verdict for the #110 phrasing of the identical retired
+    # contract (run 36632062583 pins the #106 body; the #110 body pins
+    # the same artifact/run pair with distinct wording and must hold
+    # identically instead of reading like a merely undeliverable
+    # contract).
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-hold-110.log"
+    env["PATH"] = _write_exact_artifact_bin_issue110(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, combined
+    assert "held-superseded" in combined
+    assert "11001896223" in combined
+    assert "11004835952" in combined
+    assert combined.index("held-superseded") < combined.index(
+        "infrastructure-blocked")
+    assert not log.exists() or "api.render.com/v1/services" not in log.read_text()
+    assert not state.exists() or "srv-" not in state.read_text()
+    payload = json.loads(result.read_text())
+    assert payload["superseded"] is True
+    assert payload["successor"]["successor_artifact_id"] == "11004835952"
