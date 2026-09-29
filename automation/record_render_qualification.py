@@ -36,11 +36,26 @@ def event_delta(summary: Mapping[str, Any], name: str) -> int:
 def nested_identity(result: Mapping[str, Any]) -> tuple[str, str, str]:
     identity = result.get("executable_identity")
     identity = identity if isinstance(identity, Mapping) else {}
+    exact = result.get("exact_evidence")
+    exact = exact if isinstance(exact, Mapping) else {}
+    metadata = result.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    meta_exact = metadata.get("exact_evidence")
+    meta_exact = meta_exact if isinstance(meta_exact, Mapping) else {}
+
+    # The runner's native exact-artifact contract exposes file_sha256
+    # (controller/worker materialized bytes) and exe_sha256/exe_realpath
+    # (/proc proof). Read that contract directly instead of requiring an
+    # obsolete executable_identity translation layer.
     downloaded = str(
         result.get("downloaded_binary_sha256")
         or result.get("materialized_binary_sha256")
         or identity.get("downloaded_binary_sha256")
         or identity.get("materialized_binary_sha256")
+        or exact.get("file_sha256")
+        or exact.get("binary_sha256")
+        or meta_exact.get("file_sha256")
+        or meta_exact.get("binary_sha256")
         or ""
     )
     proc_sha = str(
@@ -48,11 +63,15 @@ def nested_identity(result: Mapping[str, Any]) -> tuple[str, str, str]:
         or result.get("proc_exe_sha256")
         or identity.get("proc_exe_sha256")
         or identity.get("executed_binary_sha256")
+        or exact.get("exe_sha256")
+        or meta_exact.get("exe_sha256")
         or ""
     )
     proc_path = str(
         result.get("proc_exe_realpath")
         or identity.get("proc_exe_realpath")
+        or exact.get("exe_realpath")
+        or meta_exact.get("exe_realpath")
         or ""
     )
     return downloaded, proc_sha, proc_path
