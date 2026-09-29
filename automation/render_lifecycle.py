@@ -587,6 +587,67 @@ def known_workflow_artifact_advisory(
         return ""
 
 
+# Superseded workflow artifacts (issue #133): structurally valid exact
+# contracts the project has retired on purpose, so redispatching the
+# same issue body can never become executable. Keyed by immutable
+# (artifact_id, source_run_id), mirroring the coordinator's
+# SUPERSEDED_ARTIFACT_IDS (automation/issue130_coordinator.py) plus the
+# owner direction on source issue #110 declaring artifact 11001896223
+# obsolete in favor of the version-stamped 11004835952 candidate owned
+# by the #130 coordinator. Data, not logic: retiring a future artifact
+# adds one entry here without touching the blocker itself.
+SUPERSEDED_WORKFLOW_ARTIFACTS = {
+    ("11001896223", "36492639568"): {
+        "successor_artifact_id": "11004835952",
+        "successor_source_run_id": "36498663107",
+        "successor_archive_sha256": (
+            "0f0e3a6e787bcc80cbe7cff90ee0a948448bc7887633a2d5b8df19409e24b040"
+        ),
+        "successor_binary_sha256": (
+            "f09d24273e95c3045e23ee37ecd98f8e31e9aa71ec30f75444df8441f5485966"
+        ),
+        "successor_version": "1.18.33",
+        "owner": "automation/issue130_coordinator.py "
+        "(objective-130-state.json, active candidate 11004835952)",
+    },
+}
+
+
+def superseded_workflow_artifact_notice(
+    requirement: Mapping[str, Any] | None,
+) -> str:
+    """Return the validated superseded-artifact redirect notice, else "".
+
+    Never raises: unparsable or non-superseded input means "no
+    notice", never a gate trip and never a blocker failure.
+    """
+    try:
+        if not isinstance(requirement, Mapping):
+            return ""
+        artifact = str(requirement.get("artifact_id", "") or "").strip()
+        run = str(requirement.get("source_run_id", "") or "").strip()
+        entry = SUPERSEDED_WORKFLOW_ARTIFACTS.get((artifact, run))
+        if not entry:
+            return ""
+        return (
+            " Superseded-artifact notice: artifact %s (workflow run %s) "
+            "is retired and will never execute on Render -- redispatching "
+            "this exact contract refuses identically. Use the current "
+            "immutable successor artifact %s (workflow run %s, version %s) "
+            "via %s instead of retrying this body."
+            % (
+                artifact,
+                run,
+                entry["successor_artifact_id"],
+                entry["successor_source_run_id"],
+                entry["successor_version"],
+                entry["owner"],
+            )
+        )
+    except Exception:
+        return ""
+
+
 def exact_workflow_artifact_blocker(requirement: Mapping[str, Any]) -> str:
     """Explain why an exact workflow artifact cannot run on Render (issue #115).
 
@@ -626,6 +687,9 @@ def exact_workflow_artifact_blocker(requirement: Mapping[str, Any]) -> str:
     if digest:
         reason += " Expected archive digest sha256:%s." % digest
     reason += known_workflow_artifact_advisory(
+        requirement if isinstance(requirement, Mapping) else None
+    )
+    reason += superseded_workflow_artifact_notice(
         requirement if isinstance(requirement, Mapping) else None
     )
     return reason
@@ -681,6 +745,22 @@ def build_exact_artifact_refusal_result(
     except Exception:
         advisory = ""
     try:
+        notice = superseded_workflow_artifact_notice(
+            requirement if isinstance(requirement, Mapping) else None
+        )
+    except Exception:
+        notice = ""
+    try:
+        successor: dict[str, Any] = {}
+        if isinstance(requirement, Mapping):
+            artifact_key = str(requirement.get("artifact_id", "") or "").strip()
+            run_key = str(requirement.get("source_run_id", "") or "").strip()
+            entry = SUPERSEDED_WORKFLOW_ARTIFACTS.get((artifact_key, run_key))
+            if entry:
+                successor = dict(entry)
+    except Exception:
+        successor = {}
+    try:
         issue = int(issue_number)
     except (TypeError, ValueError):
         issue = 0
@@ -698,6 +778,8 @@ def build_exact_artifact_refusal_result(
         "archive_sha256": digest,
         "source_sha": source_sha,
         "has_known_advisory": bool(advisory),
+        "superseded": bool(notice),
+        "successor": successor,
         "issue_number": issue,
         "run_id": run_label,
         "docs": {

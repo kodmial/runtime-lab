@@ -99,13 +99,39 @@ def has_per_issue_render_concurrency(text: str) -> bool:
     return "group: runtime-lab-render-${{ inputs.issue_number }}" in text
 
 
+def has_serialized_render_concurrency(text: str) -> bool:
+    """Check the Render executor uses the intentional single-service mutex.
+
+    Commit 8624427 serializes ephemeral Render workers globally as
+    ``group: runtime-lab-render-single-service`` (only one
+    automation-owned worker at a time). This is the current workflow
+    intent, so the audit treats it as valid concurrency alongside the
+    legacy per-issue group.
+    """
+    return "group: runtime-lab-render-single-service" in text
+
+
+def has_valid_render_concurrency(text: str) -> bool:
+    """True for either accepted Render concurrency model."""
+    return has_per_issue_render_concurrency(
+        text
+    ) or has_serialized_render_concurrency(text)
+
+
 def has_global_render_mutex(text: str) -> bool:
-    """Detect a global single-job Render mutex (forbidden by #1/#9/#10)."""
+    """Detect a global single-job Render mutex (forbidden by #1/#9/#10).
+
+    The intentional ``runtime-lab-render-single-service`` group is
+    exempt: it is the current global serialization mechanism, not an
+    accidental bare ``runtime-lab-render`` mutex.
+    """
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("group: runtime-lab-render") and (
             "inputs.issue_number" not in stripped
         ):
+            if "runtime-lab-render-single-service" in stripped:
+                continue
             return True
     return False
 

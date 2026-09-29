@@ -20,6 +20,8 @@ from automation.runtime_lab_audit import (
     has_global_render_mutex,
     has_per_issue_opencode_concurrency,
     has_per_issue_render_concurrency,
+    has_serialized_render_concurrency,
+    has_valid_render_concurrency,
     is_allowed_model,
     is_allowed_region,
     is_muse_model,
@@ -85,6 +87,11 @@ def test_concurrency_text_helpers():
     assert has_per_issue_render_concurrency(per_issue)
     assert not has_global_render_mutex(per_issue)
     assert has_global_render_mutex("concurrency:\n  group: runtime-lab-render")
+    serialized = "concurrency:\n  group: runtime-lab-render-single-service"
+    assert has_serialized_render_concurrency(serialized)
+    assert has_valid_render_concurrency(serialized)
+    assert has_valid_render_concurrency(per_issue)
+    assert not has_global_render_mutex(serialized)
     assert has_per_issue_opencode_concurrency(
         "group: opencode-${{ inputs.issue_number || github.run_id }}"
     )
@@ -119,7 +126,7 @@ def test_live_scheduler_permits_six_concurrent_issues():
 
 def test_live_render_executor_has_no_global_mutex():
     text = _read_workflow("render-executor.yml")
-    assert has_per_issue_render_concurrency(text)
+    assert has_valid_render_concurrency(text)
     assert not has_global_render_mutex(text)
 
 

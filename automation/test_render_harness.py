@@ -2093,3 +2093,13 @@ def test_job_refuses_issue110_exact_artifact_before_creation(tmp_path):
     assert payload["source_run_id"] == "36492639568"
     assert payload["has_known_advisory"] is True
     assert "infrastructure-blocked" in payload["reason"]
+    # Repair issue #133 (run 36503746345): the fourth live refusal of
+    # this retired contract proved the loop itself is the defect, so
+    # the #110 refusal must carry the superseded redirect end to end
+    # (log line plus structured successor pointer) instead of reading
+    # like a merely undeliverable contract.
+    assert "Superseded-artifact notice" in combined
+    assert "11004835952" in combined
+    assert payload["superseded"] is True
+    assert payload["successor"]["successor_artifact_id"] == "11004835952"
+    assert payload["successor"]["successor_source_run_id"] == "36498663107"
