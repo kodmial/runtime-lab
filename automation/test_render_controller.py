@@ -395,6 +395,53 @@ def test_execution_mode_from_labels():
     assert decide_eligible(plain).execution_mode == "e2e"
 
 
+def test_superseded_exact_artifact_body_is_ineligible_for_dispatch():
+    # Regression for run 36629441608 (repair issue #154): source issue
+    # #106 still pins retired artifact 11001896223 / run 36492639568.
+    # The executor gate refuses that body in seconds with zero Render
+    # cost, but smoke issues carry no qualification fingerprint, so the
+    # finalize dedup never fires and each redispatch mints another P0
+    # repair. The scheduler mirror must hold such bodies paused with
+    # the stable successor redirect instead of dispatching them.
+    retired_body = (
+        "Do **not rebuild OpenCode** for this task. Consume exactly:\n"
+        "- Artifact ID: `11001896223`\n"
+        "- Workflow run: `36492639568`\n"
+        "- Artifact archive digest: "
+        "`sha256:8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df`\n"
+        "Never silently fall back to another OpenCode binary.\n"
+    )
+    retired = _snapshot(
+        issue_number=106,
+        labels=frozenset({"priority:p0", "execution:render-smoke"}),
+        title="P0: Qualify the same OpenCode PR #12 artifact on Render Free 512 MiB",
+        body=retired_body,
+    )
+    decision = decide_eligible(retired)
+    assert decision.eligible is False
+    assert "11001896223" in decision.reason
+    assert "11004835952" in decision.reason
+    assert "instead of redispatching" in decision.reason
+    # Ordinary smoke still dispatches: the guard must not swallow
+    # legitimate work.
+    assert decide_eligible(_snapshot(body="Run the normal smoke workload.")).eligible is True
+    # Paused still short-circuits first: a paused retired body keeps
+    # the paused reason, never a guard surprise.
+    paused_retired = _snapshot(
+        labels=frozenset({"priority:p0", "automation:paused"}),
+        body=retired_body,
+    )
+    paused_decision = decide_eligible(paused_retired)
+    assert paused_decision.eligible is False
+    assert "paused" in paused_decision.reason
+    # Unprioritized issues keep their existing reason: the guard runs
+    # after the priority gate so scheduling semantics are preserved.
+    unprioritized = _snapshot(labels=frozenset(), body=retired_body)
+    unprioritized_decision = decide_eligible(unprioritized)
+    assert unprioritized_decision.eligible is False
+    assert "no priority" in unprioritized_decision.reason
+
+
 def test_event_families_and_command_trigger():
     assert is_command_comment("please /oc run this") is True
     assert is_command_comment("/opencode fix it") is True

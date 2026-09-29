@@ -77,6 +77,7 @@ from render_lifecycle import (  # noqa: E402
     knowledge_handoff_instructions,
     known_workflow_artifact_advisory,
     superseded_workflow_artifact_notice,
+    superseded_dispatch_guard,
     validate_experiment_record_text,
     parse_exact_workflow_artifact_requirement,
     resolve_task_text,
@@ -929,3 +930,55 @@ def test_superseded_workflow_artifact_notice_redirects_retired_contract():
     assert superseded_workflow_artifact_notice(None) == ""
     assert superseded_workflow_artifact_notice({}) == ""
     assert superseded_workflow_artifact_notice("11001896223") == ""
+
+
+def test_superseded_dispatch_guard_stops_retired_redispatch():
+    # Regression for run 36629441608 (repair issue #154): source issue
+    # #106 still pins the retired artifact 11001896223 / run 36492639568,
+    # so the pre-creation gate refuses in seconds with zero Render cost
+    # (execute=failure, cleanup=success, smoke). But #106 carries no
+    # qualification:render label, so finalize emits classification
+    # not-chain with an empty fingerprint and the fingerprint-dedup
+    # branch never fires: every redispatch mints one more P0 repair
+    # (up to MAX_RENDER_REPAIR_ATTEMPTS) for a contract that refuses
+    # identically. The pre-dispatch guard must recognize the retired
+    # body machine-readably so scheduler envelopes can hold the issue
+    # paused instead of burning runs.
+    guard = superseded_dispatch_guard("t", ISSUE_106_ARTIFACT_BODY)
+    assert guard is not None
+    assert guard["artifact_id"] == "11001896223"
+    assert guard["source_run_id"] == "36492639568"
+    assert guard["successor"]["successor_artifact_id"] == "11004835952"
+    assert guard["successor"]["successor_source_run_id"] == "36498663107"
+    assert "11004835952" in guard["reason"]
+    assert "instead of redispatching" in guard["reason"]
+    # The #110 phrasing pins the same retired contract and guards too.
+    guard_110 = superseded_dispatch_guard("t", ISSUE_110_ARTIFACT_BODY)
+    assert guard_110 is not None
+    assert guard_110["artifact_id"] == "11001896223"
+    # Ordinary smoke never guards: legitimate runs keep dispatching.
+    assert superseded_dispatch_guard(
+        "P0: Fresh smoke check",
+        "Run the normal smoke workload on the ephemeral worker "
+        "and verify cleanup. No artifact pinning.",
+    ) is None
+    # Supported contracts never guard: the deliverable successor still
+    # flows through the gate to the delivery path.
+    assert superseded_dispatch_guard(
+        "t",
+        "Artifact ID: `11004835952` Workflow run: `36498663107` "
+        "Artifact archive digest: "
+        "`sha256:0f0e3a6e787bcc80cbe7cff90ee0a948448bc7887633a2d5b8df19409e24b040`",
+    ) is None
+    # Unknown exact contracts are permanent blocks but not retired, so
+    # they guard nothing and never misdirect to the successor.
+    assert superseded_dispatch_guard(
+        "t",
+        "Artifact ID: `99999999999` Workflow run: `36492639568` "
+        "Artifact archive digest: "
+        "`sha256:8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df`",
+    ) is None
+    # Garbage input never raises and never guards.
+    assert superseded_dispatch_guard(None, None) is None
+    assert superseded_dispatch_guard("", "") is None
+    assert superseded_dispatch_guard(123, ["x"]) is None
