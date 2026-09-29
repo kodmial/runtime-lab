@@ -631,6 +631,82 @@ def exact_workflow_artifact_blocker(requirement: Mapping[str, Any]) -> str:
     return reason
 
 
+def build_exact_artifact_refusal_result(
+    requirement: Mapping[str, Any] | None,
+    *,
+    issue_number: object = 0,
+    run_id: object = "",
+) -> dict[str, Any]:
+    """Build a machine-readable pre-creation refusal record (issue #125).
+
+    Run 36500759174 is the third live seconds-fast zero-cost refusal of
+    the same #110 exact-artifact contract (after runs 36498921649 and
+    36499977510): the human-readable ``infrastructure-blocked`` log line
+    is correct, but the attempt leaves no structured result behind, so
+    every future triage/scheduler must scrape log text to tell this
+    permanent block apart from a transient failure. This helper is the
+    single choke point for that structured shape: ``render-job.sh``
+    writes its output to ``$RENDER_RESULT_FILE`` on the gate path while
+    still creating no Render service.
+
+    The record is deliberately distinct from runner job results
+    (``succeeded``/``failed``/``timed_out`` with ``job_id``): it uses
+    ``status="infrastructure-blocked"`` plus ``permanent=True`` so no
+    existing ``parse_job_result``/poll consumer can mistake it for a
+    worker-executed job. ``permanent`` means redispatch without a
+    material premise change (a real artifact-delivery mechanism plus a
+    version-stamped rebuild) will refuse identically -- it is a
+    redispatch hint for future schedulers, not a workflow directive.
+    Never raises: garbage input yields a minimal fail-closed record.
+    """
+    try:
+        reason = exact_workflow_artifact_blocker(
+            requirement if isinstance(requirement, Mapping) else {}
+        )
+    except Exception:
+        reason = "infrastructure-blocked: exact workflow artifact cannot run on Render."
+    try:
+        mapping = requirement if isinstance(requirement, Mapping) else {}
+        artifact = str(mapping.get("artifact_id", "") or "").strip()
+        run = str(mapping.get("source_run_id", "") or "").strip()
+        name = str(mapping.get("artifact_name", "") or "").strip()
+        digest = str(mapping.get("archive_sha256", "") or "").strip().lower()
+        source_sha = str(mapping.get("source_sha", "") or "").strip().lower()
+    except Exception:
+        artifact, run, name, digest, source_sha = "", "", "", "", ""
+    try:
+        advisory = known_workflow_artifact_advisory(
+            requirement if isinstance(requirement, Mapping) else None
+        )
+    except Exception:
+        advisory = ""
+    try:
+        issue = int(issue_number)
+    except (TypeError, ValueError):
+        issue = 0
+    try:
+        run_label = "" if run_id is None else str(run_id).strip()
+    except Exception:
+        run_label = ""
+    return {
+        "status": "infrastructure-blocked",
+        "permanent": True,
+        "reason": reason,
+        "artifact_id": artifact,
+        "artifact_name": name,
+        "source_run_id": run,
+        "archive_sha256": digest,
+        "source_sha": source_sha,
+        "has_known_advisory": bool(advisory),
+        "issue_number": issue,
+        "run_id": run_label,
+        "docs": {
+            "github_artifacts": GITHUB_ARTIFACT_DOWNLOAD_DOC,
+            "render_free": RENDER_DOC_FREE_TIER,
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Low-burn / rate-limit policy (encoded, not an operational note).
 # ---------------------------------------------------------------------------

@@ -248,6 +248,33 @@ PY
 )"
 if [[ -n "$EXACT_ARTIFACT_BLOCKER" ]]; then
   echo "::error::$EXACT_ARTIFACT_BLOCKER" >&2
+  # Structured refusal record (issue #125, run 36500759174): the log
+  # line above is correct but machine-unreadable, so every gated
+  # refusal re-mints an identical repair investigation from scraped
+  # text. Write the stable infrastructure-blocked record for future
+  # triage/schedulers while still creating no Render service. Best
+  # effort: a write failure must never mask the refusal itself.
+  ISSUE_TITLE="$ISSUE_TITLE" ISSUE_BODY_TEXT="$ISSUE_BODY_TEXT" python3 - "$ISSUE_NUMBER" "${GITHUB_RUN_ID:-}" "$RENDER_RESULT_FILE" <<'PY' 2>/dev/null || true
+import json, os, sys
+sys.path.insert(0, "automation")
+from render_lifecycle import (
+    build_exact_artifact_refusal_result,
+    parse_exact_workflow_artifact_requirement,
+)
+requirement = parse_exact_workflow_artifact_requirement(
+    os.environ.get("ISSUE_TITLE", ""),
+    os.environ.get("ISSUE_BODY_TEXT", ""),
+)
+record = build_exact_artifact_refusal_result(
+    requirement, issue_number=sys.argv[1], run_id=sys.argv[2])
+target = sys.argv[3] if len(sys.argv) > 3 else ""
+if target:
+    try:
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, indent=2) + "\n")
+    except OSError:
+        pass
+PY
   exit 1
 fi
 

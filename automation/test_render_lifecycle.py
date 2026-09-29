@@ -66,6 +66,7 @@ from render_lifecycle import (  # noqa: E402
     deletion_succeeded,
     detect_worker_restart,
     exact_workflow_artifact_blocker,
+    build_exact_artifact_refusal_result,
     extract_owner_id,
     format_restart_evidence,
     get_service_url,
@@ -833,3 +834,48 @@ def test_known_workflow_artifact_advisory_names_version_gate():
     assert known_workflow_artifact_advisory(None) == ""
     assert known_workflow_artifact_advisory({}) == ""
     assert known_workflow_artifact_advisory("11001896223") == ""
+
+
+def test_build_exact_artifact_refusal_result_is_structured_and_permanent():
+    # Regression for run 36500759174 (repair issue #125): the third
+    # live seconds-fast zero-cost refusal of the #110 contract left
+    # only a log line, forcing every triage to scrape text to tell a
+    # permanent block from a transient failure. The gate must leave a
+    # stable machine-readable record that is distinct from runner job
+    # results and safe for future schedulers to consume.
+    requirement = parse_exact_workflow_artifact_requirement(
+        "t", ISSUE_110_ARTIFACT_BODY)
+    assert requirement is not None
+    record = build_exact_artifact_refusal_result(
+        requirement, issue_number=110, run_id="36500759174")
+    assert record["status"] == "infrastructure-blocked"
+    assert record["permanent"] is True
+    assert record["artifact_id"] == "11001896223"
+    assert record["source_run_id"] == "36492639568"
+    assert record["archive_sha256"] == (
+        "8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df"
+    )
+    assert record["issue_number"] == 110
+    assert record["run_id"] == "36500759174"
+    assert record["has_known_advisory"] is True
+    assert "infrastructure-blocked" in record["reason"]
+    assert "11001896223" in record["reason"]
+    assert "github" in record["docs"]["github_artifacts"]
+    assert "render.com/docs/free" in record["docs"]["render_free"]
+    # Distinct from runner terminal results: never a job_id-bearing
+    # succeeded/failed/timed_out payload a poll consumer could mistake
+    # for a worker-executed job.
+    assert record["status"] not in ("succeeded", "failed", "timed_out")
+    assert "job_id" not in record
+    # Unknown contracts still produce a fail-closed structured record
+    # without an advisory; garbage never raises.
+    other = build_exact_artifact_refusal_result(
+        {"artifact_id": "99999999999", "source_run_id": "1"},
+        issue_number="bad", run_id=None)
+    assert other["status"] == "infrastructure-blocked"
+    assert other["permanent"] is True
+    assert other["has_known_advisory"] is False
+    assert other["issue_number"] == 0
+    assert build_exact_artifact_refusal_result(None)["status"] == \
+        "infrastructure-blocked"
+    assert build_exact_artifact_refusal_result("garbage")["permanent"] is True

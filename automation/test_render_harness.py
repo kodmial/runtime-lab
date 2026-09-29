@@ -2018,6 +2018,7 @@ def test_job_gate_references_exact_artifact_helpers_before_creation():
     job = _read("render-job.sh")
     assert "parse_exact_workflow_artifact_requirement" in job
     assert "exact_workflow_artifact_blocker" in job
+    assert "build_exact_artifact_refusal_result" in job
     assert "EXACT_ARTIFACT_BLOCKER" in job
     assert job.index("EXACT_ARTIFACT_BLOCKER") < job.index(
         "One service creation per attempt")
@@ -2041,7 +2042,16 @@ def test_job_refuses_exact_workflow_artifact_before_creation(tmp_path):
     # No Render service was created and no state was recorded.
     assert not log.exists() or "api.render.com/v1/services" not in log.read_text()
     assert not state.exists() or "srv-" not in state.read_text()
-    assert not result.exists() or result.read_text().strip() == ""
+    # Repair issue #125 (run 36500759174): the gated refusal must also
+    # leave a stable machine-readable record so triage/schedulers need
+    # not scrape log text to tell a permanent block from a transient
+    # failure. The record is distinct from runner job results.
+    payload = json.loads(result.read_text())
+    assert payload["status"] == "infrastructure-blocked"
+    assert payload["permanent"] is True
+    assert payload["artifact_id"] == "11001896223"
+    assert payload["source_run_id"] == "36492639568"
+    assert "infrastructure-blocked" in payload["reason"]
 
 
 def test_job_refuses_issue110_exact_artifact_before_creation(tmp_path):
@@ -2073,4 +2083,13 @@ def test_job_refuses_issue110_exact_artifact_before_creation(tmp_path):
     # No Render service was created and no state was recorded.
     assert not log.exists() or "api.render.com/v1/services" not in log.read_text()
     assert not state.exists() or "srv-" not in state.read_text()
-    assert not result.exists() or result.read_text().strip() == ""
+    # Repair issue #125 (run 36500759174): the #110 refusal must also
+    # leave the stable structured record (permanent block marker plus
+    # the known 0.0.0 advisory flag) with zero Render cost.
+    payload = json.loads(result.read_text())
+    assert payload["status"] == "infrastructure-blocked"
+    assert payload["permanent"] is True
+    assert payload["artifact_id"] == "11001896223"
+    assert payload["source_run_id"] == "36492639568"
+    assert payload["has_known_advisory"] is True
+    assert "infrastructure-blocked" in payload["reason"]
