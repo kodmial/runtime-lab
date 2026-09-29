@@ -2,6 +2,12 @@ name: Worker dispatcher
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - automation/private_dispatcher.sh
+      - .github/workflows/private-dispatcher.yml
   schedule:
     - cron: '*/10 * * * *'
   workflow_run:
