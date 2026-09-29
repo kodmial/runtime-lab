@@ -67,7 +67,7 @@ BUILD_TOOLCHAIN_BUN = "1.4.2"
 
 # Fingerprinted qualification binary (built, never downloaded).
 BINARY_SHA256 = (
-    "4e310bbdfab9b3fed5f95adabc1afe23b462be741a929901f058258e80328ded"
+    "d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0"
 )
 BINARY_BYTES = 171222496
 
