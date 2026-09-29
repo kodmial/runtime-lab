@@ -26,12 +26,6 @@ cleanup_private_runtime_runs() {
   done
 }
 
-# One-time removal of a now-obsolete public coordination comment whose
-# previous revision named external private-project repositories.
-gh api --method DELETE \
-  "repos/$GITHUB_REPOSITORY/issues/comments/5872183905" \
-  >/dev/null 2>&1 || true
-
 # The dispatcher is invoked by workflow_run as soon as a worker/review
 # completes, so this removes the finished public run promptly. The same sweep
 # also removes any historical completed private-runtime runs.
