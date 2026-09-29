@@ -607,8 +607,11 @@ sys.path.insert(0, "automation")
 from exact_artifact_delivery import extract_and_verify
 identity = json.loads(os.environ.get("EXACT_IDENTITY_JSON", "") or "{}")
 binary = extract_and_verify(
-    os.environ["EXACT_ZIP"], os.environ["EXACT_EXTRACT"],
-    identity.get("binary_sha256", ""))
+    os.environ["EXACT_ZIP"],
+    os.environ["EXACT_EXTRACT"],
+    expected_binary_sha=identity.get("binary_sha256", ""),
+    expected_archive_sha=identity.get("archive_sha256", ""),
+)
 print("controller: exact binary extracted and checksum-verified: %s" % binary)
 PY
     echo "::error::Exact-artifact extraction/verification failed; refusing to substitute another binary." >&2
