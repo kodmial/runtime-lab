@@ -138,3 +138,59 @@ def test_refusal_retirement_is_garbage_safe():
         {"permanent": True, "superseded": True, "successor": "garbage"}
     )
     assert (permanent, superseded, successor) == (True, True, {})
+
+
+def test_native_exact_evidence_survives_worker_loss_and_allows_memory_classification():
+    sha = "d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0"
+    result = {
+        "status": "failed",
+        "exit_code": 137,
+        "exact_evidence": {
+            "artifact_id": "11009286301",
+            "binary_sha256": sha,
+            "file_sha256": sha,
+            "exe_sha256": sha,
+            "exe_realpath": "/tmp/.opencode-exact-workflow/11009286301/opencode",
+        },
+    }
+    memory = {
+        "max_memory_peak_bytes": 536870912,
+        "max_memory_current_bytes": 536800000,
+        "memory_pressure": {"verdict": True},
+        "instance_changed": True,
+    }
+    payload = classify(
+        result,
+        memory,
+        artifact_id=11009286301,
+        expected_sha=sha,
+        execute_outcome="failure",
+        cleanup_outcome="success",
+    )
+    assert payload["downloaded_binary_sha256"] == sha
+    assert payload["executed_binary_sha256"] == sha
+    assert payload["proc_exe_realpath"].startswith("/")
+    assert payload["classification"] == "memory"
+    assert payload["subtype"] == "service-memory"
+
+
+def test_native_exact_evidence_is_fail_closed_on_executed_sha_mismatch():
+    sha = "d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0"
+    result = {
+        "status": "failed",
+        "exact_evidence": {
+            "file_sha256": sha,
+            "exe_sha256": "0" * 64,
+            "exe_realpath": "/tmp/opencode",
+        },
+    }
+    payload = classify(
+        result,
+        {"memory_pressure": {"verdict": True}},
+        artifact_id=11009286301,
+        expected_sha=sha,
+        execute_outcome="failure",
+        cleanup_outcome="success",
+    )
+    assert payload["classification"] == "infrastructure"
+    assert payload["subtype"] == "identity"
