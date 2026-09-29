@@ -1182,6 +1182,38 @@ class JobManager:
             return {"expected": True, "present": False, "path": path,
                     "detail": str(exc)[:200]}
 
+    def _publish_running_exact_evidence(
+        self, job_id: str, evidence: Mapping[str, Any]
+    ) -> None:
+        """Persist verified /proc identity while the exact child is still alive.
+
+        Render may replace a Free worker under memory pressure before OpenCode
+        reaches a terminal state. Publishing the already verified identity
+        immediately makes GET /v1/jobs/<id> carry durable proof that the pinned
+        binary actually executed, so the controller can retain it before a
+        restart wipes worker memory.
+        """
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None or record.status != "running":
+                return
+            current = dict(evidence)
+            record.exact_evidence = current
+            record.metadata["exact_evidence"] = current
+            for key in (
+                "exe_realpath",
+                "exe_sha256",
+                "pid",
+                "file_sha256",
+                "binary_sha256",
+                "artifact_id",
+                "cmdline",
+            ):
+                value = current.get(key, "")
+                if value:
+                    record.metadata["exact_" + key] = value
+            record.updated_at = time.time()
+
     def _run_exact_opencode_attempt(
         self,
         *,
@@ -1192,6 +1224,8 @@ class JobManager:
         workspace: str,
         timeout: float,
         expected_sha256: str,
+        exact_identity: Optional[Mapping[str, str]] = None,
+        on_identity: Optional[Callable[[Mapping[str, Any]], None]] = None,
     ) -> tuple[Any, dict[str, Any]]:
         """Run one exact OpenCode attempt by absolute path with /proc proof.
 
@@ -1281,6 +1315,21 @@ class JobManager:
                         "exe_source": "file (process exited before /proc read)",
                     }
                 verify_proc_exe_sha(proc_identity, expected_sha256)
+                # Build and publish the verified identity BEFORE waiting for
+                # OpenCode to finish. A Render OOM/replacement can kill this
+                # process and erase all worker state while the child is still
+                # running; controller polls must be able to retain this proof.
+                evidence = build_exact_evidence(
+                    binary_abs_path,
+                    file_sha,
+                    proc_identity,
+                    argv,
+                    version="",
+                    identity=exact_identity,
+                )
+                evidence["cmdline"] = str(proc_identity.get("cmdline", ""))[:4000]
+                if on_identity is not None:
+                    on_identity(evidence)
                 try:
                     proc.wait(timeout=budget)
                     timed_out = False
@@ -1314,10 +1363,8 @@ class JobManager:
         )
         # Attach the bounded combined view plus identity for the caller.
         result_combined = bounded
-        evidence = build_exact_evidence(
-            binary_abs_path, file_sha, proc_identity, argv, version="",
-        )
-        evidence["cmdline"] = str(proc_identity.get("cmdline", ""))[:4000]
+        # evidence was constructed and published immediately after /proc
+        # verification, before the potentially long-running wait above.
         return result, {"evidence": evidence, "proc_identity": proc_identity,
                         "file_sha256": file_sha, "combined": result_combined,
                         "pid": pid}
@@ -2124,6 +2171,10 @@ class JobManager:
                         workspace=record.workspace,
                         timeout=remaining,
                         expected_sha256=str(job_exact.get("binary_sha256", "")),
+                        exact_identity=job_exact,
+                        on_identity=lambda ev: self._publish_running_exact_evidence(
+                            job_id, ev
+                        ),
                     )
                 except TimeoutError:
                     opencode_timed_out = True
