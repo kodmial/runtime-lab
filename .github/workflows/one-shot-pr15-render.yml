@@ -26,31 +26,41 @@ jobs:
           ref: main
           persist-credentials: false
 
-      - name: Install pinned Bun
+      - name: Install Bun exactly as issue 134
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global bun@1.4.2
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.bun/bin:$PATH"
           test "$(bun --version)" = "1.4.2"
 
       - name: Build exact PR15 head
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/opencode-pr15-src /tmp/pr15-artifact
-          mkdir -p /tmp/opencode-pr15-src /tmp/pr15-artifact
+          rm -rf /tmp/opencode15 /tmp/pr15-artifact
+          mkdir -p /tmp/opencode15/src /tmp/pr15-artifact
           curl -fsSL -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/kodmial/opencode/tarball/$SOURCE_SHA" \
-            -o /tmp/opencode-pr15.tar.gz
-          tar -xzf /tmp/opencode-pr15.tar.gz --strip-components=1 -C /tmp/opencode-pr15-src
-          cd /tmp/opencode-pr15-src
+            -o /tmp/opencode15/pr15.tar.gz
+          tar -xzf /tmp/opencode15/pr15.tar.gz -C /tmp/opencode15/src
+          SRC="/tmp/opencode15/src/kodmial-opencode-842157c"
+          test -d "$SRC"
+          cd "$SRC"
           bun install --frozen-lockfile
           OPENCODE_VERSION="$EXPECTED_VERSION" bun run --cwd packages/opencode script/build.ts --coding --single
-          BIN="/tmp/opencode-pr15-src/packages/opencode/dist/opencode-linux-x64/bin/opencode"
+          BIN="$SRC/packages/opencode/dist/opencode-linux-x64/bin/opencode"
           test -x "$BIN"
-          test "$("$BIN" --version)" = "$EXPECTED_VERSION"
-          test "$(sha256sum "$BIN" | awk '{print $1}')" = "$EXPECTED_SHA"
-          test "$(stat -c %s "$BIN")" = "$EXPECTED_BYTES"
+          ACTUAL_VERSION="$("$BIN" --version)"
+          ACTUAL_SHA="$(sha256sum "$BIN" | awk '{print $1}')"
+          ACTUAL_BYTES="$(stat -c %s "$BIN")"
+          echo "actual_version=$ACTUAL_VERSION"
+          echo "actual_sha=$ACTUAL_SHA"
+          echo "actual_bytes=$ACTUAL_BYTES"
+          test "$ACTUAL_VERSION" = "$EXPECTED_VERSION"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+          test "$ACTUAL_BYTES" = "$EXPECTED_BYTES"
           cd "$GITHUB_WORKSPACE"
           python3 automation/opencode_pr15_publish.py --binary "$BIN" --out-dir /tmp/pr15-artifact
 
