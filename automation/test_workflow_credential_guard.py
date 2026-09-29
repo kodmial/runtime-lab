@@ -121,9 +121,11 @@ def test_guard_cli_passes_on_clean_fixture(tmp_path):
 def test_live_workflows_detect_known_envelope_defects():
     # Envelope-provisioning tracker: the workflow envelope is owned
     # separately (this token cannot push .github/workflows/**), so this run
-    # repairs the consumer at runtime and locks detection of the three known
-    # escaped GH_TOKEN lines. When the envelope provisioning removes the
-    # escaping, update this test to assert an empty finding list.
+    # repairs the consumer at runtime and locks detection of the two known
+    # escaped GH_TOKEN lines. qualification-chain.yml was already
+    # unescaped (commit befb5ee), leaving only docker-qualification.yml.
+    # When the envelope provisioning removes the remaining escaping,
+    # update this test to assert an empty finding list.
     findings = scan_workflows(REPO_ROOT)
     locations = sorted(
         (
@@ -135,7 +137,6 @@ def test_live_workflows_detect_known_envelope_defects():
     assert locations == [
         (".github/workflows/docker-qualification.yml", 40),
         (".github/workflows/docker-qualification.yml", 257),
-        (".github/workflows/qualification-chain.yml", 39),
     ]
 
 
