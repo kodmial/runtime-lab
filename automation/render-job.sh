@@ -482,6 +482,11 @@ RENDER_MEMORY_SAMPLES_FILE="${RENDER_MEMORY_SAMPLES_FILE:-/tmp/runtime-lab-memor
 RENDER_MEMORY_SUMMARY_FILE="${RENDER_MEMORY_SUMMARY_FILE:-/tmp/runtime-lab-memory-summary-${ISSUE_NUMBER}-${GITHUB_RUN_ID:-local}.json}"
 RENDER_MEMORY_STOP_FILE="${RENDER_MEMORY_STOP_FILE:-/tmp/runtime-lab-memory-stop-${ISSUE_NUMBER}-${GITHUB_RUN_ID:-local}}"
 RENDER_MEMORY_INTERVAL="${RENDER_MEMORY_SAMPLE_INTERVAL_SECONDS:-1}"
+# Controller-owned exact process proof. Unlike worker memory, this file
+# survives Render OOM/replacement and is refreshed from every successful
+# job-status poll once /proc identity has been verified by the worker.
+RENDER_EXACT_EVIDENCE_FILE="${RENDER_EXACT_EVIDENCE_FILE:-/tmp/runtime-lab-exact-evidence-${ISSUE_NUMBER}-${GITHUB_RUN_ID:-local}.json}"
+rm -f "$RENDER_EXACT_EVIDENCE_FILE" 2>/dev/null || true
 MEMORY_SAMPLER_PID=""
 memory_sampler_record_event() {
   # Best-effort harness event marker (e.g. same-worker resubmission) with a
@@ -510,6 +515,50 @@ memory_sampler_stop_and_summarize() {
     wait "$MEMORY_SAMPLER_PID" 2>/dev/null || true
   fi
   MEMORY_SAMPLER_PID=""
+
+  # Preserve exact /proc proof even when the worker died before producing a
+  # terminal result. The poll loop copies verified evidence to this
+  # controller-side file while the child is alive. Merge it before the
+  # qualification step so memory/OOM failures cannot be misclassified as
+  # identity failures merely because the ephemeral worker disappeared.
+  if [[ "${EXACT_MODE:-no}" == "yes" && -s "${RENDER_EXACT_EVIDENCE_FILE:-}" ]]; then
+    python3 - "${RENDER_RESULT_FILE:-}" "$RENDER_EXACT_EVIDENCE_FILE" <<'PY' 2>/dev/null || true
+import json, os, sys
+result_path, evidence_path = sys.argv[1], sys.argv[2]
+try:
+    with open(evidence_path, "r", encoding="utf-8") as handle:
+        evidence = json.load(handle)
+    if not isinstance(evidence, dict):
+        raise ValueError("exact evidence must be an object")
+    result = {}
+    if result_path and os.path.isfile(result_path) and os.path.getsize(result_path) > 0:
+        with open(result_path, "r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        if isinstance(loaded, dict):
+            result = loaded
+    if not result:
+        result = {
+            "status": "failed",
+            "success": False,
+            "error": "worker disappeared after verified exact OpenCode process start",
+        }
+    existing = result.get("exact_evidence")
+    if not isinstance(existing, dict) or not existing.get("exe_sha256"):
+        result["exact_evidence"] = evidence
+    # Compatibility mirrors for qualification consumers. Values originate
+    # from worker-side /proc verification and controller-side exact bytes.
+    result.setdefault("downloaded_binary_sha256", str(evidence.get("file_sha256") or evidence.get("binary_sha256") or ""))
+    result.setdefault("executed_binary_sha256", str(evidence.get("exe_sha256") or ""))
+    result.setdefault("proc_exe_realpath", str(evidence.get("exe_realpath") or ""))
+    if result_path:
+        with open(result_path, "w", encoding="utf-8") as handle:
+            json.dump(result, handle, sort_keys=True, indent=2)
+            handle.write("\n")
+except (OSError, ValueError, json.JSONDecodeError):
+    pass
+PY
+  fi
+
   if [[ -n "${RENDER_MEMORY_SAMPLES_FILE:-}" ]]; then
     python3 - "$RENDER_MEMORY_SAMPLES_FILE" "$RENDER_MEMORY_SUMMARY_FILE" "$RENDER_MEMORY_INTERVAL" <<'PY' 2>&1 || true
 import sys
@@ -838,6 +887,47 @@ for ((i = 1; i <= POLL_MAX_ATTEMPTS; i++)); do
   POLL_LAST_CODE="$(tr -dc '0-9' <<<"$POLL_LAST_CODE" || true)"
   [[ -z "$POLL_LAST_CODE" ]] && POLL_LAST_CODE="000"
   RESULT_JSON="$(cat "$POLL_BODY_FILE" 2>/dev/null || true)"
+
+  # Copy worker-verified /proc identity to controller storage as soon as it
+  # appears in a poll response. This happens while OpenCode is still
+  # running, before an OOM/restart can erase worker-local state.
+  if [[ "$EXACT_MODE" == "yes" && "$POLL_LAST_CODE" =~ ^2[0-9][0-9]$ ]]; then
+    if ! EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 - "$POLL_BODY_FILE" "$RENDER_EXACT_EVIDENCE_FILE" <<'PY'
+import json, os, sys
+body_path, output_path = sys.argv[1], sys.argv[2]
+with open(body_path, "r", encoding="utf-8") as handle:
+    result = json.load(handle)
+if not isinstance(result, dict):
+    raise SystemExit(0)
+evidence = result.get("exact_evidence")
+if not isinstance(evidence, dict) or not evidence.get("exe_sha256"):
+    raise SystemExit(0)
+expected = json.loads(os.environ.get("EXACT_IDENTITY_JSON", "") or "{}")
+expected_sha = str(expected.get("binary_sha256") or "").lower()
+expected_id = str(expected.get("artifact_id") or "")
+file_sha = str(evidence.get("file_sha256") or evidence.get("binary_sha256") or "").lower()
+exe_sha = str(evidence.get("exe_sha256") or "").lower()
+exe_path = str(evidence.get("exe_realpath") or "")
+artifact_id = str(evidence.get("artifact_id") or "")
+if not expected_sha or file_sha != expected_sha or exe_sha != expected_sha:
+    raise SystemExit("polled exact process evidence SHA mismatch")
+if expected_id and artifact_id and artifact_id != expected_id:
+    raise SystemExit("polled exact process evidence artifact id mismatch")
+if not exe_path.startswith("/"):
+    raise SystemExit("polled exact process evidence has no absolute /proc executable path")
+tmp = output_path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(evidence, handle, sort_keys=True, indent=2)
+    handle.write("\n")
+os.replace(tmp, output_path)
+PY
+    then
+      rm -f "$POLL_BODY_FILE"
+      echo "::error::Runner returned invalid exact process identity; refusing to continue." >&2
+      exit 1
+    fi
+  fi
+
   rm -f "$POLL_BODY_FILE"
   STATUS="$(jq -r '.status // empty' <<<"$RESULT_JSON" 2>/dev/null || true)"
   POLL_OUTCOME="$(python3 - "$POLL_LAST_CODE" "$STATUS" <<'PY'
