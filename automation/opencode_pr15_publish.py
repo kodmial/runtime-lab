@@ -2,8 +2,8 @@
 
 Stdlib only, no git mutations, no workflow edits, no Render service.
 This module is the single production owner for reconstructing the exact
-PR #15 binary from the pinned source HEAD, verifying the known #134
-fingerprint, staging the immutable Actions payload, capturing the
+PR #15 binary from the pinned source HEAD, verifying the published
+exact fingerprint, staging the immutable Actions payload, capturing the
 publish-time transport identity, and handing it to the downstream Render
 qualification issue without user/chat intervention.
 
@@ -17,8 +17,8 @@ Exact source (fail closed, never substituted):
 - build command
   ``OPENCODE_VERSION=1.18.33 bun run --cwd packages/opencode script/build.ts --coding --single``;
 - expected binary SHA-256
-  ``4e310bbdfab9b3fed5f95adabc1afe23b462be741a929901f058258e80328ded``;
-- expected binary size ``171222496`` bytes.
+  ``d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0``;
+- expected binary size ``171218400`` bytes.
 
 Payload (immutable Actions artifact):
 
@@ -146,10 +146,10 @@ def verify_built_binary(
     version_output: str | None = None,
     runner=None,
 ) -> dict[str, Any]:
-    """Fail closed unless the built binary matches the #134 fingerprint.
+    """Fail closed unless the built binary matches the published fingerprint.
 
-    Checks: file exists + executable, size equals ``171222496`` bytes,
-    SHA-256 equals ``4e310b...28ded``, and ``--version`` prints exactly
+    Checks: file exists + executable, size equals ``171218400`` bytes,
+    SHA-256 equals ``d9f930c1...45f0c0``, and ``--version`` prints exactly
     ``1.18.33``. ``version_output`` (or ``runner``) is an offline
     injection seam: when ``None`` the real binary is executed with a
     60 s timeout. Never silently tests PR #12/main/latest/installer or
@@ -278,8 +278,8 @@ def build_publish_manifest(
     """Capture the final immutable transport identity (fail closed).
 
     All publish-time fields (numeric run/artifact ids, 64-hex archive
-    digest) are validated; the binary/version must equal the #134
-    fingerprint. The returned manifest is what the publishing workflow
+    digest) are validated; the binary/version must equal the published
+    PR #15 fingerprint. The returned manifest is what the publishing workflow
     writes into the downstream Render issue before unpausing it.
     """
     run = str(source_run_id or "").strip()
@@ -294,7 +294,7 @@ def build_publish_manifest(
     if SHA256_RE.match(archive) is None:
         raise ValueError("archive_sha256 must be 64 lowercase hex chars")
     if binary != BINARY_SHA256:
-        raise ValueError("binary_sha256 must equal the #134 fingerprint %s" % BINARY_SHA256)
+        raise ValueError("binary_sha256 must equal the published PR #15 fingerprint %s" % BINARY_SHA256)
     if ver != EXPECTED_VERSION:
         raise ValueError("version must equal %r" % EXPECTED_VERSION)
     try:
@@ -367,7 +367,7 @@ def render_downstream_issue_body(manifest: Mapping[str, str]) -> str:
     if SHA256_RE.match(archive) is None or SHA256_RE.match(binary) is None:
         raise ValueError("manifest digests must be 64 hex chars")
     if binary != BINARY_SHA256 or version != EXPECTED_VERSION:
-        raise ValueError("manifest binary/version must equal the #134 fingerprint")
+        raise ValueError("manifest binary/version must equal the published PR #15 fingerprint")
     lines = [
         "<!-- runtime-lab-qualification-managed -->",
         "<!-- runtime-lab-pr15-render-qualification -->",

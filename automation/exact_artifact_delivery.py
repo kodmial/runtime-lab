@@ -195,7 +195,7 @@ def build_pr15_artifact_identity(
 
     Fail closed: transport fields must be well-formed (numeric ids,
     64-hex archive digest); the pinned binary/version/source fields are
-    filled from the #134 fingerprint and never accept substitutes.
+    filled from the published PR #15 fingerprint and never accept substitutes.
     """
     artifact = str(artifact_id or "").strip()
     run = str(source_run_id or "").strip()
@@ -258,7 +258,7 @@ def _validate_pr12_identity(get) -> dict[str, str] | None:
 def _validate_pr15_identity(identity: dict, get) -> dict[str, str] | None:
     """Return the PR #15 identity when pinned + transport fields match, else None.
 
-    Pinned (never substituted): binary SHA-256 ``4e310b...28ded``,
+    Pinned (never substituted): binary SHA-256 ``d9f930c1...45f0c0``,
     version ``1.18.33``, artifact name, source/merge SHAs, repo/PR/branch.
     Transport (captured at publish time): numeric artifact id, numeric
     source run, 64-hex archive digest. A missing/foreign binary digest
@@ -381,7 +381,7 @@ def is_supported_exact_requirement(
     dict (artifact_id + source_run_id + archive_sha256). ``binary_sha256``
     is the optional ``binary SHA-256`` digest from the issue body: for
     PR #12 it must be absent or equal to the pinned digest; for PR #15
-    it must be present and equal to the #134 fingerprint (otherwise an
+    it must be present and equal to the published PR #15 fingerprint (otherwise an
     arbitrary numeric artifact could ride the PR #15 path).
     """
     try:
