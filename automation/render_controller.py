@@ -97,6 +97,7 @@ try:  # pragma: no cover - import path depends on entrypoint
         resolve_task_text,
         select_base_sha,
         service_name_for_attempt,
+        superseded_dispatch_guard,
         validate_execution_mode,
         validate_model_name,
         validate_worker_region,
@@ -131,6 +132,7 @@ except ImportError:  # pytest inserts automation/ on sys.path
         resolve_task_text,
         select_base_sha,
         service_name_for_attempt,
+        superseded_dispatch_guard,
         validate_execution_mode,
         validate_model_name,
         validate_worker_region,
@@ -537,6 +539,21 @@ def decide_eligible(snapshot: EligibilitySnapshot) -> EligibilityDecision:
             False, "no priority:p0/p1/p2 label", mode, ""
         )
     priority = ranked[0]
+
+    # Retired exact-artifact contracts (issue #154): the pre-creation
+    # gate already refuses these bodies in seconds with zero Render
+    # cost, but smoke issues carry no qualification fingerprint, so the
+    # workflow finalize path mints one more P0 repair per redispatch
+    # instead of deduping. Declaring the issue ineligible here with the
+    # stable successor redirect stops that loop at dispatch time while
+    # ordinary and supported-contract issues flow through unchanged.
+    # Never raises: an unparsable body means "no guard".
+    try:
+        guard = superseded_dispatch_guard(snapshot.title, snapshot.body)
+    except Exception:
+        guard = None
+    if guard is not None:
+        return EligibilityDecision(False, str(guard.get("reason", "superseded exact artifact")), mode, priority)
 
     blockers = list(snapshot.open_blockers)
     for number in readiness_dependency_numbers(snapshot.body, snapshot.issue_number):
