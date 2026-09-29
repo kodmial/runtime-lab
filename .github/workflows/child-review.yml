@@ -22,14 +22,14 @@ permissions:
 
 jobs:
   review:
-    uses: kodmial/continuum/.github/workflows/consumer-child-review.yml@b9c348e5a50f8e59f8d30a7cc75fd25782665750
+    uses: kodmial/continuum/.github/workflows/consumer-child-review.yml@f0fa74eaff052710ebab7f732b31dd11ec3ad572
     with:
       child_id: ${{ inputs.child_id }}
       task_number: ${{ inputs.task_number }}
       pr_number: ${{ inputs.pr_number }}
       model: ${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}
       max_review_passes: 3
-      engine_ref: b9c348e5a50f8e59f8d30a7cc75fd25782665750
+      engine_ref: f0fa74eaff052710ebab7f732b31dd11ec3ad572
     secrets:
       CHILD_RUNTIME_TOKEN: ${{ secrets.TAP_PAT }}
       CHILD_RUNTIME_REPOSITORIES: ${{ secrets.CONTINUUM_CHILD_REPOSITORIES }}
