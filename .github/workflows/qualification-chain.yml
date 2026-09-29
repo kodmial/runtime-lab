@@ -36,5 +36,5 @@ jobs:
 
       - name: Reconcile qualification state
         env:
-          GH_TOKEN: \${{ secrets.TAP_PAT || github.token }}
+          GH_TOKEN: ${{ secrets.TAP_PAT || github.token }}
         run: node automation/qualification_chain.js
