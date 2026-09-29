@@ -25,6 +25,7 @@ from runner_server import (  # noqa: E402
     CommandResult,
     CommandRunner,
     JobManager,
+    JobRecord,
     SubprocessCommandRunner,
     build_manager_from_env,
     check_transition,
@@ -565,3 +566,27 @@ def test_runner_source_enforces_knowledge_handoff_before_success():
     assert "validate_experiment_record_text" in source
     assert "knowledge handoff validation failed" in source
     assert source.index("knowledge handoff validation failed") < source.rindex('job_id, "succeeded"')
+
+
+def test_running_exact_identity_is_published_before_terminal_state(tmp_path):
+    manager = _manager(tmp_path)
+    record = JobRecord(job_id="exact-running", status="running")
+    with manager._lock:
+        manager._jobs[record.job_id] = record
+    evidence = {
+        "artifact_id": "11009286301",
+        "binary_sha256": "d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0",
+        "file_sha256": "d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0",
+        "exe_sha256": "d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0",
+        "exe_realpath": "/tmp/.opencode-exact-workflow/11009286301/opencode",
+        "pid": "123",
+        "cmdline": "/tmp/.opencode-exact-workflow/11009286301/opencode run",
+    }
+    manager._publish_running_exact_evidence(record.job_id, evidence)
+    live = manager.get(record.job_id)
+    assert live is not None and live.status == "running"
+    assert live.exact_evidence["exe_sha256"] == evidence["exe_sha256"]
+    assert live.metadata["exact_exe_sha256"] == evidence["exe_sha256"]
+    serialized = manager.to_result_dict(live)
+    assert serialized["exact_evidence"]["exe_realpath"].startswith("/")
+    assert serialized["metadata"]["exact_evidence"]["pid"] == "123"
