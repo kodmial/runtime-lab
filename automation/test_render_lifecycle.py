@@ -76,6 +76,7 @@ from render_lifecycle import (  # noqa: E402
     experiment_record_path,
     knowledge_handoff_instructions,
     known_workflow_artifact_advisory,
+    superseded_hold_verdict,
     superseded_workflow_artifact_notice,
     superseded_dispatch_guard,
     validate_experiment_record_text,
@@ -982,3 +983,60 @@ def test_superseded_dispatch_guard_stops_retired_redispatch():
     assert superseded_dispatch_guard(None, None) is None
     assert superseded_dispatch_guard("", "") is None
     assert superseded_dispatch_guard(123, ["x"]) is None
+
+
+def test_refusal_record_carries_superseded_dispatch_hold():
+    # Regression for run 36633812500 (repair issue #165): that run
+    # executed at a base already containing the #161 log-only
+    # `held-superseded` verdict, yet the durable refusal evidence
+    # uploaded as `render-qualification-106-36633812500` carries no
+    # hold marker -- only `permanent`/`superseded`/`successor`. Any
+    # consumer of durable evidence (triage, provisioned scheduler
+    # envelopes) must therefore scrape log text to tell a held retired
+    # contract apart from a merely undeliverable one. The structured
+    # refusal record must carry the same hold verdict the executor
+    # names in logs, derived from the same single registry, while the
+    # verdict, Render cost (zero), and refusal shape stay unchanged.
+    requirement = parse_exact_workflow_artifact_requirement(
+        "t", ISSUE_106_ARTIFACT_BODY)
+    assert requirement is not None
+    hold = superseded_hold_verdict(requirement)
+    assert hold["held"] is True
+    assert hold["verdict"] == "held-superseded"
+    assert hold["artifact_id"] == "11001896223"
+    assert hold["source_run_id"] == "36492639568"
+    assert hold["successor"]["successor_artifact_id"] == "11004835952"
+    assert hold["successor"]["successor_source_run_id"] == "36498663107"
+    record = build_exact_artifact_refusal_result(
+        requirement, issue_number=106, run_id="36633812500")
+    assert record["status"] == "infrastructure-blocked"
+    assert record["permanent"] is True
+    assert record["superseded"] is True
+    assert record["dispatch_hold"]["held"] is True
+    assert record["dispatch_hold"]["verdict"] == "held-superseded"
+    assert record["dispatch_hold"]["artifact_id"] == "11001896223"
+    assert record["dispatch_hold"]["source_run_id"] == "36492639568"
+    assert record["dispatch_hold"]["successor"] == record["successor"]
+    assert record["dispatch_hold"]["successor"]["successor_artifact_id"] == "11004835952"
+    # The #110 phrasing pins the same retired contract and holds too.
+    requirement_110 = parse_exact_workflow_artifact_requirement(
+        "t", ISSUE_110_ARTIFACT_BODY)
+    assert requirement_110 is not None
+    record_110 = build_exact_artifact_refusal_result(
+        requirement_110, issue_number=110, run_id="36633812500")
+    assert record_110["dispatch_hold"]["held"] is True
+    assert record_110["dispatch_hold"]["verdict"] == "held-superseded"
+    # Unknown exact contracts are permanent blocks but not retired, so
+    # they carry an explicit not-held verdict and never misdirect.
+    other = build_exact_artifact_refusal_result(
+        {"artifact_id": "99999999999", "source_run_id": "1"},
+        issue_number="bad", run_id=None)
+    assert other["dispatch_hold"]["held"] is False
+    assert other["dispatch_hold"]["verdict"] == ""
+    assert other["dispatch_hold"]["successor"] == {}
+    # Garbage input never raises and never holds.
+    assert superseded_hold_verdict(None)["held"] is False
+    assert superseded_hold_verdict({})["held"] is False
+    assert superseded_hold_verdict("11001896223")["held"] is False
+    assert build_exact_artifact_refusal_result(None)["dispatch_hold"]["held"] is False
+    assert build_exact_artifact_refusal_result("garbage")["dispatch_hold"]["held"] is False

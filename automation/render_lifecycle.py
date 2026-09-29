@@ -986,6 +986,69 @@ def superseded_dispatch_guard(
         return None
 
 
+# Stable executor hold verdict naming a retired exact-artifact contract
+# (repair issue #161, run 36632062583): `render-job.sh` prints this
+# single machine-greppable line before the exact-artifact gate so
+# provisioned envelopes can key repair minting on it without scraping
+# free-form diagnostics. The structured refusal record carries the same
+# verdict under `dispatch_hold` (see `superseded_hold_verdict`).
+HELD_SUPERSEDED_VERDICT = "held-superseded"
+
+
+def superseded_hold_verdict(
+    requirement: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the machine-readable hold verdict for a parsed requirement.
+
+    Repair issue #165 (failed run 36633812500): that run executed at a
+    base already containing the #161 log-only `held-superseded` verdict,
+    yet the durable refusal evidence uploaded as
+    `render-qualification-106-36633812500` carries no hold marker --
+    only `permanent`/`superseded`/`successor`. Any consumer of durable
+    evidence (triage, provisioned scheduler envelopes) must therefore
+    scrape log text to tell a held retired contract apart from a merely
+    undeliverable one. This helper is the single choke point for the
+    structured form: `{"held": True, "verdict": "held-superseded", ...}`
+    with the retired `(artifact_id, source_run_id)` plus the immutable
+    `successor` mapping when the requirement names a retired
+    (``SUPERSEDED_WORKFLOW_ARTIFACTS``) contract, else `{"held": False,
+    "verdict": "", ...}` with an empty successor so ordinary and
+    unknown-contract refusals never misdirect. Data-driven: retiring a
+    future artifact adds one registry entry without touching this
+    logic. Never raises: unparsable input means "no hold", never a
+    verdict failure.
+    """
+    try:
+        if not isinstance(requirement, Mapping):
+            raise ValueError("no requirement")
+        artifact = str(requirement.get("artifact_id", "") or "").strip()
+        run = str(requirement.get("source_run_id", "") or "").strip()
+        entry = SUPERSEDED_WORKFLOW_ARTIFACTS.get((artifact, run))
+        if not entry:
+            raise ValueError("not superseded")
+        return {
+            "held": True,
+            "verdict": HELD_SUPERSEDED_VERDICT,
+            "artifact_id": artifact,
+            "source_run_id": run,
+            "successor": dict(entry),
+        }
+    except Exception:
+        try:
+            mapping = requirement if isinstance(requirement, Mapping) else {}
+            artifact = str(mapping.get("artifact_id", "") or "").strip()
+            run = str(mapping.get("source_run_id", "") or "").strip()
+        except Exception:
+            artifact, run = "", ""
+        return {
+            "held": False,
+            "verdict": "",
+            "artifact_id": artifact,
+            "source_run_id": run,
+            "successor": {},
+        }
+
+
 def unsupported_pr15_transport_note(
     requirement: Mapping[str, Any] | None,
     binary_sha256: object = "",
@@ -1104,7 +1167,10 @@ def build_exact_artifact_refusal_result(
     material premise change (a real artifact-delivery mechanism plus a
     version-stamped rebuild) will refuse identically -- it is a
     redispatch hint for future schedulers, not a workflow directive.
-    Never raises: garbage input yields a minimal fail-closed record.
+    `dispatch_hold` carries the same retired-contract hold the executor
+    names with the `held-superseded` log verdict (issue #165), so
+    durable evidence consumers never scrape log text. Never raises:
+    garbage input yields a minimal fail-closed record.
     """
     try:
         reason = exact_workflow_artifact_blocker(
@@ -1144,6 +1210,18 @@ def build_exact_artifact_refusal_result(
     except Exception:
         successor = {}
     try:
+        hold: dict[str, Any] = superseded_hold_verdict(
+            requirement if isinstance(requirement, Mapping) else None
+        )
+    except Exception:
+        hold = {
+            "held": False,
+            "verdict": "",
+            "artifact_id": "",
+            "source_run_id": "",
+            "successor": {},
+        }
+    try:
         issue = int(issue_number)
     except (TypeError, ValueError):
         issue = 0
@@ -1163,6 +1241,7 @@ def build_exact_artifact_refusal_result(
         "has_known_advisory": bool(advisory),
         "superseded": bool(notice),
         "successor": successor,
+        "dispatch_hold": hold,
         "issue_number": issue,
         "run_id": run_label,
         "docs": {
