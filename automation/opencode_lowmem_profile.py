@@ -397,8 +397,17 @@ def lowmem_env(workspace: str) -> dict[str, str]:
         raise ValueError("workspace must be a non-empty string")
     env = dict(STATIC_ENV)
     env["OPENCODE_DB"] = session_db_path(workspace)
+    # The worker config travels via OPENCODE_CONFIG_CONTENT (env, merged
+    # last as ``local`` by the OpenCode binary), never as a file inside
+    # the job clone. It must equal lowmem_config() exactly -- a
+    # permission-only document leaves the default MCP/LSP/formatter/
+    # share/autoupdate/provider/plugin subsystems active and reintroduces
+    # the pinned-at-ceiling restart storm (run 36632841000 for source
+    # issue #58). Parity with the production worker
+    # (automation/opencode_runner.py:OPENCODE_CONFIG_CONTENT) is
+    # regression-locked in automation/test_opencode_lowmem_profile.py.
     env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
-        {"permission": _READ_ONLY_GIT_PERMISSION}, sort_keys=True
+        lowmem_config(), sort_keys=True, separators=(",", ":")
     )
     return env
 
@@ -482,6 +491,7 @@ def validate_profile(
         "OPENCODE_DISABLE_SHARE",
         "OPENCODE_DISABLE_AUTOUPDATE",
         "OPENCODE_DISABLE_MODELS_FETCH",
+        "OPENCODE_DISABLE_EMBEDDED_WEB_UI",
         "OPENCODE_DB",
     ):
         if not str(env.get(key, "") or "").strip():
@@ -492,11 +502,16 @@ def validate_profile(
         content = json.loads(env.get("OPENCODE_CONFIG_CONTENT", ""))
     except (ValueError, TypeError):
         content = None
-    if not isinstance(content, dict) or content.get("permission") != (
-        _READ_ONLY_GIT_PERMISSION
-    ):
+    # The embedded config document must equal the full qualified config,
+    # not just the permission ruleset: a permission-only document passes
+    # the old subset check while leaving the default MCP/LSP/formatter/
+    # share/autoupdate/provider/plugin subsystems active on the worker
+    # (run 36632841000 stormed with exactly that gap; run 36635571284
+    # confirmed the full document is the production baseline).
+    if not isinstance(content, dict) or content != lowmem_config():
         errors.append(
-            "env.OPENCODE_CONFIG_CONTENT must carry the read-only git ruleset"
+            "env.OPENCODE_CONFIG_CONTENT must equal the full qualified "
+            "lowmem config (not a permission-only document)"
         )
     parts = list(cmd)
     if len(parts) < 2 or parts[1] != "run":
