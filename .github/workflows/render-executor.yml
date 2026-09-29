@@ -99,9 +99,6 @@ jobs:
           GH_TOKEN: ${{ secrets.TAP_PAT || github.token }}
           EXECUTE_OUTCOME: ${{ steps.execute.outcome }}
           CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
-          QUALIFICATION_CLASSIFICATION: ${{ steps.qualification.outputs.classification }}
-          QUALIFICATION_SUBTYPE: ${{ steps.qualification.outputs.subtype }}
-          QUALIFICATION_FINGERPRINT: ${{ steps.qualification.outputs.fingerprint }}
         shell: bash
         run: |
           set -euo pipefail
@@ -147,6 +144,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EXECUTE_OUTCOME: ${{ steps.execute.outcome }}
           CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+          QUALIFICATION_CLASSIFICATION: ${{ steps.qualification.outputs.classification }}
+          QUALIFICATION_SUBTYPE: ${{ steps.qualification.outputs.subtype }}
+          QUALIFICATION_FINGERPRINT: ${{ steps.qualification.outputs.fingerprint }}
         shell: bash
         run: |
           set -euo pipefail
@@ -155,7 +155,9 @@ jobs:
             --remove-label "automation:in-progress" >/dev/null 2>&1 || true
 
           CHAIN_QUALIFICATION="no"
-          case "$ISSUE_NUMBER" in 58|106|110) CHAIN_QUALIFICATION="yes" ;; esac
+          case "$ISSUE_NUMBER" in
+            58|106|110) CHAIN_QUALIFICATION="yes" ;;
+          esac
 
           QUALIFICATION_FAILED="no"
           if [[ "$CHAIN_QUALIFICATION" == "yes" && "$QUALIFICATION_CLASSIFICATION" != "pass" ]]; then
@@ -167,7 +169,8 @@ jobs:
               --add-label "automation:paused" >/dev/null 2>&1 || true
 
             if [[ "$CHAIN_QUALIFICATION" == "yes" && ( "$QUALIFICATION_CLASSIFICATION" == "memory" || "$QUALIFICATION_CLASSIFICATION" == "correctness" ) ]]; then
-              gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY"                 --body "Qualification classified as $QUALIFICATION_CLASSIFICATION ($QUALIFICATION_SUBTYPE); no infrastructure repair will be created. The durable qualification chain owns the next profile/optimization step."
+              gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "Qualification classified as $QUALIFICATION_CLASSIFICATION ($QUALIFICATION_SUBTYPE); no infrastructure repair will be created. The durable qualification chain owns the next profile/optimization step."
               gh workflow run qualification-chain.yml --repo "$GITHUB_REPOSITORY" --ref main
               echo "::error::Qualification failed with classification=$QUALIFICATION_CLASSIFICATION subtype=$QUALIFICATION_SUBTYPE"
               exit 1
@@ -181,9 +184,20 @@ jobs:
             SAME_FAILURE_COUNT=0
             if [[ "$CHAIN_QUALIFICATION" == "yes" && -n "$QUALIFICATION_FINGERPRINT" ]]; then
               FAILURE_MARKER="<!-- runtime-lab-render-failure-fingerprint=$QUALIFICATION_FINGERPRINT -->"
-              SAME_FAILURE_COUNT="$(jq --arg marker "$FAILURE_MARKER" '[.[][]? | select((.body // "") | contains($marker))] | length' \
+              SAME_FAILURE_COUNT="$(jq --arg marker "$FAILURE_MARKER" \
+                '[.[][]? | select((.body // "") | contains($marker))] | length' \
                 <<<"$COMMENTS_JSON" 2>/dev/null || echo 0)"
-              gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY"                 --body "$FAILURE_MARKER"
+              gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "$FAILURE_MARKER"
+
+              if [[ "$SAME_FAILURE_COUNT" -ge 1 ]]; then
+                gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                  --body "Identical Render qualification failure fingerprint repeated after a prior repair cycle. Automation remains paused instead of creating another identical repair."
+                gh workflow run qualification-chain.yml --repo "$GITHUB_REPOSITORY" --ref main
+                echo "::error::Repeated identical qualification failure fingerprint: $QUALIFICATION_FINGERPRINT"
+                exit 1
+              fi
+            fi
 
             if [[ "$REPAIR_COUNT" -lt "$MAX_RENDER_REPAIR_ATTEMPTS" ]]; then
               SOURCE_MARKER="<!-- runtime-lab-render-repair source=$ISSUE_NUMBER -->"
@@ -197,13 +211,13 @@ jobs:
                 REPAIR_BODY="$(cat <<EOF
           <!-- runtime-lab-render-repair source=$ISSUE_NUMBER -->
           <!-- runtime-lab-render-failed-run=$GITHUB_RUN_ID -->
-          
+
           ## Goal
-          
+
           Repair the concrete repository defect that caused Render execution for source issue #$ISSUE_NUMBER to fail in workflow run $GITHUB_RUN_ID.
-          
+
           ## Required investigation
-          
+
           - Inspect the failed run using: gh run view $GITHUB_RUN_ID --repo $GITHUB_REPOSITORY --log-failed.
           - Identify the root cause from evidence; do not guess or mask the failure.
           - For external API behavior, verify the contract against current official vendor documentation.
@@ -211,9 +225,9 @@ jobs:
           - Add or strengthen regression tests for the discovered failure mode.
           - Run the relevant test suite and keep the change scoped.
           - Do not close or modify source issue #$ISSUE_NUMBER. It stays paused until this repair PR is merged.
-          
+
           ## Failure context
-          
+
           - Source issue: #$ISSUE_NUMBER
           - Failed run: $GITHUB_RUN_ID
           - Execute outcome: $EXECUTE_OUTCOME
@@ -252,101 +266,6 @@ jobs:
             if [[ "$CHAIN_QUALIFICATION" == "yes" ]]; then
               gh workflow run qualification-chain.yml --repo "$GITHUB_REPOSITORY" --ref main
             fi
-            gh workflow run issue-scheduler.yml --repo "$GITHUB_REPOSITORY" --ref main
-          else
-            PR_JSON="$(gh pr list --repo "$GITHUB_REPOSITORY" --state all --limit 100 \
-              --json number,headRefName,state)"
-            PR_NUMBER="$(jq -r --arg prefix "opencode/issue$ISSUE_NUMBER-" \
-              '[.[] | select(.headRefName | startswith($prefix))][0].number // empty' \
-              <<<"$PR_JSON")"
-
-            if [[ -z "$PR_NUMBER" ]]; then
-              gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-                --add-label "automation:paused" >/dev/null 2>&1 || true
-              gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-                --body "Render E2E execution and cleanup succeeded in workflow run $GITHUB_RUN_ID, but no compatible opencode/issue${ISSUE_NUMBER}-... PR was found."
-              echo "::error::E2E mode completed without the required PR"
-              exit 1
-            fi
-
-            gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --add-label "automation:in-progress" >/dev/null 2>&1 || true
-            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body "Render E2E execution and cleanup succeeded in workflow run $GITHUB_RUN_ID; PR #$PR_NUMBER is now in the CI/merge chain."
-          fi
-\n'"classification=$QUALIFICATION_CLASSIFICATION subtype=$QUALIFICATION_SUBTYPE run=$GITHUB_RUN_ID"
-              if [[ "$SAME_FAILURE_COUNT" -ge 1 ]]; then
-                gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY"                   --body "Identical Render qualification failure fingerprint repeated after a prior repair cycle. Automation remains paused instead of creating another identical repair."
-                gh workflow run qualification-chain.yml --repo "$GITHUB_REPOSITORY" --ref main
-                echo "::error::Repeated identical qualification failure fingerprint: $QUALIFICATION_FINGERPRINT"
-                exit 1
-              fi
-            fi
-
-            if [[ "$REPAIR_COUNT" -lt "$MAX_RENDER_REPAIR_ATTEMPTS" ]]; then
-              SOURCE_MARKER="<!-- runtime-lab-render-repair source=$ISSUE_NUMBER -->"
-              ALL_ISSUES_JSON="$(gh api --paginate --slurp \
-                "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" 2>/dev/null || echo "[]")"
-              EXISTING_REPAIR="$(jq -r --arg marker "$SOURCE_MARKER" \
-                '.[][]? | select((.body // "") | contains($marker)) | .number' \
-                <<<"$ALL_ISSUES_JSON" | head -n 1)"
-
-              if [[ -z "$EXISTING_REPAIR" ]]; then
-                REPAIR_BODY="$(cat <<EOF
-          <!-- runtime-lab-render-repair source=$ISSUE_NUMBER -->
-          <!-- runtime-lab-render-failed-run=$GITHUB_RUN_ID -->
-          
-          ## Goal
-          
-          Repair the concrete repository defect that caused Render execution for source issue #$ISSUE_NUMBER to fail in workflow run $GITHUB_RUN_ID.
-          
-          ## Required investigation
-          
-          - Inspect the failed run using: gh run view $GITHUB_RUN_ID --repo $GITHUB_REPOSITORY --log-failed.
-          - Identify the root cause from evidence; do not guess or mask the failure.
-          - For external API behavior, verify the contract against current official vendor documentation.
-          - Fix the reusable implementation, not only this single run.
-          - Add or strengthen regression tests for the discovered failure mode.
-          - Run the relevant test suite and keep the change scoped.
-          - Do not close or modify source issue #$ISSUE_NUMBER. It stays paused until this repair PR is merged.
-          
-          ## Failure context
-          
-          - Source issue: #$ISSUE_NUMBER
-          - Failed run: $GITHUB_RUN_ID
-          - Execute outcome: $EXECUTE_OUTCOME
-          - Cleanup outcome: $CLEANUP_OUTCOME
-          - Execution mode: $EXECUTION_MODE
-          EOF
-                )"
-                REPAIR_URL="$(gh issue create --repo "$GITHUB_REPOSITORY" \
-                  --title "P0: Repair Render execution failure for #$ISSUE_NUMBER (run $GITHUB_RUN_ID)" \
-                  --label "priority:p0" --body "$REPAIR_BODY")"
-                gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
-          <!-- runtime-lab-render-repair-attempt -->
-          Render execution failed (execute=$EXECUTE_OUTCOME, cleanup=$CLEANUP_OUTCOME, run=$GITHUB_RUN_ID).
-          Created automatic recovery issue: $REPAIR_URL
-          The source issue remains paused until the recovery PR merges.
-          EOF
-                )"
-                gh workflow run issue-scheduler.yml --repo "$GITHUB_REPOSITORY" --ref main
-              else
-                gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-                  --body "Render execution failed in run $GITHUB_RUN_ID; recovery issue #$EXISTING_REPAIR is already open, so no duplicate repair was created."
-              fi
-            else
-              gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-                --body "Render execution failed in run $GITHUB_RUN_ID. Automatic recovery limit ($MAX_RENDER_REPAIR_ATTEMPTS) is exhausted; issue remains paused for inspection."
-            fi
-
-            echo "::error::Render execution or mandatory cleanup failed"
-            exit 1
-          fi
-
-          if [[ "$EXECUTION_MODE" == "smoke" ]]; then
-            gh issue close "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --reason completed \
-              --comment "Real Render smoke execution and mandatory cleanup completed successfully in workflow run $GITHUB_RUN_ID."
             gh workflow run issue-scheduler.yml --repo "$GITHUB_REPOSITORY" --ref main
           else
             PR_JSON="$(gh pr list --repo "$GITHUB_REPOSITORY" --state all --limit 100 \
