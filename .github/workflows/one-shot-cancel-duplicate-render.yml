@@ -1,0 +1,19 @@
+name: One-shot cancel duplicate Render run
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    if: "${{ github.event.head_commit.message == 'ops: cancel duplicate Render run' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel duplicate queued run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST repos/${{ github.repository }}/actions/runs/36511915809/cancel
