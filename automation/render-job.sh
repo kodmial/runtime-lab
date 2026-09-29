@@ -1023,6 +1023,33 @@ PY
         if [[ "$RUNNER_HEALTH" == "healthy" && "$RESTART_VERDICT" != "same-process" && "$POLLS_REMAINING" -gt 0 ]]; then
           echo "Runner lost job $JOB_ID ($RESTART_EVIDENCE); resubmitting the same payload on the same worker (resubmission $((POLL_RESUBMITS + 1)), $POLLS_REMAINING poll(s) of budget remaining, no new service)."
           LOST_JOB_ID="$JOB_ID"
+          # A Render worker restart replaces the process/container filesystem.
+          # Exact-artifact mode therefore loses the previously materialized binary.
+          # Re-deliver the already controller-verified bytes before resubmitting the
+          # job; never rebuild, substitute, or rely on PATH/installer fallback.
+          if [[ "$EXACT_MODE" == "yes" ]]; then
+            if [[ -z "$EXACT_BINARY_FILE" || ! -x "$EXACT_BINARY_FILE" ]]; then
+              echo "::error::Runner restarted and exact controller binary is unavailable for re-delivery; refusing to resubmit without the pinned artifact." >&2
+              exit 1
+            fi
+            REPUSH_CODE="$(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" curl -sS --max-time 300 -o /tmp/exact-repush-response.json -w '%{http_code}' -X POST "$SERVICE_URL/v1/exact-artifact" \
+              -H "Content-Type: application/octet-stream" \
+              -H "X-Exact-Artifact-Id: $(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["artifact_id"])')" \
+              -H "X-Exact-Artifact-Name: $(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["artifact_name"])')" \
+              -H "X-Exact-Source-Run: $(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["source_run_id"])')" \
+              -H "X-Exact-Archive-Sha256: $(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["archive_sha256"])')" \
+              -H "X-Exact-Artifact-Sha256: $(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["binary_sha256"])')" \
+              -H "X-Exact-Version: $(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["version"])')" \
+              --data-binary "@$EXACT_BINARY_FILE" 2>/dev/null || true)"
+            REPUSH_CODE="$(tr -dc '0-9' <<<"$REPUSH_CODE" || true)"
+            if [[ "$REPUSH_CODE" != "201" ]]; then
+              echo "::error::Runner restarted and exact-artifact re-delivery failed (HTTP ${REPUSH_CODE:-000}); refusing to resubmit a job that cannot execute the pinned binary." >&2
+              cat /tmp/exact-repush-response.json 2>/dev/null || true
+              exit 1
+            fi
+            echo "Re-delivered exact artifact after worker restart and worker re-verified the pinned bytes."
+            memory_sampler_record_event "exact_artifact_redelivered" "lost=$LOST_JOB_ID instance=$CURRENT_INSTANCE"
+          fi
           RESUBMIT_RESPONSE="$(curl -fsSL --max-time 30 -X POST "$SERVICE_URL/v1/jobs" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
