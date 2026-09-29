@@ -25,6 +25,8 @@ from superseded_hold_decision import (  # noqa: E402
     EXIT_USAGE_ERROR,
     decide_from_body,
     decide_from_result,
+    finalize_repair_decision,
+    format_hold_notice,
 )
 
 RETIRED_BODY = (
@@ -252,3 +254,114 @@ def test_cli_is_deterministic():
     second = _cli("--title", "smoke", "--body", RETIRED_BODY)
     assert first.returncode == second.returncode == EXIT_HELD
     assert first.stdout == second.stdout
+
+
+# ---------------------------------------------------------------------------
+# Finalize gate (repair issue #177, failed run 36638450066).
+#
+# Run 36638450066 executed at a base already containing this module, and
+# its uploaded refusal record (render-qualification-106-36638450066)
+# re-validates to held/exit 0 live -- yet finalize still minted #177.
+# The missing piece is the mint-vs-hold branch plus the successor notice
+# text. These tests lock that finalize contract without touching the
+# network or any file under .github/workflows/**.
+# ---------------------------------------------------------------------------
+
+
+def _live_36638450066_held_decision():
+    # Exact durable bytes uploaded by run 36638450066
+    # (render-qualification-106-36638450066, artifact 11065499378):
+    # status=infrastructure-blocked, permanent, superseded, full
+    # successor mapping, dispatch_hold.held=true.
+    record = {
+        "status": "infrastructure-blocked",
+        "permanent": True,
+        "artifact_id": "11001896223",
+        "source_run_id": "36492639568",
+        "dispatch_hold": {
+            "held": True,
+            "verdict": "held-superseded",
+            "artifact_id": "11001896223",
+            "source_run_id": "36492639568",
+            "successor": {
+                "successor_artifact_id": "11004835952",
+                "successor_source_run_id": "36498663107",
+            },
+        },
+    }
+    return decide_from_result(record)
+
+
+def test_live_36638450066_record_holds_and_formats_notice():
+    decision = _live_36638450066_held_decision()
+    assert decision["held"] is True
+    assert decision["verdict"] == "held-superseded"
+    notice = format_hold_notice(
+        decision, source_issue=106, failed_run_id="36638450066"
+    )
+    assert "11001896223" in notice
+    assert "36492639568" in notice
+    assert "11004835952" in notice
+    assert "36498663107" in notice
+    assert "36638450066" in notice
+    assert "No new repair was minted" in notice
+
+
+def test_hold_suppresses_mint_below_budget_without_existing_repair():
+    decision = _live_36638450066_held_decision()
+    outcome = finalize_repair_decision(
+        decision, repair_count=8, max_attempts=10, existing_repair=""
+    )
+    assert outcome["action"] == "hold"
+    assert "11004835952" in outcome["notice"]
+
+
+def test_not_held_mints_below_budget_without_existing_repair():
+    decision = decide_from_body("smoke", ORDINARY_BODY)
+    assert decision["held"] is False
+    outcome = finalize_repair_decision(
+        decision, repair_count=8, max_attempts=10, existing_repair=""
+    )
+    assert outcome["action"] == "mint"
+
+
+def test_not_held_duplicate_when_repair_already_open():
+    decision = decide_from_body("smoke", ORDINARY_BODY)
+    outcome = finalize_repair_decision(
+        decision, repair_count=3, max_attempts=10, existing_repair="177"
+    )
+    assert outcome["action"] == "duplicate"
+
+
+def test_not_held_exhausted_at_budget():
+    decision = decide_from_body("smoke", ORDINARY_BODY)
+    outcome = finalize_repair_decision(
+        decision, repair_count=10, max_attempts=10, existing_repair=""
+    )
+    assert outcome["action"] == "exhausted"
+
+
+def test_hold_wins_over_duplicate_and_exhausted():
+    decision = _live_36638450066_held_decision()
+    assert (
+        finalize_repair_decision(
+            decision, repair_count=3, max_attempts=10, existing_repair="177"
+        )["action"]
+        == "hold"
+    )
+    assert (
+        finalize_repair_decision(
+            decision, repair_count=10, max_attempts=10, existing_repair=""
+        )["action"]
+        == "hold"
+    )
+
+
+def test_finalize_gate_garbage_fails_open_toward_mint():
+    for decision in (None, [], "held", 42, {"held": True}):
+        outcome = finalize_repair_decision(
+            decision, repair_count=0, max_attempts=10, existing_repair=""
+        )
+        assert outcome["action"] == "mint"
+    assert format_hold_notice(None) == ""
+    assert format_hold_notice({"held": True}) == ""
