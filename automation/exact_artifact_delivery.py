@@ -70,6 +70,31 @@ EXPECTED_BINARY_SHA256 = (
     "f09d24273e95c3045e23ee37ecd98f8e31e9aa71ec30f75444df8441f5485966"
 )
 EXPECTED_VERSION = "1.18.33"
+
+# Exact OpenCode PR #15 identity (issue #140, measured by #134).
+# The binary fingerprint is pinned here; the Actions transport fields
+# (artifact id / source run / archive digest) are captured at publish
+# time by automation/opencode_pr15_publish.py and then carried
+# verbatim in the issue + submit/create payload. Delivery accepts a
+# PR #15 identity only when the pinned binary/version/source fields
+# match exactly AND the transport fields are well-formed numeric/digest
+# values (fail closed otherwise). No mutable/latest/main artifact is
+# ever accepted.
+PR15_FORK_PR = 15
+PR15_FORK_BRANCH = "coding-no-mini"
+PR15_SOURCE_SHA = "842157c38db9f8178ed0eee7af32f7536fe2346e"
+PR15_MERGE_SHA = "0d649350557c5ee3882cc55e5ca65f919ab304c4"
+PR15_SOURCE_PACKAGE_VERSION = "1.18.33"
+PR15_EXPECTED_VERSION = "1.18.33"
+PR15_EXPECTED_BINARY_SHA256 = (
+    "4e310bbdfab9b3fed5f95adabc1afe23b462be741a929901f058258e80328ded"
+)
+PR15_EXPECTED_BINARY_BYTES = 171222496
+PR15_BUILD_COMMAND = (
+    "OPENCODE_VERSION=1.18.33 bun run --cwd packages/opencode "
+    "script/build.ts --coding --single"
+)
+PR15_ARTIFACT_NAME = "opencode-coding-linux-x64"
 ARTIFACT_PAYLOAD = (
     "opencode-coding-linux-x64",
     "opencode-coding-linux-x64.sha256",
@@ -156,66 +181,207 @@ def parse_binary_sha256(title: object = "", body: object = "") -> str:
         return ""
 
 
-def validate_exact_identity(identity: object) -> dict[str, str]:
-    """Validate a machine-readable exact-artifact identity (fail closed).
+def _is_numeric_artifact_id(value: str) -> bool:
+    """True for GitHub Actions numeric artifact/run ids (5+ digits)."""
+    text = str(value or "").strip()
+    return text.isdigit() and len(text) >= 5
 
-    Requires the full supported conjunction: artifact id, source run,
-    archive digest, binary digest and version must all equal the pinned
-    contract. Anything else raises; there is no partial acceptance.
+
+def build_pr15_artifact_identity(
+    artifact_id: str, source_run_id: str, archive_sha256: str
+) -> dict[str, str]:
+    """Build the machine-readable identity for the exact PR #15 artifact.
+
+    Fail closed: transport fields must be well-formed (numeric ids,
+    64-hex archive digest); the pinned binary/version/source fields are
+    filled from the #134 fingerprint and never accept substitutes.
     """
-    if not isinstance(identity, dict):
-        raise ValueError("exact_artifact identity must be a mapping")
-    get = lambda key: str(identity.get(key, "") or "").strip()
+    artifact = str(artifact_id or "").strip()
+    run = str(source_run_id or "").strip()
+    archive = str(archive_sha256 or "").strip().lower()
+    if not _is_numeric_artifact_id(artifact):
+        raise ValueError("PR #15 artifact_id must be a numeric Actions id")
+    if not _is_numeric_artifact_id(run):
+        raise ValueError("PR #15 source_run_id must be a numeric workflow run id")
+    if SHA256_RE.match(archive) is None:
+        raise ValueError("PR #15 archive_sha256 must be 64 lowercase hex chars")
+    return {
+        "artifact_id": artifact,
+        "artifact_name": PR15_ARTIFACT_NAME,
+        "source_run_id": run,
+        "archive_sha256": archive,
+        "binary_sha256": PR15_EXPECTED_BINARY_SHA256,
+        "version": PR15_EXPECTED_VERSION,
+        "source_sha": PR15_SOURCE_SHA,
+        "merge_sha": PR15_MERGE_SHA,
+        "repo": FORK_REPO,
+        "pr": str(PR15_FORK_PR),
+        "branch": PR15_FORK_BRANCH,
+    }
+
+
+def _validate_pr12_identity(get) -> dict[str, str] | None:
+    """Return the PR #12 identity when every pinned field matches, else None."""
     artifact_id = get("artifact_id")
     source_run = get("source_run_id")
     archive = get("archive_sha256").lower()
     binary = get("binary_sha256").lower()
     version = get("version")
     name = get("artifact_name") or ARTIFACT_NAME
-    if artifact_id != ARTIFACT_ID:
-        raise ValueError(
-            "exact artifact_id %r is not the supported %r" % (artifact_id, ARTIFACT_ID)
-        )
-    if source_run != SOURCE_RUN_ID:
-        raise ValueError(
-            "exact source_run_id %r is not the supported %r" % (source_run, SOURCE_RUN_ID)
-        )
-    if SHA256_RE.match(archive) is None or archive != ARCHIVE_SHA256:
-        raise ValueError("exact archive_sha256 does not match the supported digest")
-    if SHA256_RE.match(binary) is None or binary != EXPECTED_BINARY_SHA256:
-        raise ValueError("exact binary_sha256 does not match the supported digest")
-    if version != EXPECTED_VERSION:
-        raise ValueError(
-            "exact version %r is not the supported %r" % (version, EXPECTED_VERSION)
-        )
-    if name != ARTIFACT_NAME:
-        raise ValueError("exact artifact_name %r is not %r" % (name, ARTIFACT_NAME))
+    if (
+        artifact_id == ARTIFACT_ID
+        and source_run == SOURCE_RUN_ID
+        and archive == ARCHIVE_SHA256
+        and binary == EXPECTED_BINARY_SHA256
+        and version == EXPECTED_VERSION
+        and name == ARTIFACT_NAME
+        and SHA256_RE.match(archive) is not None
+        and SHA256_RE.match(binary) is not None
+    ):
+        return {
+            "artifact_id": ARTIFACT_ID,
+            "artifact_name": ARTIFACT_NAME,
+            "source_run_id": SOURCE_RUN_ID,
+            "archive_sha256": ARCHIVE_SHA256,
+            "binary_sha256": EXPECTED_BINARY_SHA256,
+            "version": EXPECTED_VERSION,
+            "source_sha": SOURCE_SHA,
+            "merge_sha": MERGE_SHA,
+            "repo": FORK_REPO,
+            "pr": str(FORK_PR),
+            "branch": FORK_BRANCH,
+        }
+    return None
+
+
+def _validate_pr15_identity(identity: dict, get) -> dict[str, str] | None:
+    """Return the PR #15 identity when pinned + transport fields match, else None.
+
+    Pinned (never substituted): binary SHA-256 ``4e310b...28ded``,
+    version ``1.18.33``, artifact name, source/merge SHAs, repo/PR/branch.
+    Transport (captured at publish time): numeric artifact id, numeric
+    source run, 64-hex archive digest. A missing/foreign binary digest
+    never matches, so ordinary unsupported artifacts still fail closed.
+    """
+    artifact_id = get("artifact_id")
+    source_run = get("source_run_id")
+    archive = get("archive_sha256").lower()
+    binary = get("binary_sha256").lower()
+    version = get("version")
+    name = get("artifact_name") or PR15_ARTIFACT_NAME
+    if binary != PR15_EXPECTED_BINARY_SHA256:
+        return None
+    if SHA256_RE.match(binary) is None or SHA256_RE.match(archive) is None:
+        return None
+    if version != PR15_EXPECTED_VERSION or name != PR15_ARTIFACT_NAME:
+        return None
+    if not _is_numeric_artifact_id(artifact_id) or not _is_numeric_artifact_id(
+        source_run
+    ):
+        return None
+    # Never confuse the two supported binaries: a PR #15 binary claim
+    # under the PR #12 transport is not a supported identity.
+    if artifact_id == ARTIFACT_ID or source_run == SOURCE_RUN_ID:
+        if archive == ARCHIVE_SHA256:
+            return None
+    # Source provenance must name the exact PR #15 head when present.
+    # Identities that omit provenance still validate on the pinned
+    # binary/version/name + well-formed transport (the controller
+    # re-verifies archive->binary->version before any use); identities
+    # that carry conflicting provenance are rejected.
+    raw_repo = str(identity.get("repo", "") or "").strip()
+    raw_pr = str(identity.get("pr", "") or "").strip()
+    raw_branch = str(identity.get("branch", "") or "").strip()
+    raw_source = str(identity.get("source_sha", "") or "").strip().lower()
+    raw_merge = str(identity.get("merge_sha", "") or "").strip().lower()
+    if raw_repo and raw_repo != FORK_REPO:
+        return None
+    if raw_pr and raw_pr not in (str(PR15_FORK_PR),):
+        return None
+    if raw_branch and raw_branch != PR15_FORK_BRANCH:
+        return None
+    if raw_source and raw_source != PR15_SOURCE_SHA:
+        return None
+    if raw_merge and raw_merge != PR15_MERGE_SHA:
+        return None
     return {
-        "artifact_id": ARTIFACT_ID,
-        "artifact_name": ARTIFACT_NAME,
-        "source_run_id": SOURCE_RUN_ID,
-        "archive_sha256": ARCHIVE_SHA256,
-        "binary_sha256": EXPECTED_BINARY_SHA256,
-        "version": EXPECTED_VERSION,
-        "source_sha": SOURCE_SHA,
-        "merge_sha": MERGE_SHA,
+        "artifact_id": artifact_id,
+        "artifact_name": PR15_ARTIFACT_NAME,
+        "source_run_id": source_run,
+        "archive_sha256": archive,
+        "binary_sha256": PR15_EXPECTED_BINARY_SHA256,
+        "version": PR15_EXPECTED_VERSION,
+        "source_sha": PR15_SOURCE_SHA,
+        "merge_sha": PR15_MERGE_SHA,
         "repo": FORK_REPO,
-        "pr": str(FORK_PR),
-        "branch": FORK_BRANCH,
+        "pr": str(PR15_FORK_PR),
+        "branch": PR15_FORK_BRANCH,
     }
+
+
+def validate_exact_identity(identity: object) -> dict[str, str]:
+    """Validate a machine-readable exact-artifact identity (fail closed).
+
+    Data-driven over the supported registry (issue #140): accepts the
+    corrected PR #12 artifact (fully pinned transport + binary) and the
+    exact PR #15 artifact (pinned binary/version/source plus
+    publish-time numeric transport + archive digest). Anything else
+    raises; there is no partial acceptance and no mutable artifact.
+    """
+    if not isinstance(identity, dict):
+        raise ValueError("exact_artifact identity must be a mapping")
+    get = lambda key: str(identity.get(key, "") or "").strip()
+    pr12 = _validate_pr12_identity(get)
+    if pr12 is not None:
+        return pr12
+    pr15 = _validate_pr15_identity(dict(identity), get)
+    if pr15 is not None:
+        return pr15
+    raise ValueError(
+        "exact_artifact identity is not a supported PR #12 or PR #15 contract"
+    )
+
+
+def is_pr15_requirement(
+    requirement: object, binary_sha256: object = ""
+) -> bool:
+    """True only for the exact PR #15 contract (issue #140). Never raises."""
+    try:
+        if not isinstance(requirement, dict):
+            return False
+        raw_binary = str(binary_sha256 or "").strip().lower()
+        if raw_binary != PR15_EXPECTED_BINARY_SHA256:
+            return False
+        artifact = str(requirement.get("artifact_id", "") or "").strip()
+        run = str(requirement.get("source_run_id", "") or "").strip()
+        archive = str(requirement.get("archive_sha256", "") or "").strip().lower()
+        if not _is_numeric_artifact_id(artifact):
+            return False
+        if not _is_numeric_artifact_id(run):
+            return False
+        if SHA256_RE.match(archive) is None:
+            return False
+        # Never confuse the two supported binaries: a PR #15 binary claim
+        # under the PR #12 transport (or vice versa) is not supported.
+        if artifact == ARTIFACT_ID or run == SOURCE_RUN_ID:
+            if archive == ARCHIVE_SHA256:
+                return False
+        return True
+    except Exception:
+        return False
 
 
 def is_supported_exact_requirement(
     requirement: object, binary_sha256: object = ""
 ) -> bool:
-    """True only for the supported exact-artifact contract (issue #128).
+    """True for either supported contract (PR #12 or PR #15). Never raises.
 
     ``requirement`` is the ``parse_exact_workflow_artifact_requirement``
     dict (artifact_id + source_run_id + archive_sha256). ``binary_sha256``
-    is the optional ``binary SHA-256`` digest from the issue body: when
-    present it must equal the expected binary digest, otherwise a caller
-    could smuggle a different binary under the supported archive claim.
-    Never raises.
+    is the optional ``binary SHA-256`` digest from the issue body: for
+    PR #12 it must be absent or equal to the pinned digest; for PR #15
+    it must be present and equal to the #134 fingerprint (otherwise an
+    arbitrary numeric artifact could ride the PR #15 path).
     """
     try:
         if not isinstance(requirement, dict):
@@ -223,12 +389,12 @@ def is_supported_exact_requirement(
         artifact = str(requirement.get("artifact_id", "") or "").strip()
         run = str(requirement.get("source_run_id", "") or "").strip()
         archive = str(requirement.get("archive_sha256", "") or "").strip().lower()
-        if artifact != ARTIFACT_ID or run != SOURCE_RUN_ID or archive != ARCHIVE_SHA256:
-            return False
-        raw_binary = str(binary_sha256 or "").strip().lower()
-        if raw_binary and raw_binary != EXPECTED_BINARY_SHA256:
-            return False
-        return True
+        if artifact == ARTIFACT_ID and run == SOURCE_RUN_ID and archive == ARCHIVE_SHA256:
+            raw_binary = str(binary_sha256 or "").strip().lower()
+            if raw_binary and raw_binary != EXPECTED_BINARY_SHA256:
+                return False
+            return True
+        return is_pr15_requirement(requirement, binary_sha256)
     except Exception:
         return False
 
@@ -247,18 +413,30 @@ def exact_artifact_abs_path(
     Layout: ``<base>/.opencode-exact-workflow/<artifact-id>/opencode``,
     where ``<base>`` is ``base_dir`` when given, else
     ``$OPENCODE_EXACT_ARTIFACT_DIR`` when set, else the repository root.
-    The result is always absolute and normalized. Fails closed on numeric
-    workflow-artifact ids that are not the supported contract (the
-    supported path must never be confused with an arbitrary id), while
-    still allowing clearly namespaced test ids (``test-...``) for offline
-    coverage.
+    The result is always absolute and normalized. Full identity
+    validation (pinned binary/version/source) lives in
+    :func:`validate_exact_identity`; this path helper only guards the
+    filesystem shape, so it accepts the pinned PR #12 id, any numeric
+    Actions artifact id (the PR #15 transport id is captured at publish
+    time), and clearly namespaced ``test-...`` ids for offline coverage.
+    Anything else fails closed.
     """
     raw = (artifact_id or "").strip()
     if not raw or "/" in raw or raw in (".", ".."):
         raise ValueError("invalid exact artifact_id: %r" % artifact_id)
-    if raw != ARTIFACT_ID and not raw.startswith("test-"):
+    # The superseded issue-#109 artifact is never a path: it is retired
+    # on purpose and must stay fail-closed at every layer.
+    if raw == "11001896223":
         raise ValueError(
-            "unsupported exact artifact_id %r (supported: %r)" % (raw, ARTIFACT_ID)
+            "unsupported exact artifact_id %r (superseded; use 11004835952 or a PR #15 publish id)"
+            % (raw,)
+        )
+    if raw != ARTIFACT_ID and not raw.startswith("test-") and not _is_numeric_artifact_id(
+        raw
+    ):
+        raise ValueError(
+            "unsupported exact artifact_id %r (supported: %r or numeric publish id)"
+            % (raw, ARTIFACT_ID)
         )
     if base_dir is not None and str(base_dir).strip():
         base = str(base_dir).strip()
@@ -375,7 +553,7 @@ def controller_token_from_env(env: object = None) -> str:
 def exact_download_url(artifact_id: str = ARTIFACT_ID) -> str:
     """Authenticated download URL path for one exact workflow artifact."""
     raw = str(artifact_id or "").strip()
-    if raw != ARTIFACT_ID:
+    if raw != ARTIFACT_ID and not _is_numeric_artifact_id(raw):
         raise ValueError("unsupported exact artifact_id %r" % artifact_id)
     return "repos/%s/actions/artifacts/%s/zip" % (FORK_REPO, raw)
 
@@ -396,7 +574,8 @@ def download_exact_artifact_zip(
     token. ``urlopen`` is an injectable ``(request) -> response`` callable
     for offline tests; the default uses :mod:`urllib.request`.
     """
-    if str(artifact_id or "").strip() != ARTIFACT_ID:
+    raw_id = str(artifact_id or "").strip()
+    if raw_id != ARTIFACT_ID and not _is_numeric_artifact_id(raw_id):
         raise ValueError("unsupported exact artifact_id %r" % artifact_id)
     if not isinstance(dest_path, str) or not dest_path.strip():
         raise ValueError("dest_path must be a non-empty string")
@@ -404,7 +583,7 @@ def download_exact_artifact_zip(
     if not credential:
         raise ValueError(
             "controller GitHub token is required to download exact artifact %s"
-            % ARTIFACT_ID
+            % raw_id
         )
     base = str(api_base or "").strip().rstrip("/") or GITHUB_API_BASE
     url = "%s/%s" % (base, exact_download_url(artifact_id))
@@ -768,15 +947,62 @@ def launch_exact_opencode_abs(
     }
 
 
+def _identity_for_binary_sha(file_sha256: str) -> dict[str, str]:
+    """Return the pinned identity matching a materialized binary SHA."""
+    raw = str(file_sha256 or "").strip().lower()
+    if raw == PR15_EXPECTED_BINARY_SHA256:
+        # Transport ids are not known from the SHA alone; the caller
+        # supplies them via validate_exact_identity when available. This
+        # helper returns the pinned PR #15 provenance with empty transport
+        # placeholders that callers overwrite with the validated identity.
+        return {
+            "artifact_id": "",
+            "artifact_name": PR15_ARTIFACT_NAME,
+            "source_run_id": "",
+            "archive_sha256": "",
+            "binary_sha256": PR15_EXPECTED_BINARY_SHA256,
+            "version": PR15_EXPECTED_VERSION,
+            "source_sha": PR15_SOURCE_SHA,
+            "merge_sha": PR15_MERGE_SHA,
+            "repo": FORK_REPO,
+            "pr": str(PR15_FORK_PR),
+            "branch": PR15_FORK_BRANCH,
+        }
+    return build_exact_artifact_identity()
+
+
 def build_exact_evidence(
     binary_abs_path: str,
     file_sha256: str,
     proc_identity: Mapping[str, str],
     argv: list[str] | tuple[str, ...],
     version: str = "",
+    identity: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Assemble the durable exact/process identity evidence record."""
-    identity = build_exact_artifact_identity()
+    if identity is not None:
+        try:
+            validated = validate_exact_identity(dict(identity))
+        except ValueError:
+            validated = _identity_for_binary_sha(file_sha256)
+    else:
+        raw_sha = str(file_sha256 or "").strip().lower()
+        if raw_sha == PR15_EXPECTED_BINARY_SHA256:
+            validated = _identity_for_binary_sha(raw_sha)
+            # Recover the numeric transport id from the deterministic
+            # path layout (`.opencode-exact-workflow/<id>/opencode`) when
+            # the caller did not supply the full identity.
+            try:
+                parent_id = os.path.basename(
+                    os.path.dirname(os.path.abspath(str(binary_abs_path)))
+                )
+                if _is_numeric_artifact_id(parent_id):
+                    validated["artifact_id"] = parent_id
+            except Exception:
+                pass
+        else:
+            validated = build_exact_artifact_identity()
+    identity = validated
     evidence: dict[str, str] = {
         "schema": SCHEMA,
         "artifact_id": identity["artifact_id"],
