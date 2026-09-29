@@ -207,10 +207,61 @@ jobs:
           git fetch origin "$BRANCH" --quiet
           git switch --detach "origin/$BRANCH"
           if ! git cherry-pick "$TASK_COMMIT"; then
-            git cherry-pick --abort || true
-            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" >/dev/null 2>&1 || true
-            echo "::error::Task changes conflict with current main; remote issue branch removed."
-            exit 1
+            # A moving main is normal under parallel automation. Repair the
+            # replay in-place instead of treating the merge conflict as a
+            # failed implementation attempt.
+            touch "$RUNNER_TEMP/opencode-publication-conflict"
+            CONFLICT_FILES="$(git diff --name-only --diff-filter=U)"
+            echo "Task replay conflicts with current main; invoking automatic conflict repair."
+            printf '%s\n' "$CONFLICT_FILES"
+
+            CONFLICT_PROMPT="$(cat <<EOF
+          Resolve the current cherry-pick conflicts while replaying the completed implementation
+          for GitHub issue #${ISSUE_NUMBER} onto the latest main.
+
+          Task commit: ${TASK_COMMIT}
+          Conflicted files:
+          ${CONFLICT_FILES}
+
+          Requirements:
+          - Preserve the intended task implementation and all compatible current-main changes.
+          - Resolve every conflict marker; do not discard unrelated concurrent work.
+          - Inspect git diff/status/show as needed, but do not run git commit, push, branch,
+            reset, rebase, merge, cherry-pick, or PR commands; the workflow owns Git state.
+          - Do not modify .github/workflows/**.
+          - Run focused validation when practical.
+          EOF
+          )"
+
+            opencode run --auto --model "$OPENCODE_MODEL" "$CONFLICT_PROMPT"
+
+            if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
+              echo "::error::Automatic publication conflict repair left unresolved files."
+              git cherry-pick --abort || true
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" >/dev/null 2>&1 || true
+              exit 75
+            fi
+
+            if [[ -n "$(git status --porcelain -- .github/workflows)" ]]; then
+              echo "::error::Conflict repair attempted to modify .github/workflows/**."
+              git cherry-pick --abort || true
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" >/dev/null 2>&1 || true
+              exit 75
+            fi
+
+            find . -type d -name '__pycache__' -prune -exec rm -rf {} +
+            find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+            git add -A
+
+            if git diff --cached --quiet; then
+              # Concurrent main already contains the effective task change.
+              git cherry-pick --skip
+            else
+              GIT_EDITOR=true git cherry-pick --continue
+            fi
+
+            rm -f "$RUNNER_TEMP/opencode-publication-conflict"
+            echo "Automatically resolved task replay conflict on current main."
           fi
 
           if [[ -n "$(git diff --name-only "$BASE_SHA"...HEAD -- .github/workflows)" ]]; then
@@ -391,6 +442,19 @@ jobs:
         run: |
           set -euo pipefail
           [[ -n "$ISSUE_NUMBER" ]] || exit 0
+
+          conflict_reset='<!-- runtime-lab-publication-conflict-reset -->'
+          if [[ -f "$RUNNER_TEMP/opencode-publication-conflict" ]]; then
+            gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --remove-label "automation:in-progress" \
+              --remove-label "automation:paused" >/dev/null 2>&1 || true
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "$conflict_reset
+OpenCode publication hit a moving-main conflict that automatic repair did not finish. This is an infrastructure retry, not a failed task attempt; the dispatch budget is reset and the scheduler will retry from current main."
+            gh workflow run issue-scheduler.yml --repo "$GITHUB_REPOSITORY" --ref main
+            echo "Publication conflict for issue #$ISSUE_NUMBER released without consuming the task retry budget."
+            exit 0
+          fi
 
           marker='<!-- runtime-lab-scheduler-dispatch -->'
           attempts="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments" \
