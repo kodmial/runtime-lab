@@ -26,13 +26,11 @@ cleanup_private_runtime_runs() {
   done
 }
 
-# One-time scrub of historical public runs tied to superseded external-task
-# bridge revisions. Remove this block after the scrub commit has executed.
-for run_id in 36558116685 36558116257 36558116652 36558102742 36558102859 36558102802 36558102737 36558095886 36558095898 36558095869 36558095878 36558094435 36557942765 36557942758 36557943033 36557822392 36557822427 36557822414 36557805673 36557805722 36557804622 36557804620 36557763528 36557763421 36557763260 36557763281 36557762079 36430364922 36430346269 36430271940 36430254367 36429944096 36429918444 36429918330 36429915460 36429913348 36429560757 36429532640 36429511116; do
-  gh api --method DELETE \
-    "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
-    >/dev/null 2>&1 || true
-done
+# One-time removal of a now-obsolete public coordination comment whose
+# previous revision named external private-project repositories.
+gh api --method DELETE \
+  "repos/$GITHUB_REPOSITORY/issues/comments/5872183905" \
+  >/dev/null 2>&1 || true
 
 # The dispatcher is invoked by workflow_run as soon as a worker/review
 # completes, so this removes the finished public run promptly. The same sweep
