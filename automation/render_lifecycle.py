@@ -507,6 +507,10 @@ EXACT_WORKFLOW_ARTIFACT_NAME_RE = re.compile(
 EXACT_WORKFLOW_ARTIFACT_SOURCE_SHA_RE = re.compile(
     r"source\s+sha\s*:\s*`?([0-9a-fA-F]{40})`?", re.IGNORECASE
 )
+EXACT_WORKFLOW_ARTIFACT_REPO_RE = re.compile(
+    r"repository\s*:\s*`?([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)`?",
+    re.IGNORECASE,
+)
 EXACT_WORKFLOW_ARTIFACT_BINARY_SHA_RE = re.compile(
     r"binary\s+SHA-?256\s*[:=]?\s*`?([0-9a-fA-F]{64})`?", re.IGNORECASE
 )
@@ -536,6 +540,24 @@ SUPPORTED_EXACT_ARTIFACT_NAME = "opencode-coding-linux-x64"
 # automation/opencode_pr15_publish.py. The gate requires the PR #15
 # binary digest to be present in the issue body so an arbitrary numeric
 # artifact can never ride this path.
+#
+# Transport pinning (issue #146, run 36511901291): artifact IDs are
+# repo-scoped (https://docs.github.com/en/rest/actions/artifacts: the
+# download endpoint is GET
+# /repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip), while the
+# controller downloads only from ``kodmial/opencode``. A numeric
+# artifact from any other repository (e.g. the runtime-lab-local
+# ``11009461073`` from run ``36511798742``) therefore 404s at fetch
+# time. The gate pins the published immutable transport triple(s) below
+# and refuses anything else pre-creation instead of burning a Render
+# service on a fetch that cannot succeed. To route a future re-published
+# PR #15 build, add its triple here explicitly (never accept "any
+# numeric transport").
+SUPPORTED_PR15_ARTIFACTS: dict[tuple[str, str], str] = {
+    ("11009286301", "36512250023"): (
+        "df547ac873c9591bc98e5ef43b9283b77f5a4295fc2f27cda6b280d18c313c46"
+    ),
+}
 SUPPORTED_PR15_BINARY_SHA256 = (
     "d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0"
 )
@@ -561,6 +583,19 @@ def parse_exact_binary_sha256(title: object = "", body: object = "") -> str:
         return ""
 
 
+def parse_exact_artifact_repo(title: object = "", body: object = "") -> str:
+    """Extract the ``Repository: <owner/repo>`` declaration, else "".
+
+    Never raises: unparsable input means "no declaration".
+    """
+    try:
+        text = "%s\n%s" % (title or "", body or "")
+        match = EXACT_WORKFLOW_ARTIFACT_REPO_RE.search(text)
+        return match.group(1).lower() if match else ""
+    except Exception:
+        return ""
+
+
 def _is_numeric_id(value: object) -> bool:
     """True for numeric GitHub Actions ids (artifact/run, 5+ digits)."""
     try:
@@ -577,8 +612,12 @@ def is_supported_pr15_workflow_artifact(
     """True only for the exact PR #15 contract (issue #140). Never raises.
 
     Requires the published PR #15 binary fingerprint to be present in the issue body
-    plus well-formed numeric transport ids and a 64-hex archive digest.
-    A PR #15 binary claim under the PR #12 transport is never accepted.
+    plus a pinned publish-time transport triple from
+    ``SUPPORTED_PR15_ARTIFACTS`` (artifact id + source run + archive
+    digest). A declared repository other than ``kodmial/opencode`` is
+    never accepted (artifact IDs are repo-scoped, so a foreign triple
+    404s at the controller fetch). A PR #15 binary claim under the PR
+    #12 transport is never accepted.
     """
     try:
         if not isinstance(requirement, Mapping):
@@ -598,6 +637,12 @@ def is_supported_pr15_workflow_artifact(
         if artifact == SUPPORTED_EXACT_ARTIFACT_ID or run == SUPPORTED_EXACT_SOURCE_RUN_ID:
             if archive == SUPPORTED_EXACT_ARCHIVE_SHA256:
                 return False
+        declared_repo = str(requirement.get("repository", "") or "").strip().lower()
+        if declared_repo and declared_repo != SUPPORTED_PR15_REPO.lower():
+            return False
+        expected_archive = SUPPORTED_PR15_ARTIFACTS.get((artifact, run))
+        if expected_archive is None or archive != expected_archive:
+            return False
         return True
     except Exception:
         return False
@@ -732,7 +777,9 @@ def exact_artifact_gate_decision(
         return None, "", None
     binary_sha = parse_exact_binary_sha256(title, body)
     if not is_supported_exact_workflow_artifact(requirement, binary_sha):
-        return requirement, exact_workflow_artifact_blocker(requirement), None
+        blocker = exact_workflow_artifact_blocker(requirement)
+        blocker += unsupported_pr15_transport_note(requirement, binary_sha)
+        return requirement, blocker, None
     if is_supported_pr15_workflow_artifact(requirement, binary_sha):
         return requirement, "", pr15_exact_artifact_identity(requirement, binary_sha)
     return requirement, "", supported_exact_artifact_identity()
@@ -747,7 +794,7 @@ def parse_exact_workflow_artifact_requirement(
     issues (e.g. issue #106): a numeric Actions artifact id plus the
     numeric source workflow run plus a sha256 archive/checksum digest.
     Returns a small evidence dict (artifact_id, artifact_name or "",
-    source_run_id, archive_sha256, source_sha or "") or None when the
+    source_run_id, archive_sha256, source_sha or "", repository or "") or None when the
     issue carries no such contract. Never raises: unparsable input
     means "no contract", never a gate trip.
     """
@@ -760,12 +807,14 @@ def parse_exact_workflow_artifact_requirement(
             return None
         name_match = EXACT_WORKFLOW_ARTIFACT_NAME_RE.search(text)
         sha_match = EXACT_WORKFLOW_ARTIFACT_SOURCE_SHA_RE.search(text)
+        repo_match = EXACT_WORKFLOW_ARTIFACT_REPO_RE.search(text)
         return {
             "artifact_id": id_match.group(1),
             "artifact_name": name_match.group(1) if name_match else "",
             "source_run_id": run_match.group(1),
             "archive_sha256": digest_match.group(1).lower(),
             "source_sha": sha_match.group(1).lower() if sha_match else "",
+            "repository": repo_match.group(1).lower() if repo_match else "",
         }
     except Exception:
         return None
@@ -871,6 +920,51 @@ def superseded_workflow_artifact_notice(
                 entry["successor_source_run_id"],
                 entry["successor_version"],
                 entry["owner"],
+            )
+        )
+    except Exception:
+        return ""
+
+
+def unsupported_pr15_transport_note(
+    requirement: Mapping[str, Any] | None,
+    binary_sha256: object = "",
+) -> str:
+    """Explain a refused PR #15-shaped transport (issue #146). Never raises.
+
+    Returns "" unless the issue claims the pinned PR #15 binary digest
+    with a transport triple outside ``SUPPORTED_PR15_ARTIFACTS`` (or a
+    foreign repository): the case that run 36511901291 proved, where a
+    runtime-lab-local artifact (``11009461073`` from run ``36511798742``)
+    passed the old shape-only gate and then 404d at the controller
+    fetch because artifact IDs are repo-scoped
+    (``GET /repos/{owner}/{repo}/actions/artifacts/{id}/zip``) while
+    delivery fetches only from ``kodmial/opencode``.
+    """
+    try:
+        if not isinstance(requirement, Mapping):
+            return ""
+        raw_binary = str(binary_sha256 or "").strip().lower()
+        if raw_binary != SUPPORTED_PR15_BINARY_SHA256:
+            return ""
+        artifact = str(requirement.get("artifact_id", "") or "").strip() or "unknown"
+        run = str(requirement.get("source_run_id", "") or "").strip() or "unknown"
+        return (
+            " PR #15 transport note: artifact %s (workflow run %s) is not a "
+            "pinned %s publish (known: %s); artifact IDs are scoped to "
+            "their source repository, and exact delivery fetches only from "
+            "%s (see %s), so an unpinned or foreign-repository triple "
+            "cannot be fetched and is refused before any worker exists."
+            % (
+                artifact,
+                run,
+                SUPPORTED_PR15_REPO,
+                ", ".join(
+                    "%s/run %s" % (aid, rid)
+                    for (aid, rid) in sorted(SUPPORTED_PR15_ARTIFACTS)
+                ),
+                SUPPORTED_PR15_REPO,
+                GITHUB_ARTIFACT_DOWNLOAD_DOC,
             )
         )
     except Exception:

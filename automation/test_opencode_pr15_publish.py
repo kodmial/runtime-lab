@@ -37,9 +37,12 @@ from render_lifecycle import ExecutionMetadata, JobRequest
 
 PR15_BINARY = "d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0"
 PR12_BINARY = "f09d24273e95c3045e23ee37ecd98f8e31e9aa71ec30f75444df8441f5485966"
-PR15_ARCHIVE = "a" * 64
-PR15_ARTIFACT = "1100998877"
-PR15_RUN = "36508913636"
+# Pinned published transport (issue #141; registry in
+# render_lifecycle.SUPPORTED_PR15_ARTIFACTS). Fixtures must use the real
+# triple: the gate refuses any unpinned numeric transport (issue #146).
+PR15_ARCHIVE = "df547ac873c9591bc98e5ef43b9283b77f5a4295fc2f27cda6b280d18c313c46"
+PR15_ARTIFACT = "11009286301"
+PR15_RUN = "36512250023"
 
 ISSUE_PR15_BODY = """\
 ## Exact immutable artifact
@@ -48,15 +51,15 @@ ISSUE_PR15_BODY = """\
 - PR: `#15`
 - Branch: `coding-no-mini`
 - Source/head SHA: `842157c38db9f8178ed0eee7af32f7536fe2346e`
-- Source workflow run: `36508913636`
+- Source workflow run: `36512250023`
 - Artifact name: `opencode-coding-linux-x64`
-- Artifact ID: `1100998877`
-- Artifact archive digest: `sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`
+- Artifact ID: `11009286301`
+- Artifact archive digest: `sha256:df547ac873c9591bc98e5ef43b9283b77f5a4295fc2f27cda6b280d18c313c46`
 - Expected binary SHA-256: `d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0`
 - binary SHA-256: `d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0`
 - Expected --version: `1.18.33`
 
-Download exact artifact ID `1100998877` from source run `36508913636`.
+Download exact artifact ID `11009286301` from source run `36512250023`.
 """
 
 
@@ -173,8 +176,8 @@ def test_downstream_body_serves_both_parsers():
     body = publish.render_downstream_issue_body(manifest)
     # docker-qualification.yml value('<Label>') labels.
     for label in (
-        "- Artifact ID: `1100998877`",
-        "- Source workflow run: `36508913636`",
+        "- Artifact ID: `11009286301`",
+        "- Source workflow run: `36512250023`",
         "- Source/head SHA: `842157c38db9f8178ed0eee7af32f7536fe2346e`",
         "- Expected binary SHA-256: `d9f930",
         "- Expected --version: `1.18.33`",
@@ -185,7 +188,7 @@ def test_downstream_body_serves_both_parsers():
     assert "artifact id" in body.lower()
     assert "workflow run" in body.lower()
     assert "binary SHA-256" in body
-    assert "Download exact artifact ID `1100998877` from source run `36508913636`" in body
+    assert "Download exact artifact ID `11009286301` from source run `36512250023`" in body
     # Marginal Docker evidence is cited, never a gate.
     assert "marginal" in body.lower()
     assert "must not block" in body.lower()
@@ -210,7 +213,7 @@ def test_handoff_updates_before_unpause_then_dispatches():
         "ref": "main",
         "inputs": {"issue_number": "141", "mode": "e2e"},
     }]
-    assert "1100998877" in plan["issue_body"]
+    assert "11009286301" in plan["issue_body"]
     with pytest.raises(ValueError):
         publish.build_handoff_plan(manifest, 0)
     with pytest.raises(ValueError):
@@ -329,7 +332,7 @@ def test_pr15_identity_flows_through_submit_and_create(tmp_path):
 
 def test_abs_path_and_evidence_cover_pr15(tmp_path):
     path = exact.exact_artifact_abs_path(PR15_ARTIFACT, base_dir=str(tmp_path))
-    assert path.endswith(".opencode-exact-workflow/1100998877/opencode")
+    assert path.endswith(".opencode-exact-workflow/11009286301/opencode")
     with pytest.raises(ValueError):
         exact.exact_artifact_abs_path("../escape", base_dir=str(tmp_path))
     with pytest.raises(ValueError):
@@ -434,3 +437,102 @@ def test_issue141_exact_transport_passes_gate_and_matches_pins():
     assert blocker2 == "" and identity2 is not None
     assert identity2["artifact_id"] == ISSUE_141_ARTIFACT
     assert identity2["binary_sha256"] == PR15_BINARY
+
+
+# ---------------------------------------------------------------------------
+# Issue #146 (run 36511901291): a foreign-repository triple with the pinned
+# binary digest must be refused pre-creation, never delivered.
+# ---------------------------------------------------------------------------
+
+# Run 36511901291 selected this runtime-lab-local triple (artifact
+# 11009461073 from run 36511798742, one-shot publish workflow) while the
+# controller downloads only from kodmial/opencode, so the fetch 404d
+# (urllib HTTPError 404) after a Render service had already been created.
+BAD_146_ARTIFACT = "11009461073"
+BAD_146_RUN = "36511798742"
+BAD_146_ARCHIVE = (
+    "5048475322e2364e8066eff7958b0d9edfe91aa204616d2f63586c85d89081fb"
+)
+
+
+def _bad_146_body(repository="kodmial/opencode"):
+    return (
+        "- Repository: `%s`\n"
+        "- Artifact ID: `%s`\n"
+        "- Source workflow run: `%s`\n"
+        "- Artifact archive digest: `sha256:%s`\n"
+        "- Expected binary SHA-256: `%s`\n"
+        "- binary SHA-256: `%s`\n"
+        "Download exact artifact ID `%s` from source run `%s`.\n"
+        % (
+            repository, BAD_146_ARTIFACT, BAD_146_RUN, BAD_146_ARCHIVE,
+            PR15_BINARY, PR15_BINARY,
+            BAD_146_ARTIFACT, BAD_146_RUN,
+        )
+    )
+
+
+def test_issue146_foreign_transport_refused_before_any_worker():
+    """Run 36511901291 must fail closed at the gate, not at the fetch.
+
+    The bad triple carries the pinned PR #15 binary digest with an
+    unpinned (runtime-lab-local) transport. The gate must refuse it with
+    an ``infrastructure-blocked`` blocker plus the repo-scoped transport
+    note and no delivery identity, so ``render-job.sh`` exits before any
+    Render service is created instead of 404ing after creation.
+    """
+    body = _bad_146_body()
+    requirement = lifecycle.parse_exact_workflow_artifact_requirement("t", body)
+    assert requirement is not None
+    assert requirement["artifact_id"] == BAD_146_ARTIFACT
+    assert requirement["source_run_id"] == BAD_146_RUN
+    assert requirement["archive_sha256"] == BAD_146_ARCHIVE
+    binary = lifecycle.parse_exact_binary_sha256("t", body)
+    assert binary == PR15_BINARY
+    assert not lifecycle.is_supported_pr15_workflow_artifact(requirement, binary)
+    assert not lifecycle.is_supported_exact_workflow_artifact(requirement, binary)
+    assert not exact.is_pr15_requirement(requirement, binary)
+    assert not exact.is_supported_exact_requirement(requirement, binary)
+    req, blocker, identity = lifecycle.exact_artifact_gate_decision("t", body)
+    assert req is not None
+    assert identity is None
+    assert "infrastructure-blocked" in blocker
+    assert BAD_146_ARTIFACT in blocker
+    assert "11009286301" in blocker  # note names the pinned publish
+    with pytest.raises(ValueError):
+        exact.build_pr15_artifact_identity(
+            BAD_146_ARTIFACT, BAD_146_RUN, BAD_146_ARCHIVE
+        )
+    with pytest.raises(ValueError):
+        exact.validate_exact_identity({
+            "artifact_id": BAD_146_ARTIFACT,
+            "artifact_name": "opencode-coding-linux-x64",
+            "source_run_id": BAD_146_RUN,
+            "archive_sha256": BAD_146_ARCHIVE,
+            "binary_sha256": PR15_BINARY,
+            "version": "1.18.33",
+        })
+    # The pinned publish still routes to delivery.
+    good = lifecycle.parse_exact_workflow_artifact_requirement("t", ISSUE_PR15_BODY)
+    assert good is not None
+    assert lifecycle.is_supported_pr15_workflow_artifact(good, PR15_BINARY)
+    assert exact.is_pr15_requirement(good, PR15_BINARY)
+
+
+def test_issue146_foreign_repository_declaration_refused():
+    """A non-opencode Repository declaration never rides the PR #15 path."""
+    body = _bad_146_body(repository="kodmial/runtime-lab")
+    assert lifecycle.parse_exact_artifact_repo("t", body) == "kodmial/runtime-lab"
+    requirement = lifecycle.parse_exact_workflow_artifact_requirement("t", body)
+    assert requirement is not None
+    assert requirement.get("repository") == "kodmial/runtime-lab"
+    binary = lifecycle.parse_exact_binary_sha256("t", body)
+    assert binary == PR15_BINARY
+    assert not lifecycle.is_supported_pr15_workflow_artifact(requirement, binary)
+    req, blocker, identity = lifecycle.exact_artifact_gate_decision("t", body)
+    assert req is not None and identity is None
+    assert "infrastructure-blocked" in blocker
+    # The published triple declares kodmial/opencode and still passes.
+    assert lifecycle.parse_exact_artifact_repo("t", ISSUE_PR15_BODY) == (
+        "kodmial/opencode"
+    )

@@ -96,6 +96,21 @@ PR15_BUILD_COMMAND = (
     "script/build.ts --coding --single"
 )
 PR15_ARTIFACT_NAME = "opencode-coding-linux-x64"
+# Pinned publish-time transport triple(s) for the exact PR #15 artifact
+# (issue #146, run 36511901291): artifact IDs are repo-scoped
+# (GET /repos/{owner}/{repo}/actions/artifacts/{id}/zip), while delivery
+# fetches only from ``kodmial/opencode``. The runtime-lab-local triple
+# (``11009461073``/``36511798742``) passed the old shape-only checks and
+# then 404d at fetch time after a Render service had already been
+# created. Only pinned triples route to delivery; anything else fails
+# closed pre-creation. Mirror of
+# render_lifecycle.SUPPORTED_PR15_ARTIFACTS (kept local to stay
+# import-cycle free); add future re-publishes in both places.
+SUPPORTED_PR15_ARTIFACTS: dict[tuple[str, str], str] = {
+    ("11009286301", "36512250023"): (
+        "df547ac873c9591bc98e5ef43b9283b77f5a4295fc2f27cda6b280d18c313c46"
+    ),
+}
 ARTIFACT_PAYLOAD = (
     "opencode-coding-linux-x64",
     "opencode-coding-linux-x64.sha256",
@@ -206,6 +221,12 @@ def build_pr15_artifact_identity(
         raise ValueError("PR #15 source_run_id must be a numeric workflow run id")
     if SHA256_RE.match(archive) is None:
         raise ValueError("PR #15 archive_sha256 must be 64 lowercase hex chars")
+    expected_archive = SUPPORTED_PR15_ARTIFACTS.get((artifact, run))
+    if expected_archive is None or archive != expected_archive:
+        raise ValueError(
+            "PR #15 transport %s/run %s is not a pinned kodmial/opencode publish"
+            % (artifact, run)
+        )
     return {
         "artifact_id": artifact,
         "artifact_name": PR15_ARTIFACT_NAME,
@@ -280,6 +301,9 @@ def _validate_pr15_identity(identity: dict, get) -> dict[str, str] | None:
         source_run
     ):
         return None
+    expected_archive = SUPPORTED_PR15_ARTIFACTS.get((artifact_id, source_run))
+    if expected_archive is None or archive != expected_archive:
+        return None
     # Never confuse the two supported binaries: a PR #15 binary claim
     # under the PR #12 transport is not a supported identity.
     if artifact_id == ARTIFACT_ID or source_run == SOURCE_RUN_ID:
@@ -346,7 +370,11 @@ def validate_exact_identity(identity: object) -> dict[str, str]:
 def is_pr15_requirement(
     requirement: object, binary_sha256: object = ""
 ) -> bool:
-    """True only for the exact PR #15 contract (issue #140). Never raises."""
+    """True only for the exact PR #15 contract (issue #140). Never raises.
+
+    Requires the pinned binary digest plus a pinned publish-time
+    transport triple from ``SUPPORTED_PR15_ARTIFACTS`` (issue #146).
+    """
     try:
         if not isinstance(requirement, dict):
             return False
@@ -361,6 +389,9 @@ def is_pr15_requirement(
         if not _is_numeric_artifact_id(run):
             return False
         if SHA256_RE.match(archive) is None:
+            return False
+        expected_archive = SUPPORTED_PR15_ARTIFACTS.get((artifact, run))
+        if expected_archive is None or archive != expected_archive:
             return False
         # Never confuse the two supported binaries: a PR #15 binary claim
         # under the PR #12 transport (or vice versa) is not supported.
@@ -382,7 +413,10 @@ def is_supported_exact_requirement(
     is the optional ``binary SHA-256`` digest from the issue body: for
     PR #12 it must be absent or equal to the pinned digest; for PR #15
     it must be present and equal to the published PR #15 fingerprint (otherwise an
-    arbitrary numeric artifact could ride the PR #15 path).
+    arbitrary numeric artifact could ride the PR #15 path). PR #15
+    additionally requires a pinned publish-time transport triple from
+    ``SUPPORTED_PR15_ARTIFACTS`` (issue #146: the shape-only check let a
+    runtime-lab-local artifact through that 404d at fetch time).
     """
     try:
         if not isinstance(requirement, dict):
