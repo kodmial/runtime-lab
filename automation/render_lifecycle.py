@@ -421,6 +421,30 @@ EXECUTION_MODES = frozenset({"smoke", "e2e"})
 MAX_TASK_BODY_CHARS = 2000
 
 
+# Smoke-mode memory budget (repair issue #176, run 36637940250): the
+# Render Free worker is 0.1 CPU / 512 MB (https://render.com/docs/free,
+# re-verified 2026-09-30: unchanged) while the baseline agent floor plus
+# any real coding activity peaks near ~600 MB. Four consecutive #58 smoke
+# storms (runs 36629689414, 36632841000, 36635571284, 36637940250) pinned
+# the cgroup at the ceiling with the FULL qualified config-only profile
+# wired (issues #75/#159/#164/#170), so env/config wiring is exhausted as
+# a repair class for this failure mode. The storm diagnostic prescribes
+# "a larger worker or a smaller workload": this envelope shrinks the
+# smoke workload. The binding caps keep transcript/history growth (the
+# part of the footprint the task controls) small while preserving the
+# real coding loop (inspect, one small edit, focused test, report).
+# E2E mode is untouched: its issues own their success criteria.
+SMOKE_TASK_MEMORY_BUDGET = (
+    "Memory budget (binding, 512 MB worker):\n"
+    "1. Inspect at most 5 repository files; prefer targeted grep/glob over broad reads.\n"
+    "2. Make one small change only (one file, small diff).\n"
+    "3. Run the single most relevant test file once; never run the full suite.\n"
+    "4. Keep the final report concise (files changed, test result).\n"
+    "5. Knowledge handoff stays mandatory but bounded: read PROTOCOL.md and the "
+    "most relevant topic note; open full experiment records only when directly on point."
+)
+
+
 def validate_execution_mode(mode: str) -> str:
     """Fail closed unless the mode is one of smoke/e2e."""
     if mode not in EXECUTION_MODES:
@@ -455,6 +479,8 @@ def resolve_task_text(issue_number: int, execution_mode: str,
         task = "Issue #%d [%s]:\n\n%s" % (issue_number, execution_mode, body_text)
     else:
         task = "Execute issue #%d in %s mode." % (issue_number, execution_mode)
+    if execution_mode == "smoke":
+        task = task + "\n\n" + SMOKE_TASK_MEMORY_BUDGET
     return task + "\n\n" + knowledge_handoff_instructions(issue_number, run_id)
 
 def select_base_sha(*candidates: object) -> str:

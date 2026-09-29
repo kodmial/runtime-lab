@@ -50,6 +50,7 @@ from render_lifecycle import (  # noqa: E402
     RUNNER_HEALTH_PATH,
     RUNNER_JOB_STATUS_PATH_TEMPLATE,
     RUNNER_SUBMIT_JOB_PATH,
+    SMOKE_TASK_MEMORY_BUDGET,
     SUSPEND_FALLBACK_MAX_ATTEMPTS,
     SUSPEND_IS_PRIMARY_CLEANUP,
     WORKER_RESTART_WALL_SKEW_TOLERANCE_SECONDS,
@@ -132,6 +133,32 @@ def test_agent_knowledge_handoff_is_stable_and_unique_per_run():
     task = resolve_task_text(9, "smoke", title="Render smoke", body="Prove cleanup", run_id="abc-123")
     assert "Repository knowledge handoff (mandatory)" in task
     assert "issue-9-run-abc-123.md" in task
+
+
+def test_smoke_task_carries_memory_budget_e2e_does_not():
+    # Regression for run 36637940250 (repair issue #176): four
+    # consecutive #58 smoke storms pinned the 512 MB worker at the
+    # ceiling with the full qualified config-only profile wired, so the
+    # reusable repair shrinks the smoke workload instead of wiring more
+    # env/config flags. Both live dispatch paths (render-job.sh and
+    # render_controller) build their payload via resolve_task_text.
+    assert "512 MB" in SMOKE_TASK_MEMORY_BUDGET
+    assert "single most relevant test file once" in SMOKE_TASK_MEMORY_BUDGET
+    assert "never run the full suite" in SMOKE_TASK_MEMORY_BUDGET
+    smoke = resolve_task_text(58, "smoke", title="T", body="B", run_id="r")
+    assert SMOKE_TASK_MEMORY_BUDGET in smoke
+    assert "Repository knowledge handoff (mandatory)" in smoke
+    e2e = resolve_task_text(58, "e2e", title="T", body="B", run_id="r")
+    assert SMOKE_TASK_MEMORY_BUDGET not in e2e
+    assert "Repository knowledge handoff (mandatory)" in e2e
+
+
+def test_smoke_memory_budget_survives_body_truncation():
+    long_body = "y" * 5000
+    smoke = resolve_task_text(58, "smoke", title="T", body=long_body, run_id="r")
+    assert "[truncated]" in smoke
+    assert SMOKE_TASK_MEMORY_BUDGET in smoke
+    assert "Repository knowledge handoff (mandatory)" in smoke
 
 
 def _valid_experiment_record(issue=9, run_id="r1"):
