@@ -507,6 +507,118 @@ EXACT_WORKFLOW_ARTIFACT_NAME_RE = re.compile(
 EXACT_WORKFLOW_ARTIFACT_SOURCE_SHA_RE = re.compile(
     r"source\s+sha\s*:\s*`?([0-9a-fA-F]{40})`?", re.IGNORECASE
 )
+EXACT_WORKFLOW_ARTIFACT_BINARY_SHA_RE = re.compile(
+    r"binary\s+SHA-?256\s*[:=]?\s*`?([0-9a-fA-F]{64})`?", re.IGNORECASE
+)
+
+# Supported exact-artifact contract (issue #128): the corrected PR #12
+# artifact has a concrete delivery mechanism
+# (automation/exact_artifact_delivery.py: controller-side credentialed
+# fetch + verified push to the worker + absolute-path launch with /proc
+# identity). Issues pinning exactly this contract pass through the
+# infrastructure-blocked gate; every other exact-artifact contract still
+# fails closed via exact_workflow_artifact_blocker().
+SUPPORTED_EXACT_ARTIFACT_ID = "11004835952"
+SUPPORTED_EXACT_SOURCE_RUN_ID = "36498663107"
+SUPPORTED_EXACT_ARCHIVE_SHA256 = (
+    "0f0e3a6e787bcc80cbe7cff90ee0a948448bc7887633a2d5b8df19409e24b040"
+)
+SUPPORTED_EXACT_BINARY_SHA256 = (
+    "f09d24273e95c3045e23ee37ecd98f8e31e9aa71ec30f75444df8441f5485966"
+)
+SUPPORTED_EXACT_VERSION = "1.18.33"
+SUPPORTED_EXACT_ARTIFACT_NAME = "opencode-coding-linux-x64"
+
+
+def parse_exact_binary_sha256(title: object = "", body: object = "") -> str:
+    """Extract a ``binary SHA-256`` digest from issue text, else "".
+
+    Never raises: unparsable input means "no digest".
+    """
+    try:
+        text = "%s\n%s" % (title or "", body or "")
+        match = EXACT_WORKFLOW_ARTIFACT_BINARY_SHA_RE.search(text)
+        return match.group(1).lower() if match else ""
+    except Exception:
+        return ""
+
+
+def is_supported_exact_workflow_artifact(
+    requirement: Mapping[str, Any] | None,
+    binary_sha256: object = "",
+) -> bool:
+    """True only for the supported exact-artifact contract (issue #128).
+
+    The supported path requires artifact ``11004835952`` from source run
+    ``36498663107`` with the pinned archive digest; when the issue body
+    carries an explicit ``binary SHA-256`` it must equal the pinned binary
+    digest (otherwise a different binary could ride the supported archive
+    claim). Never raises.
+    """
+    try:
+        if not isinstance(requirement, Mapping):
+            return False
+        artifact = str(requirement.get("artifact_id", "") or "").strip()
+        run = str(requirement.get("source_run_id", "") or "").strip()
+        archive = str(requirement.get("archive_sha256", "") or "").strip().lower()
+        if (
+            artifact != SUPPORTED_EXACT_ARTIFACT_ID
+            or run != SUPPORTED_EXACT_SOURCE_RUN_ID
+            or archive != SUPPORTED_EXACT_ARCHIVE_SHA256
+        ):
+            return False
+        raw_binary = str(binary_sha256 or "").strip().lower()
+        if raw_binary and raw_binary != SUPPORTED_EXACT_BINARY_SHA256:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def supported_exact_artifact_identity() -> dict[str, str]:
+    """Machine-readable identity for the supported exact artifact."""
+    try:
+        try:
+            from automation.exact_artifact_delivery import (  # type: ignore[import-not-found]
+                build_exact_artifact_identity as _build,
+            )
+        except ImportError:
+            from exact_artifact_delivery import (  # type: ignore[no-redef]
+                build_exact_artifact_identity as _build,
+            )
+        return dict(_build())
+    except ImportError:
+        return {
+            "artifact_id": SUPPORTED_EXACT_ARTIFACT_ID,
+            "artifact_name": SUPPORTED_EXACT_ARTIFACT_NAME,
+            "source_run_id": SUPPORTED_EXACT_SOURCE_RUN_ID,
+            "archive_sha256": SUPPORTED_EXACT_ARCHIVE_SHA256,
+            "binary_sha256": SUPPORTED_EXACT_BINARY_SHA256,
+            "version": SUPPORTED_EXACT_VERSION,
+        }
+
+
+def exact_artifact_gate_decision(
+    title: object = "", body: object = ""
+) -> tuple[dict[str, Any] | None, str, dict[str, str] | None]:
+    """Decide the pre-creation gate for one issue (issue #128).
+
+    Returns ``(requirement, blocker_message, supported_identity)``:
+
+    - ``(None, "", None)``: no exact-artifact contract; ordinary path.
+    - ``(req, "", identity)``: supported exact contract; the caller must
+      deliver ``identity`` through the submit/create payload instead of
+      refusing.
+    - ``(req, message, None)``: unsupported exact contract; the caller
+      must refuse with ``message`` before any worker exists.
+    """
+    requirement = parse_exact_workflow_artifact_requirement(title, body)
+    if requirement is None:
+        return None, "", None
+    binary_sha = parse_exact_binary_sha256(title, body)
+    if is_supported_exact_workflow_artifact(requirement, binary_sha):
+        return requirement, "", supported_exact_artifact_identity()
+    return requirement, exact_workflow_artifact_blocker(requirement), None
 
 
 def parse_exact_workflow_artifact_requirement(
@@ -950,6 +1062,7 @@ def build_create_service_payload(
     opencode_artifact_id: str | None = None,
     opencode_artifact_sha256: str | None = None,
     opencode_artifact_ref: str | None = None,
+    exact_artifact: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the POST /v1/services body for an ephemeral free-tier worker.
 
@@ -975,6 +1088,15 @@ def build_create_service_payload(
     and fails readiness otherwise -- never the upstream baseline and never
     a network installer. Omitting all three keeps the pinned-baseline
     payload unchanged.
+
+    Exact workflow artifacts (issue #128): pass ``exact_artifact`` (the
+    machine-readable identity from ``supported_exact_artifact_identity``)
+    to select the corrected GitHub Actions artifact ``11004835952``. The
+    identity is exported on the start command as
+    ``OPENCODE_EXACT_*`` bindings so the worker boots with the expected
+    checksums and rejects missing/mismatched bytes before starting
+    OpenCode. Combining an issue-#86 selection with an exact selection is
+    rejected fail-closed (one worker, one binary story).
     """
     if not name:
         raise ValueError("service name must not be empty")
@@ -986,12 +1108,20 @@ def build_create_service_payload(
             "development phase must deploy from %r, got %r"
             % (PUBLIC_REPO_URL, repo)
         )
+    if exact_artifact is not None and (
+        opencode_artifact_id or opencode_artifact_sha256 or opencode_artifact_ref
+    ):
+        raise ValueError(
+            "cannot combine an issue-86 experiment artifact with an exact "
+            "workflow artifact on one worker"
+        )
     start = _start_command_with_artifact(
         start_command,
         artifact_id=opencode_artifact_id,
         artifact_sha256=opencode_artifact_sha256,
         artifact_ref=opencode_artifact_ref,
     )
+    start = _start_command_with_exact_artifact(start, exact_artifact=exact_artifact)
     return {
         "type": REQUIRED_SERVICE_TYPE,
         "name": name,
@@ -1051,6 +1181,68 @@ def _start_command_with_artifact(
     prefix = "OPENCODE_ARTIFACT_ID=%s OPENCODE_ARTIFACT_SHA256=%s" % (raw_id, raw_sha)
     if raw_ref:
         prefix += " OPENCODE_ARTIFACT_REF=%s" % raw_ref
+    return "%s %s" % (prefix, start_command.strip())
+
+
+def _start_command_with_exact_artifact(
+    start_command: str,
+    *,
+    exact_artifact: Mapping[str, Any] | None,
+) -> str:
+    """Prefix a start command with exact workflow-artifact selection (#128).
+
+    Returns ``start_command`` unchanged when ``exact_artifact`` is None
+    (ordinary/baseline mode). Validates the full supported identity via
+    ``automation/exact_artifact_delivery.py`` and exports the
+    ``OPENCODE_EXACT_*`` bindings; fails closed on any partial or
+    unsupported identity, never a silent baseline.
+    """
+    if exact_artifact is None:
+        return start_command
+    if not isinstance(start_command, str) or not start_command.strip():
+        raise ValueError("start_command must be a non-empty string")
+    if not isinstance(exact_artifact, Mapping):
+        raise ValueError("exact_artifact must be a mapping")
+    try:
+        try:
+            from automation.exact_artifact_delivery import (  # type: ignore[import-not-found]
+                validate_exact_identity as _validate,
+            )
+        except ImportError:
+            from exact_artifact_delivery import (  # type: ignore[no-redef]
+                validate_exact_identity as _validate,
+            )
+        data = _validate(dict(exact_artifact))
+    except ImportError:
+        data = {
+            "artifact_id": str(exact_artifact.get("artifact_id", "") or "").strip(),
+            "artifact_name": str(exact_artifact.get("artifact_name", "") or "").strip(),
+            "source_run_id": str(exact_artifact.get("source_run_id", "") or "").strip(),
+            "archive_sha256": str(exact_artifact.get("archive_sha256", "") or "").strip().lower(),
+            "binary_sha256": str(exact_artifact.get("binary_sha256", "") or "").strip().lower(),
+            "version": str(exact_artifact.get("version", "") or "").strip(),
+        }
+        if (
+            data["artifact_id"] != SUPPORTED_EXACT_ARTIFACT_ID
+            or data["source_run_id"] != SUPPORTED_EXACT_SOURCE_RUN_ID
+            or data["archive_sha256"] != SUPPORTED_EXACT_ARCHIVE_SHA256
+            or data["binary_sha256"] != SUPPORTED_EXACT_BINARY_SHA256
+            or data["version"] != SUPPORTED_EXACT_VERSION
+        ):
+            raise ValueError("unsupported exact_artifact identity")
+    prefix = (
+        "OPENCODE_EXACT_ARTIFACT_ID=%s OPENCODE_EXACT_ARTIFACT_SHA256=%s "
+        "OPENCODE_EXACT_ARCHIVE_SHA256=%s OPENCODE_EXACT_SOURCE_RUN=%s "
+        "OPENCODE_EXACT_VERSION=%s OPENCODE_EXACT_ARTIFACT_NAME=%s"
+        % (
+            data["artifact_id"],
+            data["binary_sha256"],
+            data["archive_sha256"],
+            data["source_run_id"],
+            data["version"],
+            data["artifact_name"],
+        )
+    )
     return "%s %s" % (prefix, start_command.strip())
 
 
@@ -1149,6 +1341,13 @@ class JobRequest:
     # always names the Runtime Lab source issue.
     source_repository: str = PUBLIC_REPO_URL
     target_repository: str = ""
+    # Exact workflow artifact (issue #128): machine-readable identity for
+    # the supported corrected artifact (artifact_id + source_run_id +
+    # archive/binary digests + version). None means ordinary/baseline mode.
+    # When present it is validated as the full supported conjunction and
+    # carried verbatim in the submit-job body so the worker can verify
+    # before starting OpenCode.
+    exact_artifact: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         try:  # pragma: no cover - import path depends on entrypoint
@@ -1212,6 +1411,23 @@ class JobRequest:
             raise ValueError("issue_number must be a positive integer")
         if self.metadata is not None and self.metadata.issue_number != self.issue_number:
             raise ValueError("metadata.issue_number must match issue_number")
+        if self.exact_artifact is not None:
+            if not isinstance(self.exact_artifact, Mapping):
+                raise ValueError("exact_artifact must be a mapping")
+            fields = {str(k): str(v or "") for k, v in dict(self.exact_artifact).items()}
+            if (
+                fields.get("artifact_id", "").strip() != SUPPORTED_EXACT_ARTIFACT_ID
+                or fields.get("source_run_id", "").strip() != SUPPORTED_EXACT_SOURCE_RUN_ID
+                or fields.get("archive_sha256", "").strip().lower()
+                != SUPPORTED_EXACT_ARCHIVE_SHA256
+                or fields.get("binary_sha256", "").strip().lower()
+                != SUPPORTED_EXACT_BINARY_SHA256
+                or fields.get("version", "").strip() != SUPPORTED_EXACT_VERSION
+            ):
+                raise ValueError(
+                    "exact_artifact must be the supported %s/%s identity"
+                    % (SUPPORTED_EXACT_ARTIFACT_ID, SUPPORTED_EXACT_SOURCE_RUN_ID)
+                )
 
     def to_dict(self) -> dict[str, Any]:
         body: dict[str, Any] = {
@@ -1238,6 +1454,19 @@ class JobRequest:
         body["source_repository"] = self.source_repository or PUBLIC_REPO_URL
         if self.target_repository:
             body["target_repository"] = self.target_repository
+        # Exact-artifact selection (issue #128): machine-readable identity
+        # the worker verifies before starting OpenCode. Older workers
+        # ignore the extra key; exact-aware workers fail closed on
+        # missing/mismatched bytes.
+        if self.exact_artifact is not None:
+            body["exact_artifact"] = {
+                "artifact_id": SUPPORTED_EXACT_ARTIFACT_ID,
+                "artifact_name": SUPPORTED_EXACT_ARTIFACT_NAME,
+                "source_run_id": SUPPORTED_EXACT_SOURCE_RUN_ID,
+                "archive_sha256": SUPPORTED_EXACT_ARCHIVE_SHA256,
+                "binary_sha256": SUPPORTED_EXACT_BINARY_SHA256,
+                "version": SUPPORTED_EXACT_VERSION,
+            }
         return body
 
 

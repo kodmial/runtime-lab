@@ -218,34 +218,49 @@ PY
 )"
 
 # Exact workflow-artifact gate (regression for run 36495681860, issue
-# #115): when the issue demands one exact GitHub Actions artifact
-# checksum-verified with no rebuild and no binary substitution, the
-# Render worker cannot satisfy it -- workflow-artifact download needs
-# a GitHub credential the worker never holds, the submit-job payload
-# carries no artifact selection, and the OpenCode child env is
-# credential-scrubbed. Run 36495681860 proved the failure mode:
-# without a gate the worker silently substituted the baseline pinned
-# binary, whose ~600 MB agent OOM-restarted four times and storm-aborted
-# after ~13 minutes on a run that never tested the required artifact.
-# Fail closed here, before any Render service is created, instead of
-# burning a worker on a run that cannot test what the issue asks.
-EXACT_ARTIFACT_BLOCKER="$(ISSUE_TITLE="$ISSUE_TITLE" ISSUE_BODY_TEXT="$ISSUE_BODY_TEXT" python3 - <<'PY'
-import os, sys
+# #115; supported path for issue #128): when the issue demands one exact
+# GitHub Actions artifact checksum-verified with no rebuild and no binary
+# substitution, unsupported contracts still fail closed here, before any
+# Render service is created, instead of burning a worker on a run that
+# cannot test what the issue asks (run 36495681860 silently substituted
+# the baseline pinned binary, whose ~600 MB agent OOM-restarted four
+# times and storm-aborted after ~13 minutes). The supported corrected
+# artifact (11004835952 from run 36498663107) passes through this gate:
+# the controller downloads it with its own credential, verifies archive
+# + binary checksums, pushes the verified bytes to the worker after boot,
+# and selects it machine-readably in the submit/create payload, while the
+# worker rejects missing/mismatched bytes and launches the absolute path
+# with /proc identity proof (see automation/exact_artifact_delivery.py).
+EXACT_GATE_FILE="$(mktemp)"
+ISSUE_TITLE="$ISSUE_TITLE" ISSUE_BODY_TEXT="$ISSUE_BODY_TEXT" python3 - <<'PY' > "$EXACT_GATE_FILE"
+import json, os, sys
 sys.path.insert(0, "automation")
 from render_lifecycle import (
+    exact_artifact_gate_decision,
     exact_workflow_artifact_blocker,
     parse_exact_workflow_artifact_requirement,
 )
-requirement = parse_exact_workflow_artifact_requirement(
-    os.environ.get("ISSUE_TITLE", ""),
-    os.environ.get("ISSUE_BODY_TEXT", ""),
-)
-if requirement is None:
-    print("")
-else:
-    print(exact_workflow_artifact_blocker(requirement))
+title = os.environ.get("ISSUE_TITLE", "")
+body = os.environ.get("ISSUE_BODY_TEXT", "")
+requirement, blocker, identity = exact_artifact_gate_decision(title, body)
+# Keep the historic helper references so the pre-creation placement
+# regression keeps proving the gate runs before any Render API call.
+_ = (parse_exact_workflow_artifact_requirement, exact_workflow_artifact_blocker)
+print(json.dumps({"blocker": blocker or "", "identity": identity or {}}))
+PY
+EXACT_ARTIFACT_BLOCKER="$(python3 - "$EXACT_GATE_FILE" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))["blocker"])
 PY
 )"
+EXACT_IDENTITY_JSON="$(python3 - "$EXACT_GATE_FILE" <<'PY'
+import json, sys
+identity = json.load(open(sys.argv[1]))["identity"]
+print(json.dumps(identity, sort_keys=True) if identity else "")
+PY
+)"
+rm -f "$EXACT_GATE_FILE"
+EXACT_MODE="no"
 if [[ -n "$EXACT_ARTIFACT_BLOCKER" ]]; then
   echo "::error::$EXACT_ARTIFACT_BLOCKER" >&2
   # Structured refusal record (issue #125, run 36500759174): the log
@@ -276,6 +291,10 @@ if target:
         pass
 PY
   exit 1
+fi
+if [[ -n "$EXACT_IDENTITY_JSON" ]]; then
+  EXACT_MODE="yes"
+  echo "Exact-artifact mode: supported contract selected (${EXACT_IDENTITY_JSON:0:120}...)."
 fi
 
 # One service creation per attempt: reuse an existing state file service id.
@@ -323,12 +342,15 @@ PY
 
   RUN_ID_SAFE="${GITHUB_RUN_ID:-local}"
   SERVICE_NAME="runtime-lab-issue${ISSUE_NUMBER}-${RUN_ID_SAFE}"
-  CREATE_PAYLOAD="$(python3 - "$SERVICE_NAME" "$OWNER_ID" "$RENDER_REGION" <<'PY'
-import json, sys
+  CREATE_PAYLOAD="$(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 - "$SERVICE_NAME" "$OWNER_ID" "$RENDER_REGION" <<'PY'
+import json, os, sys
 sys.path.insert(0, "automation")
 from render_lifecycle import build_create_service_payload
+raw = os.environ.get("EXACT_IDENTITY_JSON", "").strip()
+exact = json.loads(raw) if raw else None
 print(json.dumps(build_create_service_payload(
-    name=sys.argv[1], owner_id=sys.argv[2], region=sys.argv[3])))
+    name=sys.argv[1], owner_id=sys.argv[2], region=sys.argv[3],
+    exact_artifact=exact)))
 PY
 )"
 
@@ -537,10 +559,102 @@ python3 automation/render_memory_sampler.py sample \
 MEMORY_SAMPLER_PID="$!"
 echo "Memory sampler started (pid $MEMORY_SAMPLER_PID, interval ${RENDER_MEMORY_INTERVAL}s)."
 
+# Exact-artifact delivery (issue #128, supported contract only): the
+# controller downloads artifact 11004835952 with its own GitHub
+# credential, verifies the archive digest before extraction/use plus the
+# bundled binary checksum and the expected binary SHA-256 (never
+# rebuilding, never substituting), then pushes the verified bytes to the
+# worker's POST /v1/exact-artifact transport. The worker materializes
+# them at the deterministic absolute path and verifies again; the job
+# below carries the machine-readable identity so the worker rejects
+# missing/mismatched bytes before starting OpenCode. GitHub credentials
+# never leave the controller: the push carries only bytes + checksums,
+# and the OpenCode child env is credential-scrubbed.
+EXACT_BINARY_FILE=""
+if [[ "$EXACT_MODE" == "yes" ]]; then
+  EXACT_WORKDIR="$(mktemp -d)"
+  EXACT_ZIP="$EXACT_WORKDIR/artifact.zip"
+  EXACT_EXTRACT="$EXACT_WORKDIR/extract"
+  mkdir -p "$EXACT_EXTRACT"
+  if ! EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" EXACT_ZIP="$EXACT_ZIP" python3 - <<'PY'; then
+import json, os, sys
+sys.path.insert(0, "automation")
+from exact_artifact_delivery import (
+    controller_token_from_env,
+    download_exact_artifact_zip,
+    verify_archive_file,
+)
+identity = json.loads(os.environ.get("EXACT_IDENTITY_JSON", "") or "{}")
+token = controller_token_from_env()
+if not token:
+    print("::error::exact-artifact mode requires a controller GitHub credential.", flush=True)
+    raise SystemExit(1)
+download_exact_artifact_zip(
+    artifact_id=identity.get("artifact_id", "11004835952"),
+    dest_path=os.environ["EXACT_ZIP"],
+    token=token,
+)
+verify_archive_file(os.environ["EXACT_ZIP"], identity.get("archive_sha256", ""))
+print("controller: exact artifact zip downloaded and archive-verified.")
+PY
+    echo "::error::Exact-artifact controller fetch/verify failed; refusing to substitute another binary." >&2
+    rm -rf "$EXACT_WORKDIR"
+    exit 1
+  fi
+  if ! EXACT_ZIP="$EXACT_ZIP" EXACT_EXTRACT="$EXACT_EXTRACT" EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 - <<'PY'; then
+import json, os, sys
+sys.path.insert(0, "automation")
+from exact_artifact_delivery import extract_and_verify
+identity = json.loads(os.environ.get("EXACT_IDENTITY_JSON", "") or "{}")
+binary = extract_and_verify(
+    os.environ["EXACT_ZIP"], os.environ["EXACT_EXTRACT"],
+    identity.get("binary_sha256", ""))
+print("controller: exact binary extracted and checksum-verified: %s" % binary)
+PY
+    echo "::error::Exact-artifact extraction/verification failed; refusing to substitute another binary." >&2
+    rm -rf "$EXACT_WORKDIR"
+    exit 1
+  fi
+  EXACT_BINARY_FILE="$EXACT_EXTRACT/opencode-coding-linux-x64"
+  if [[ ! -x "$EXACT_BINARY_FILE" ]]; then
+    echo "::error::Exact binary missing after verified extraction." >&2
+    rm -rf "$EXACT_WORKDIR"
+    exit 1
+  fi
+  # Exact --version gate on the controller (fail closed before transport).
+  EXACT_VERSION_OBSERVED="$("$EXACT_BINARY_FILE" --version 2>/dev/null | head -n 1 | awk '{print $1}' || true)"
+  EXACT_VERSION_EXPECTED="$(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["version"])')"
+  if [[ "$EXACT_VERSION_OBSERVED" != "$EXACT_VERSION_EXPECTED" ]]; then
+    echo "::error::Exact binary --version '$EXACT_VERSION_OBSERVED' != expected '$EXACT_VERSION_EXPECTED'; refusing to deliver." >&2
+    rm -rf "$EXACT_WORKDIR"
+    exit 1
+  fi
+  echo "controller: exact binary --version $EXACT_VERSION_OBSERVED verified."
+  # Push the verified bytes to the worker transport (bytes + checksums
+  # only; no GitHub credential crosses this boundary).
+  PUSH_CODE="$(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" curl -sS --max-time 300 -o /tmp/exact-push-response.json -w '%{http_code}' -X POST "$SERVICE_URL/v1/exact-artifact" \
+    -H "Content-Type: application/octet-stream" \
+    -H "X-Exact-Artifact-Id: $(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["artifact_id"])')" \
+    -H "X-Exact-Artifact-Name: $(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["artifact_name"])')" \
+    -H "X-Exact-Source-Run: $(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["source_run_id"])')" \
+    -H "X-Exact-Archive-Sha256: $(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["archive_sha256"])')" \
+    -H "X-Exact-Artifact-Sha256: $(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["binary_sha256"])')" \
+    -H "X-Exact-Version: $(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 -c 'import json,os; print(json.loads(os.environ["EXACT_IDENTITY_JSON"])["version"])')" \
+    --data-binary "@$EXACT_BINARY_FILE" 2>/dev/null || true)"
+  PUSH_CODE="$(tr -dc '0-9' <<<"$PUSH_CODE" || true)"
+  if [[ "$PUSH_CODE" != "201" ]]; then
+    echo "::error::Exact-artifact push to worker failed (HTTP ${PUSH_CODE:-000}); refusing to run without verified bytes." >&2
+    cat /tmp/exact-push-response.json 2>/dev/null || true
+    rm -rf "$EXACT_WORKDIR"
+    exit 1
+  fi
+  echo "Exact-artifact bytes delivered and worker-verified: $(cat /tmp/exact-push-response.json 2>/dev/null | head -c 300)"
+fi
+
 # Build the minimum job payload and submit it to the runner.
-JOB_PAYLOAD="$(python3 - "$ISSUE_NUMBER" "$REPO_URL" "$TASK_TEXT" "$BASE_SHA" \
+JOB_PAYLOAD="$(EXACT_IDENTITY_JSON="$EXACT_IDENTITY_JSON" python3 - "$ISSUE_NUMBER" "$REPO_URL" "$TASK_TEXT" "$BASE_SHA" \
   "$RENDER_REGION" "$OPENCODE_MODEL" "$EXECUTION_MODE" "${GITHUB_RUN_ID:-}" "$TARGET_REPO" <<'PY'
-import json, sys
+import json, os, sys
 sys.path.insert(0, "automation")
 from render_lifecycle import JobRequest, ExecutionMetadata
 issue = int(sys.argv[1])
@@ -551,6 +665,8 @@ meta = ExecutionMetadata(
     execution_mode=sys.argv[7],
     run_id=sys.argv[8] or "",
 )
+raw_exact = os.environ.get("EXACT_IDENTITY_JSON", "").strip()
+exact = json.loads(raw_exact) if raw_exact else None
 req = JobRequest(
     repository_url=sys.argv[2],
     base_ref="main",
@@ -559,6 +675,7 @@ req = JobRequest(
     issue_number=issue,
     metadata=meta,
     target_repository=sys.argv[9],
+    exact_artifact=exact,
 )
 print(json.dumps(req.to_dict()))
 PY
