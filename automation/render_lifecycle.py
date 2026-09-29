@@ -877,6 +877,80 @@ def superseded_workflow_artifact_notice(
         return ""
 
 
+def is_retired_exact_artifact_issue(
+    title: object = "", body: object = ""
+) -> bool:
+    """True when an issue body pins a retired exact workflow artifact.
+
+    Repair for run 36629441608 (repair issue #154, source issue #106):
+    the pre-creation gate plus advisory plus superseded redirect plus
+    structured record are all correct for the retired PR #12 artifact
+    ``11001896223``/``36492639568``, yet the repair-merge reset in the
+    provisioned workflow envelope unconditionally unpauses the source
+    issue, the scheduler redispatches the identical retired body, and
+    finalize mints the next identical P0 repair (non-chain smoke issues
+    such as #106 carry no qualification fingerprint, so the chain-only
+    dedup branch can never fire). Redispatch without a material premise
+    change -- a real artifact-delivery mechanism plus the version-stamped
+    successor -- refuses identically with zero Render cost, so the
+    reusable defect is the missing machine-readable "retired, do not
+    mint repair" signal at this single choke point.
+
+    Data-driven on ``SUPERSEDED_WORKFLOW_ARTIFACTS``: retiring a future
+    artifact adds one map entry without touching this logic. Never
+    raises: unparsable input means "not retired".
+    """
+    try:
+        requirement = parse_exact_workflow_artifact_requirement(title, body)
+        if requirement is None:
+            return False
+        return bool(superseded_workflow_artifact_notice(requirement))
+    except Exception:
+        return False
+
+
+def retired_exact_artifact_successor(
+    title: object = "", body: object = ""
+) -> dict[str, Any]:
+    """Return the successor mapping for a retired issue body, else {}.
+
+    Mirrors the ``successor`` field of ``build_exact_artifact_refusal_result``
+    so schedulers and triage can redirect without scraping log text.
+    Never raises: unparsable or non-retired input yields {}.
+    """
+    try:
+        requirement = parse_exact_workflow_artifact_requirement(title, body)
+        if requirement is None:
+            return {}
+        artifact = str(requirement.get("artifact_id", "") or "").strip()
+        run = str(requirement.get("source_run_id", "") or "").strip()
+        entry = SUPERSEDED_WORKFLOW_ARTIFACTS.get((artifact, run))
+        return dict(entry) if entry else {}
+    except Exception:
+        return {}
+
+
+def should_suppress_render_repair_for_retired(
+    title: object = "", body: object = ""
+) -> bool:
+    """True when a retired refusal must not mint a new repair issue.
+
+    A retired exact-artifact contract is permanently refused pre-creation
+    (``permanent=True``, ``superseded=True`` with a successor pointer), so
+    creating another P0 repair on every redispatch only repeats an
+    identical investigation. The provisioned workflow finalize step -- owned
+    separately because the Actions token cannot push workflow files -- should
+    consult the structured refusal record (``superseded``/``successor``) or
+    this helper before creating a repair: keep the source paused and follow
+    the successor via ``automation/issue130_coordinator.py`` instead.
+    Never raises.
+    """
+    try:
+        return is_retired_exact_artifact_issue(title, body)
+    except Exception:
+        return False
+
+
 def exact_workflow_artifact_blocker(requirement: Mapping[str, Any]) -> str:
     """Explain why an exact workflow artifact cannot run on Render (issue #115).
 

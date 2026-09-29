@@ -77,6 +77,9 @@ from render_lifecycle import (  # noqa: E402
     knowledge_handoff_instructions,
     known_workflow_artifact_advisory,
     superseded_workflow_artifact_notice,
+    is_retired_exact_artifact_issue,
+    retired_exact_artifact_successor,
+    should_suppress_render_repair_for_retired,
     validate_experiment_record_text,
     parse_exact_workflow_artifact_requirement,
     resolve_task_text,
@@ -929,3 +932,40 @@ def test_superseded_workflow_artifact_notice_redirects_retired_contract():
     assert superseded_workflow_artifact_notice(None) == ""
     assert superseded_workflow_artifact_notice({}) == ""
     assert superseded_workflow_artifact_notice("11001896223") == ""
+
+
+def test_retired_issue_helper_suppresses_repair_for_106_phrasing():
+    # Regression for run 36629441608 (repair issue #154, source #106):
+    # the repair-merge reset unpaused the retired legacy body, the
+    # scheduler redispatched it, and finalize minted repair #154 because
+    # non-chain smoke issues carry no qualification fingerprint for the
+    # chain-only dedup branch. The reusable fix is a machine-readable
+    # retired signal at this choke point so the provisioned finalize can
+    # keep the source paused instead of minting identical repairs.
+    title_106 = "P0: Qualify the same OpenCode PR #12 artifact on Render Free 512 MiB"
+    assert is_retired_exact_artifact_issue(title_106, ISSUE_106_ARTIFACT_BODY) is True
+    assert should_suppress_render_repair_for_retired(
+        title_106, ISSUE_106_ARTIFACT_BODY) is True
+    successor = retired_exact_artifact_successor(title_106, ISSUE_106_ARTIFACT_BODY)
+    assert successor["successor_artifact_id"] == "11004835952"
+    assert successor["successor_source_run_id"] == "36498663107"
+    assert successor["successor_version"] == "1.18.33"
+    # The #110 phrasing pins the same retired contract and agrees.
+    assert is_retired_exact_artifact_issue("t", ISSUE_110_ARTIFACT_BODY) is True
+    assert should_suppress_render_repair_for_retired("t", ISSUE_110_ARTIFACT_BODY) is True
+    assert retired_exact_artifact_successor(
+        "t", ISSUE_110_ARTIFACT_BODY)["successor_artifact_id"] == "11004835952"
+    # Ordinary smoke and successor-delivery bodies never suppress: the
+    # repair loop must keep working for actionable failures.
+    assert is_retired_exact_artifact_issue(
+        "P0: Fresh smoke check",
+        "Run the normal smoke workload and verify cleanup.") is False
+    assert should_suppress_render_repair_for_retired(
+        "P0: Fresh smoke check",
+        "Run the normal smoke workload and verify cleanup.") is False
+    assert retired_exact_artifact_successor("t", "ordinary work") == {}
+    # Garbage input never raises and never suppresses.
+    assert is_retired_exact_artifact_issue(None, None) is False
+    assert should_suppress_render_repair_for_retired(None, None) is False
+    assert retired_exact_artifact_successor(None, None) == {}
+    assert is_retired_exact_artifact_issue(123, ["x"]) is False

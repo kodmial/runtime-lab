@@ -2070,6 +2070,24 @@ def test_job_refuses_exact_workflow_artifact_before_creation(tmp_path):
     assert payload["artifact_id"] == "11001896223"
     assert payload["source_run_id"] == "36492639568"
     assert "infrastructure-blocked" in payload["reason"]
+    # Repair issue #154 (run 36629441608, source #106): the same retired
+    # contract redispatches identically after every repair-merge reset, so
+    # the #106-phrased refusal must also carry the superseded redirect end
+    # to end (log line plus structured successor pointer) instead of
+    # reading like a merely undeliverable contract. The provisioned
+    # finalize owns repair minting; this record is its machine interface.
+    assert "Superseded-artifact notice" in combined
+    assert "11004835952" in combined
+    assert payload["superseded"] is True
+    assert payload["successor"]["successor_artifact_id"] == "11004835952"
+    assert payload["successor"]["successor_source_run_id"] == "36498663107"
+    from render_lifecycle import should_suppress_render_repair_for_retired
+    assert should_suppress_render_repair_for_retired(
+        "Qualify the same OpenCode PR artifact on Render",
+        "Workflow run: 36492639568. Artifact name: opencode-coding-linux-x64. "
+        "Artifact ID: 11001896223. Artifact archive digest: "
+        "sha256:8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df. "
+        "Never silently fall back to another OpenCode binary.") is True
 
 
 def test_job_refuses_issue110_exact_artifact_before_creation(tmp_path):
