@@ -17,8 +17,22 @@
  * comes from the successful opencode artifact workflow manifest on opencode#11.
  */
 
-const TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || "";
-if (!TOKEN) throw new Error("GH_TOKEN is required");
+function resolveGitHubToken() {
+  // Issue #142: the qualification-chain envelope emitted the evaluated
+  // secret with a stray leading backslash (escaped `\${{ ... }}` expression
+  // in the workflow env block), which corrupts authentication into a 401
+  // "Bad credentials". Real GitHub tokens never start with a backslash, so
+  // strip exactly one while the workflow envelope is provisioned separately.
+  // The static guard automation/workflow_credential_guard.py fails closed on
+  // the escaped envelope syntax.
+  const raw = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || "";
+  const token = raw.startsWith("\\") ? raw.slice(1) : raw;
+  if (!token) throw new Error("GH_TOKEN is required");
+  if (token.includes("${{")) throw new Error("GH_TOKEN looks like an unexpanded GitHub expression");
+  return token;
+}
+
+const TOKEN = resolveGitHubToken();
 
 const RUNTIME = "kodmial/runtime-lab";
 const OPENCODE = "kodmial/opencode";
