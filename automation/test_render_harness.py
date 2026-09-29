@@ -2029,6 +2029,11 @@ def test_job_refuses_exact_workflow_artifact_before_creation(tmp_path):
     # agent OOM-restarted four times and storm-aborted after ~13
     # minutes on a run that never tested the required artifact. With
     # the gate the attempt fails closed before any Render call.
+    # Repair issue #118 (run 36498162815, first live post-gate refusal
+    # for #106): the same immutable PR #12 artifact carries the
+    # validated 0.0.0 version-gate advisory, so the #106-phrased
+    # refusal must carry it too (mirroring the #110 lock in the test
+    # below) instead of naming only the transport gap.
     env, state, result = _base_env(tmp_path)
     log = tmp_path / "curl-artifact.log"
     env["PATH"] = _write_exact_artifact_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
@@ -2037,7 +2042,10 @@ def test_job_refuses_exact_workflow_artifact_before_creation(tmp_path):
     assert proc.returncode != 0, combined
     assert "infrastructure-blocked" in combined
     assert "11001896223" in combined
+    assert "36492639568" in combined
     assert "baseline binary" in combined
+    assert "0.0.0" in combined
+    assert "opencode_max_headless_qualify" in combined
     # No Render service was created and no state was recorded.
     assert not log.exists() or "api.render.com/v1/services" not in log.read_text()
     assert not state.exists() or "srv-" not in state.read_text()

@@ -789,6 +789,13 @@ def test_exact_workflow_artifact_blocker_names_evidence_and_gap():
     assert "infrastructure-blocked" in message
     assert "baseline binary" in message
     assert "credential" in message
+    # Repair issue #118 (run 36498162815, first live post-gate refusal
+    # for #106): the #106 contract pins the same immutable PR #12
+    # artifact as #110, so its refusal must carry the validated 0.0.0
+    # version-gate advisory (mirroring the #110 lock) instead of
+    # naming only the transport gap.
+    assert "0.0.0" in message
+    assert "opencode_max_headless_qualify" in message
     # A corrupt requirement still fails closed with a message.
     fallback = exact_workflow_artifact_blocker({})
     assert "infrastructure-blocked" in fallback
