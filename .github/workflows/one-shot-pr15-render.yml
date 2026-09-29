@@ -1,0 +1,83 @@
+name: One-shot PR15 exact artifact publish and Render dispatch
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+jobs:
+  publish:
+    if: github.event.head_commit.message == 'ops: run one-shot PR15 Render publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      SOURCE_SHA: 842157c38db9f8178ed0eee7af32f7536fe2346e
+      EXPECTED_SHA: 4e310bbdfab9b3fed5f95adabc1afe23b462be741a929901f058258e80328ded
+      EXPECTED_VERSION: 1.18.33
+      EXPECTED_BYTES: "171222496"
+    steps:
+      - name: Checkout runtime-lab controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Install pinned Bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global bun@1.4.2
+          test "$(bun --version)" = "1.4.2"
+
+      - name: Build exact PR15 head
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/opencode-pr15-src /tmp/pr15-artifact
+          mkdir -p /tmp/opencode-pr15-src /tmp/pr15-artifact
+          curl -fsSL -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/kodmial/opencode/tarball/$SOURCE_SHA" \
+            -o /tmp/opencode-pr15.tar.gz
+          tar -xzf /tmp/opencode-pr15.tar.gz --strip-components=1 -C /tmp/opencode-pr15-src
+          cd /tmp/opencode-pr15-src
+          bun install --frozen-lockfile
+          OPENCODE_VERSION="$EXPECTED_VERSION" bun run --cwd packages/opencode script/build.ts --coding --single
+          BIN="/tmp/opencode-pr15-src/packages/opencode/dist/opencode-linux-x64/bin/opencode"
+          test -x "$BIN"
+          test "$("$BIN" --version)" = "$EXPECTED_VERSION"
+          test "$(sha256sum "$BIN" | awk '{print $1}')" = "$EXPECTED_SHA"
+          test "$(stat -c %s "$BIN")" = "$EXPECTED_BYTES"
+          cd "$GITHUB_WORKSPACE"
+          python3 automation/opencode_pr15_publish.py --binary "$BIN" --out-dir /tmp/pr15-artifact
+
+      - name: Upload exact immutable artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: opencode-coding-linux-x64
+          path: /tmp/pr15-artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Populate issue 141 and dispatch Render directly
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT || github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_ID"
+          ARCHIVE_SHA="${ARTIFACT_DIGEST#sha256:}"
+          [[ "$ARCHIVE_SHA" =~ ^[0-9a-f]{64}$ ]]
+          python3 automation/opencode_pr15_publish.py \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --artifact-id "$ARTIFACT_ID" \
+            --archive-sha256 "$ARCHIVE_SHA" \
+            --downstream-issue 141 \
+            --mode smoke \
+            --execution-label execution:render-smoke
