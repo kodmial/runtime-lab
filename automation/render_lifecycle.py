@@ -1049,6 +1049,275 @@ def superseded_hold_verdict(
         }
 
 
+# Stable executor hold verdict for a proven ordinary-smoke capacity
+# mismatch (repair issue #176, run 36637940250): `render-job.sh` prints
+# this single machine-greppable line before any Render service is
+# created, so provisioned envelopes can key repair minting on it
+# without scraping free-form storm diagnostics. The structured held
+# record carries the same verdict under `capacity_hold` (see
+# `capacity_hold_verdict` / `build_capacity_hold_result`).
+HELD_CAPACITY_VERDICT = "held-capacity-mismatch"
+
+
+# Ordinary-smoke capacity-mismatch holds (repair issue #176).
+#
+# Run 36637940250 (source issue #58, smoke, ordinary baseline binary)
+# proved the remaining reusable gap after the #75/#159/#164/#170
+# repairs: it executed at base `bc76158`, which already contains the
+# complete validated config-only profile (production
+# `OPENCODE_CONFIG_CONTENT` equals `lowmem_config()` exactly, every
+# qualified env kill-switch wired with setdefault semantics), and
+# still storm-aborted with the identical signature as the four prior
+# storms (4 consecutive proven worker restarts, cgroup pinned at the
+# 512 MB limit with usage ratio 1.0, PRESSURE via the replacements
+# branch, Python RSS ~33 MB). The storm breaker fired exactly as
+# designed, so the harness is not the defect; the pinned baseline
+# agent peak (~600-615 MB, issue #52) physically exceeds the Free
+# worker (0.1 CPU / 512 MB, `RENDER_DOC_FREE_TIER`), and no further
+# config-only switch exists to wire (re-wiring is forbidden by the
+# knowledge protocol: the defect each prior repair targeted is
+# already absent).
+#
+# Redispatching the identical ordinary-smoke payload therefore storms
+# identically while burning ~13 minutes and four restarts per cycle.
+# This registry holds such proven issues at dispatch time until the
+# named premise changes. Data-driven: a future smaller qualified
+# binary (coding-only/direct-headless/lite with a measured live
+# delta, owned by the qualification chain) or a larger worker lifts
+# the hold by removing the entry -- never by redispatching the held
+# body. Exact-artifact bodies are excluded: they ride the exact gate
+# and the superseded path, never this hold.
+CAPACITY_MISMATCH_HOLDS: dict[int, dict[str, Any]] = {
+    58: {
+        "mode": "smoke",
+        "contract": "ordinary",
+        "signature": (
+            "pinned-at-ceiling replacements restart storm: cgroup "
+            "limit 512 MB, usage ratio 1.0, 4 consecutive proven "
+            "worker restarts, memory-pressure verdict via "
+            "replacements, agent peak ~600 MB vs 512 MB budget"
+        ),
+        "proving_run_id": "36637940250",
+        "proving_base_sha": (
+            "bc761583a13c875dbeb2b97196985ee9a73e0289"
+        ),
+        "storm_series_run_ids": (
+            "36442675039,36449610030,36629689414,36632841000,"
+            "36635571284,36637940250"
+        ),
+        "successor": {
+            "owner": "qualification-chain",
+            "condition": (
+                "smaller qualified binary with a measured live "
+                "memory delta (coding-only/direct-headless/lite) or "
+                "a larger worker; remove this entry only when that "
+                "premise lands, then redispatch for a real measurement"
+            ),
+        },
+    },
+}
+
+
+def capacity_dispatch_hold(
+    issue_number: object = 0, title: object = "", body: object = ""
+) -> dict[str, Any] | None:
+    """Pre-dispatch hold for proven ordinary-smoke capacity mismatches.
+
+    Run 36637940250 (source issue #58) executed at the full-profile
+    base `bc76158` and storm-aborted identically to the four prior
+    storms, proving the baseline agent workload cannot fit the 512 MB
+    Free worker no matter how often the identical payload is
+    redispatched. The storm breaker already fails each attempt fast
+    (~13 minutes, four restarts); without a dispatch hold every
+    redispatch burns another identical storm while the finalize path
+    mints another P0 repair (smoke issues carry no qualification
+    fingerprint, so the fingerprint-dedup branch never fires).
+
+    This helper is the reusable choke point scheduler/executor
+    envelopes consult before dispatching: it returns a stable
+    machine-readable hold dict when the issue number names a
+    `CAPACITY_MISMATCH_HOLDS` entry and the issue text is the
+    ordinary (non-exact-artifact) shape, else `None`. Data-driven:
+    lifting a hold removes its registry entry when the successor
+    premise lands, without touching this logic. Never raises:
+    unparsable input means "no hold", never a dispatch failure.
+    """
+    try:
+        issue = int(issue_number)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    try:
+        entry = CAPACITY_MISMATCH_HOLDS.get(issue)
+        if not entry:
+            return None
+        try:
+            requirement = parse_exact_workflow_artifact_requirement(
+                title, body
+            )
+        except Exception:
+            requirement = None
+        if requirement is not None:
+            return None
+        successor = entry.get("successor", {})
+        successor = dict(successor) if isinstance(successor, Mapping) else {}
+        reason = (
+            "ordinary-smoke issue #%d is held-capacity-mismatch: the "
+            "proven %s at full profile cannot fit the 512 MB Free "
+            "worker (proving run %s at base %s), so redispatching the "
+            "identical payload storms identically. Held until the "
+            "successor premise lands via %s: %s."
+            % (
+                issue,
+                entry.get("signature", "restart storm"),
+                entry.get("proving_run_id", "?"),
+                entry.get("proving_base_sha", "?")[:12],
+                successor.get("owner", "?"),
+                successor.get("condition", "?"),
+            )
+        )
+        return {
+            "issue_number": issue,
+            "successor": successor,
+            "reason": reason,
+        }
+    except Exception:
+        return None
+
+
+def capacity_hold_verdict(
+    issue_number: object = 0,
+) -> dict[str, Any]:
+    """Return the machine-readable hold verdict for a held issue.
+
+    Repair issue #176 (failed run 36637940250): a log-only hold is
+    not durable evidence (see issue #165 for the retired-contract
+    precedent), so the held record written by the executor carries
+    this structured form: `{"held": True, "verdict":
+    "held-capacity-mismatch", ...}` with the registry `successor`
+    premise-change condition when the issue number names a
+    `CAPACITY_MISMATCH_HOLDS` entry, else `{"held": False,
+    "verdict": "", ...}` with an empty successor so unheld issues
+    never misdirect. Data-driven: lifting a hold removes its registry
+    entry without touching this logic. Never raises: unparsable input
+    means "no hold", never a verdict failure.
+    """
+    try:
+        issue = int(issue_number)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return {
+            "held": False,
+            "verdict": "",
+            "issue_number": 0,
+            "successor": {},
+        }
+    try:
+        entry = CAPACITY_MISMATCH_HOLDS.get(issue)
+        if not entry:
+            raise ValueError("not capacity-held")
+        successor = entry.get("successor", {})
+        successor = dict(successor) if isinstance(successor, Mapping) else {}
+        return {
+            "held": True,
+            "verdict": HELD_CAPACITY_VERDICT,
+            "issue_number": issue,
+            "successor": successor,
+        }
+    except Exception:
+        try:
+            issue = int(issue_number)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            issue = 0
+        return {
+            "held": False,
+            "verdict": "",
+            "issue_number": issue,
+            "successor": {},
+        }
+
+
+def build_capacity_hold_result(
+    *,
+    issue_number: object = 0,
+    run_id: object = "",
+) -> dict[str, Any]:
+    """Build a machine-readable zero-cost capacity-hold record.
+
+    Repair issue #176 (failed run 36637940250): the executor holds a
+    proven ordinary-smoke capacity mismatch before any Render service
+    is created, so the attempt leaves no worker-executed job result
+    behind. This helper is the single choke point for that structured
+    shape, mirroring `build_exact_artifact_refusal_result`: it uses
+    `status="infrastructure-blocked"` plus `permanent=True` so no
+    existing `parse_job_result`/poll consumer can mistake it for a
+    worker-executed job, and carries the `capacity_hold` verdict
+    (see `capacity_hold_verdict`) with the registry successor so
+    durable-evidence consumers never scrape log text.
+    `permanent` means redispatch without the successor premise change
+    holds identically -- it is a redispatch hint for future
+    schedulers, not a workflow directive. Never raises: garbage input
+    yields a minimal fail-closed record.
+    """
+    try:
+        hold: dict[str, Any] = capacity_hold_verdict(issue_number)
+    except Exception:
+        hold = {
+            "held": False,
+            "verdict": "",
+            "issue_number": 0,
+            "successor": {},
+        }
+    try:
+        issue = int(issue_number)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        issue = 0
+    try:
+        run_label = "" if run_id is None else str(run_id).strip()
+    except Exception:
+        run_label = ""
+    try:
+        entry = CAPACITY_MISMATCH_HOLDS.get(issue, {})
+        signature = str(entry.get("signature", "") or "")
+        proving_run = str(entry.get("proving_run_id", "") or "")
+    except Exception:
+        signature, proving_run = "", ""
+    if hold.get("held") is True:
+        successor = hold.get("successor", {})
+        successor = dict(successor) if isinstance(successor, Mapping) else {}
+        reason = (
+            "held-capacity-mismatch: ordinary-smoke issue #%d proved "
+            "a %s (proving run %s); redispatching the identical "
+            "payload storms identically, so this attempt held before "
+            "any Render service was created with zero Render cost. "
+            "Held until the successor premise lands via %s."
+            % (
+                issue,
+                signature or "pinned-at-ceiling restart storm",
+                proving_run or "?",
+                successor.get("owner", "?"),
+            )
+        )
+    else:
+        successor = {}
+        reason = (
+            "capacity hold requested for issue #%d, which names no "
+            "proven ordinary-smoke capacity mismatch; no hold applies."
+            % issue
+        )
+    return {
+        "status": "infrastructure-blocked",
+        "permanent": True,
+        "capacity_mismatch": bool(hold.get("held") is True),
+        "reason": reason,
+        "capacity_hold": hold,
+        "successor": successor,
+        "issue_number": issue,
+        "run_id": run_label,
+        "docs": {
+            "render_free": RENDER_DOC_FREE_TIER,
+        },
+    }
+
+
 def unsupported_pr15_transport_note(
     requirement: Mapping[str, Any] | None,
     binary_sha256: object = "",

@@ -97,6 +97,7 @@ try:  # pragma: no cover - import path depends on entrypoint
         resolve_task_text,
         select_base_sha,
         service_name_for_attempt,
+        capacity_dispatch_hold,
         superseded_dispatch_guard,
         validate_execution_mode,
         validate_model_name,
@@ -132,6 +133,7 @@ except ImportError:  # pytest inserts automation/ on sys.path
         resolve_task_text,
         select_base_sha,
         service_name_for_attempt,
+        capacity_dispatch_hold,
         superseded_dispatch_guard,
         validate_execution_mode,
         validate_model_name,
@@ -554,6 +556,26 @@ def decide_eligible(snapshot: EligibilitySnapshot) -> EligibilityDecision:
         guard = None
     if guard is not None:
         return EligibilityDecision(False, str(guard.get("reason", "superseded exact artifact")), mode, priority)
+
+    # Proven ordinary-smoke capacity mismatch (issue #176): run
+    # 36637940250 for source issue #58 storm-aborted at the
+    # full-profile base bc76158 with the identical signature as the
+    # four prior storms, proving the baseline agent workload cannot
+    # fit the 512 MB Free worker. Redispatching the identical payload
+    # burns another ~13-minute storm while finalize mints another P0
+    # (smoke issues carry no qualification fingerprint, so dedup never
+    # fires). Declaring the held issue ineligible here with the stable
+    # successor redirect stops that loop at dispatch time while every
+    # unheld issue flows through unchanged. Never raises: unparsable
+    # input means "no hold".
+    try:
+        capacity_hold = capacity_dispatch_hold(
+            snapshot.issue_number, snapshot.title, snapshot.body
+        )
+    except Exception:
+        capacity_hold = None
+    if capacity_hold is not None:
+        return EligibilityDecision(False, str(capacity_hold.get("reason", "held capacity mismatch")), mode, priority)
 
     blockers = list(snapshot.open_blockers)
     for number in readiness_dependency_numbers(snapshot.body, snapshot.issue_number):

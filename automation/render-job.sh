@@ -260,6 +260,74 @@ except Exception:
 PY
 fi
 
+# Proven ordinary-smoke capacity-mismatch hold (repair issue #176,
+# run 36637940250): that run executed source issue #58 at the
+# full-profile base bc76158 (complete validated config-only profile
+# from issues #75/#159/#164/#170) and still storm-aborted with the
+# identical signature as the four prior storms (4 consecutive proven
+# worker restarts, cgroup pinned at the 512 MB limit, PRESSURE via
+# replacements), proving the baseline agent workload cannot fit the
+# Free worker. The scheduler envelope and the repair-reset unpause
+# never consult decide_eligible (see repair issue #161), so the
+# executor -- the only owned production chokepoint -- consults the
+# capacity registry FIRST and holds with one stable
+# machine-greppable verdict at zero Render cost (no service is
+# created; cleanup stays trivially successful). Exact-artifact
+# bodies never trip this hold: they ride the superseded block above
+# and the exact-artifact gate below. This check performs no GitHub
+# writes (see header invariant) and no Render calls. An unparsable
+# body means "no hold", never a gate trip.
+CAPACITY_HOLD_JSON="$(ISSUE_NUMBER="$ISSUE_NUMBER" ISSUE_TITLE="$ISSUE_TITLE" ISSUE_BODY_TEXT="$ISSUE_BODY_TEXT" python3 - <<'PY' 2>/dev/null || echo "{}"
+import json, os, sys
+sys.path.insert(0, "automation")
+from render_lifecycle import capacity_dispatch_hold
+hold = capacity_dispatch_hold(
+    os.environ.get("ISSUE_NUMBER", "0"),
+    os.environ.get("ISSUE_TITLE", ""),
+    os.environ.get("ISSUE_BODY_TEXT", ""),
+)
+print(json.dumps(hold if hold is not None else {}))
+PY
+)"
+if [[ -n "$CAPACITY_HOLD_JSON" && "$CAPACITY_HOLD_JSON" != "{}" ]]; then
+  python3 - "$CAPACITY_HOLD_JSON" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    hold = json.loads(sys.argv[1])
+    successor = hold.get("successor", {}) or {}
+    print("held-capacity-mismatch: ordinary-smoke issue #%s proved a "
+          "pinned-at-ceiling restart storm at full profile and will "
+          "storm identically on redispatch; successor premise via %s. "
+          "Holding pre-creation with zero Render cost; see the "
+          "infrastructure-blocked diagnostic below."
+          % (hold.get("issue_number", "?"), successor.get("owner", "?")))
+except Exception:
+    print("held-capacity-mismatch: proven ordinary-smoke capacity "
+          "mismatch; holding pre-creation with zero Render cost.")
+PY
+  # Structured held record (repair issue #176, mirroring the issue
+  # #125 refusal record): the log line above is correct but
+  # machine-unreadable, so the hold persists the stable
+  # capacity_hold verdict for future triage/schedulers while still
+  # creating no Render service. Best effort: a write failure must
+  # never mask the hold itself.
+  python3 - "$ISSUE_NUMBER" "${GITHUB_RUN_ID:-}" "$RENDER_RESULT_FILE" <<'PY' 2>/dev/null || true
+import json, sys
+sys.path.insert(0, "automation")
+from render_lifecycle import build_capacity_hold_result
+record = build_capacity_hold_result(
+    issue_number=sys.argv[1], run_id=sys.argv[2])
+target = sys.argv[3] if len(sys.argv) > 3 else ""
+if target:
+    try:
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, indent=2) + "\n")
+    except OSError:
+        pass
+PY
+  exit 1
+fi
+
 # Exact workflow-artifact gate (regression for run 36495681860, issue
 # #115; supported path for issue #128): when the issue demands one exact
 # GitHub Actions artifact checksum-verified with no rebuild and no binary
