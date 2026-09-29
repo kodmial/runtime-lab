@@ -449,8 +449,34 @@ jobs:
               --remove-label "automation:in-progress" \
               --remove-label "automation:paused" >/dev/null 2>&1 || true
             gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body "$conflict_reset
-OpenCode publication hit a moving-main conflict that automatic repair did not finish. This is an infrastructure retry, not a failed task attempt; the dispatch budget is reset and the scheduler will retry from current main."
+              --body "$conflict_reset"
+            gh workflow run issue-scheduler.yml --repo "$GITHUB_REPOSITORY" --ref main
+            echo "Publication conflict for issue #$ISSUE_NUMBER released without consuming the task retry budget."
+            exit 0
+          fi
+
+          marker='<!-- runtime-lab-scheduler-dispatch -->'
+          attempts="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments" \
+            --jq "[.[] | select((.body // \"\") | contains(\"$marker\"))] | length" \
+            | awk '{s+=$1} END {print s+0}')"
+
+          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --remove-label "automation:in-progress" >/dev/null 2>&1 || true
+
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "OpenCode workflow run $GITHUB_RUN_ID failed before a usable PR was completed. Dispatch attempts recorded: $attempts."
+
+          max_attempts=4
+          if (( attempts >= max_attempts )); then
+            gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --add-label "automation:paused" >/dev/null 2>&1 || true
+            echo "Issue #$ISSUE_NUMBER paused after $attempts failed dispatch attempts."
+          else
+            gh workflow run issue-scheduler.yml --repo "$GITHUB_REPOSITORY" --ref main
+            echo "Released issue #$ISSUE_NUMBER and requested scheduler retry."
+          fi
+
+\\n'"OpenCode publication hit a moving-main conflict that automatic repair did not finish. This is an infrastructure retry, not a failed task attempt; the dispatch budget is reset and the scheduler will retry from current main."
             gh workflow run issue-scheduler.yml --repo "$GITHUB_REPOSITORY" --ref main
             echo "Publication conflict for issue #$ISSUE_NUMBER released without consuming the task retry budget."
             exit 0
