@@ -3,9 +3,9 @@
 Stdlib-first, no network, no git mutations, no Render service. Proves:
 
 - the trusted publishing path reconstructs only the exact PR #15 head
-  (pinned SHA/branch/merge/build command) and fail-closes on the known
-  binary SHA-256 ``4e310b...28ded`` / size ``171222496`` / version
-  ``1.18.33`` (never PR #12/main/latest/installer/unstamped merge-ref);
+  (pinned SHA/branch/merge/build command) and fail-closes on the
+  published binary SHA-256 ``d9f930c1...45f0c0`` / size ``171218400`` /
+  version ``1.18.33`` (never PR #12/main/latest/installer/unstamped merge-ref);
 - the staged payload is exactly the normal triple
   (``opencode-coding-linux-x64``, ``.sha256``, ``build-metadata.txt``);
 - the publish-time manifest + downstream issue body carry the actual
@@ -357,6 +357,80 @@ def test_abs_path_and_evidence_cover_pr15(tmp_path):
 
 def test_pr15_qualify_fingerprint_still_pinned():
     assert pr15q.BINARY_SHA256 == PR15_BINARY
-    assert pr15q.BINARY_BYTES == 171222496
+    assert pr15q.BINARY_BYTES == 171218400
     assert pr15q.SOURCE_SHA == "842157c38db9f8178ed0eee7af32f7536fe2346e"
     assert pr15q.EXPECTED_VERSION == "1.18.33"
+
+
+# ---------------------------------------------------------------------------
+# Issue #141: the published Render qualification transport.
+# ---------------------------------------------------------------------------
+
+ISSUE_141_ARTIFACT = "11009286301"
+ISSUE_141_RUN = "36512250023"
+ISSUE_141_ARCHIVE = (
+    "df547ac873c9591bc98e5ef43b9283b77f5a4295fc2f27cda6b280d18c313c46"
+)
+
+
+def test_issue141_exact_transport_passes_gate_and_matches_pins():
+    """Issue #141 must ride the exact-artifact path, never the refusal gate.
+
+    The published PR #15 artifact (``11009286301`` from source run
+    ``36512250023``, archive ``sha256:df547ac8...313c46``) carries the
+    pinned binary ``d9f930c1...45f0c0`` / ``1.18.33`` / 171218400 B, so
+    the pre-creation gate must select delivery (empty blocker, full
+    identity) instead of refusing before any worker exists. The #134
+    Docker ``marginal`` verdict is evidence only and must not block it.
+    """
+    body = (
+        "- Artifact ID: `%s`\n"
+        "- Source workflow run: `%s`\n"
+        "- Artifact archive digest: `sha256:%s`\n"
+        "- Expected binary SHA-256: `%s`\n"
+        "- binary SHA-256: `%s`\n"
+        "- Expected --version: `1.18.33`\n"
+        "Download exact artifact ID `%s` from source run `%s`.\n"
+        % (
+            ISSUE_141_ARTIFACT, ISSUE_141_RUN, ISSUE_141_ARCHIVE,
+            PR15_BINARY, PR15_BINARY,
+            ISSUE_141_ARTIFACT, ISSUE_141_RUN,
+        )
+    )
+    requirement = lifecycle.parse_exact_workflow_artifact_requirement("t", body)
+    assert requirement is not None
+    assert requirement["artifact_id"] == ISSUE_141_ARTIFACT
+    assert requirement["source_run_id"] == ISSUE_141_RUN
+    assert requirement["archive_sha256"] == ISSUE_141_ARCHIVE
+    binary = lifecycle.parse_exact_binary_sha256("t", body)
+    assert binary == PR15_BINARY
+    assert lifecycle.is_supported_pr15_workflow_artifact(requirement, binary)
+    assert lifecycle.is_supported_exact_workflow_artifact(requirement, binary)
+    req, blocker, identity = lifecycle.exact_artifact_gate_decision("t", body)
+    assert req is not None
+    assert blocker == ""
+    assert identity is not None
+    assert identity["artifact_id"] == ISSUE_141_ARTIFACT
+    assert identity["source_run_id"] == ISSUE_141_RUN
+    assert identity["archive_sha256"] == ISSUE_141_ARCHIVE
+    assert identity["binary_sha256"] == PR15_BINARY
+    assert identity["version"] == "1.18.33"
+    assert identity["source_sha"] == "842157c38db9f8178ed0eee7af32f7536fe2346e"
+    # The validated delivery identity agrees byte-for-byte.
+    delivered = exact.validate_exact_identity(dict(identity))
+    assert delivered["artifact_id"] == ISSUE_141_ARTIFACT
+    assert delivered["binary_sha256"] == PR15_BINARY
+    # Size/version pins agree across the publish and qualify contracts.
+    assert publish.BINARY_BYTES == 171218400
+    assert pr15q.BINARY_BYTES == 171218400
+    assert publish.BINARY_SHA256 == pr15q.BINARY_SHA256 == PR15_BINARY
+    # The downstream body renderer reproduces a gate-passing body for it.
+    manifest = publish.build_publish_manifest(
+        source_run_id=ISSUE_141_RUN, artifact_id=ISSUE_141_ARTIFACT,
+        archive_sha256=ISSUE_141_ARCHIVE,
+    )
+    rendered = publish.render_downstream_issue_body(manifest)
+    req2, blocker2, identity2 = lifecycle.exact_artifact_gate_decision("t", rendered)
+    assert blocker2 == "" and identity2 is not None
+    assert identity2["artifact_id"] == ISSUE_141_ARTIFACT
+    assert identity2["binary_sha256"] == PR15_BINARY

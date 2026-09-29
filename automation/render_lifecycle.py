@@ -530,7 +530,7 @@ SUPPORTED_EXACT_BINARY_SHA256 = (
 SUPPORTED_EXACT_VERSION = "1.18.33"
 SUPPORTED_EXACT_ARTIFACT_NAME = "opencode-coding-linux-x64"
 
-# Exact PR #15 contract (issue #140, fingerprinted by #134). The binary
+# Exact PR #15 contract (issue #140; published artifact for issue #141). The binary
 # digest/version are pinned; the Actions transport fields (artifact id /
 # source run / archive digest) are captured at publish time by
 # automation/opencode_pr15_publish.py. The gate requires the PR #15
@@ -576,7 +576,7 @@ def is_supported_pr15_workflow_artifact(
 ) -> bool:
     """True only for the exact PR #15 contract (issue #140). Never raises.
 
-    Requires the #134 binary fingerprint to be present in the issue body
+    Requires the published PR #15 binary fingerprint to be present in the issue body
     plus well-formed numeric transport ids and a 64-hex archive digest.
     A PR #15 binary claim under the PR #12 transport is never accepted.
     """
@@ -613,7 +613,7 @@ def is_supported_exact_workflow_artifact(
     ``36498663107`` with the pinned archive digest; when the issue body
     carries an explicit ``binary SHA-256`` it must equal the pinned binary
     digest (otherwise a different binary could ride the supported archive
-    claim). PR #15 (issue #140) requires the #134 binary fingerprint plus
+    claim). PR #15 (issue #140) requires the published PR #15 binary fingerprint plus
     well-formed publish-time transport ids/digest. Never raises.
     """
     try:
@@ -667,7 +667,7 @@ def pr15_exact_artifact_identity(
 
     Transport ids/archive come from the parsed issue requirement
     (publish-time values); every pinned PR #15 field comes from the
-    #134 fingerprint. Fail closed on any mismatch.
+    published PR #15 fingerprint. Fail closed on any mismatch.
     """
     if not isinstance(requirement, Mapping):
         raise ValueError("requirement must be a mapping")

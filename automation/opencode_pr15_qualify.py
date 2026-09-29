@@ -65,11 +65,18 @@ BUILD_COMMAND = (
 )
 BUILD_TOOLCHAIN_BUN = "1.4.2"
 
-# Fingerprinted qualification binary (built, never downloaded).
+# Fingerprinted qualification binary: the published immutable Actions
+# artifact for issue #141 (artifact ``11009286301`` from source run
+# ``36512250023``), built from the exact PR head with the recorded build
+# command. The earlier local #134 build (171,222,496 B,
+# ``4e310bbd...28ded``) is superseded as an identity: Bun compiles are
+# locally deterministic but not reproducible across build environments
+# (4 KiB digest drift for identical source/command/toolchain), so binary
+# identity is pinned per published build, never per source SHA alone.
 BINARY_SHA256 = (
     "d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0"
 )
-BINARY_BYTES = 171222496
+BINARY_BYTES = 171218400
 
 # Reused measurement vocabulary (single source of truth stays in _mh).
 LIMIT_BYTES = _mh.LIMIT_BYTES
