@@ -65,6 +65,7 @@ jobs:
             const pauseMarker = '<!-- runtime-lab-scheduler-pause -->';
             const repairResetMarker = '<!-- runtime-lab-render-repair-reset -->';
             const qualificationResetMarker = '<!-- runtime-lab-qualification-reset -->';
+            const publicationConflictResetMarker = '<!-- runtime-lab-publication-conflict-reset -->';
             const renderSmoke = 'execution:render-smoke';
             const renderE2E = 'execution:render-e2e';
             const dockerQualify = 'execution:docker-qualify';
@@ -205,7 +206,8 @@ jobs:
               const resetAt = comments
                 .filter(comment =>
                   (comment.body || '').includes(repairResetMarker) ||
-                  (comment.body || '').includes(qualificationResetMarker)
+                  (comment.body || '').includes(qualificationResetMarker) ||
+                  (comment.body || '').includes(publicationConflictResetMarker)
                 )
                 .map(comment => new Date(comment.created_at).getTime())
                 .sort((a, b) => b - a)[0] || 0;
@@ -355,7 +357,8 @@ jobs:
               const resetAt = previous
                 .filter(c =>
                   (c.body || '').includes(repairResetMarker) ||
-                  (c.body || '').includes(qualificationResetMarker)
+                  (c.body || '').includes(qualificationResetMarker) ||
+                  (c.body || '').includes(publicationConflictResetMarker)
                 )
                 .map(c => new Date(c.created_at).getTime())
                 .sort((a, b) => b - a)[0] || 0;
