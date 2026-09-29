@@ -4,6 +4,33 @@ set -euo pipefail
 MARKER_PATH="automation/runtime-target.marker"
 MARKER_VALUE="primary-v1"
 
+cleanup_private_runtime_runs() {
+  local workflow run_id
+
+  # Public Runtime Lab is only the execution control plane for these external
+  # private tasks. Remove completed worker/review logs and prior dispatcher
+  # runs so private-project execution metadata is not retained publicly.
+  for workflow in private-worker.yml private-review.yml private-dispatcher.yml; do
+    while IFS= read -r run_id; do
+      [[ -n "$run_id" ]] || continue
+      [[ "$run_id" == "$GITHUB_RUN_ID" ]] && continue
+      gh api --method DELETE \
+        "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
+        >/dev/null 2>&1 || true
+    done < <(
+      gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --limit 100 \
+        --json databaseId,status \
+        --jq '.[] | select(.status == "completed") | .databaseId' \
+        2>/dev/null || true
+    )
+  done
+}
+
+# The dispatcher is invoked by workflow_run as soon as a worker/review
+# completes, so this removes the finished public run promptly. The same sweep
+# also removes any historical completed private-runtime runs.
+cleanup_private_runtime_runs
+
 discover_target() {
   local candidate marker
   while IFS= read -r candidate; do
