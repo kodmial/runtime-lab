@@ -50,6 +50,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import urllib.parse
 import urllib.request
 import zipfile
 from typing import Any, Mapping
@@ -558,6 +559,26 @@ def exact_download_url(artifact_id: str = ARTIFACT_ID) -> str:
     return "repos/%s/actions/artifacts/%s/zip" % (FORK_REPO, raw)
 
 
+class _StripAuthorizationOnCrossHostRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not forward GitHub credentials to signed artifact blob hosts."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+        old_host = (urllib.parse.urlsplit(req.full_url).hostname or "").lower()
+        new_host = (urllib.parse.urlsplit(newurl).hostname or "").lower()
+        if old_host and new_host and old_host != new_host:
+            redirected.remove_header("Authorization")
+            redirected.remove_header("Proxy-Authorization")
+        return redirected
+
+
+def _artifact_urlopen(request: urllib.request.Request, timeout: float = 120):
+    opener = urllib.request.build_opener(_StripAuthorizationOnCrossHostRedirect())
+    return opener.open(request, timeout=timeout)
+
+
 def download_exact_artifact_zip(
     *,
     artifact_id: str = ARTIFACT_ID,
@@ -590,7 +611,7 @@ def download_exact_artifact_zip(
     request = urllib.request.Request(url)
     request.add_header("Accept", "application/vnd.github+json")
     request.add_header("Authorization", "Bearer %s" % credential)
-    opener = urlopen or urllib.request.urlopen
+    opener = urlopen or _artifact_urlopen
     response = opener(request, timeout=120)  # type: ignore[operator]
     try:
         parent = os.path.dirname(os.path.abspath(dest_path))
