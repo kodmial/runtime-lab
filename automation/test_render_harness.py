@@ -258,6 +258,13 @@ def test_job_poll_resubmits_on_same_worker_while_budget_remains():
     assert "$SERVICE_URL/v1/exact-artifact" in restart_window
     assert "exact_artifact_redelivered" in restart_window
     assert "refusing to resubmit without the pinned artifact" in restart_window
+    # /proc proof must leave the ephemeral worker before a restart. The
+    # controller stores verified evidence from ordinary pending/running
+    # polls and merges it into the durable result on every EXIT path.
+    assert "RENDER_EXACT_EVIDENCE_FILE" in job
+    assert "polled exact process evidence SHA mismatch" in job
+    assert "exact_evidence" in job
+    assert "worker disappeared after verified exact OpenCode process start" in job
 
 
 def test_job_poll_envelope_honors_resolved_lifecycle_constants():
