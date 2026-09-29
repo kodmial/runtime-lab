@@ -40,6 +40,14 @@ fi
 
 echo "Worker review #$TASK_NUMBER started."
 
+private_comment "$(cat <<EOF
+<!-- runtime-review-started -->
+Independent runtime review/repair for task #$TASK_NUMBER started on PR #$PR_NUMBER.
+
+Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+EOF
+)"
+
 PR_JSON="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefName,baseRefName,title,body 2>/dev/null)"
 HEAD_REF="$(jq -r '.headRefName' <<<"$PR_JSON")"
 BASE_REF="$(jq -r '.baseRefName' <<<"$PR_JSON")"
