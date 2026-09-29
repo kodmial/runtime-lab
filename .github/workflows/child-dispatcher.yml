@@ -6,8 +6,10 @@ on:
     branches:
       - main
     paths:
-      - automation/child_dispatcher.sh
+      - .continuum.yml
       - .github/workflows/child-dispatcher.yml
+      - .github/workflows/child-worker.yml
+      - .github/workflows/child-review.yml
   schedule:
     - cron: '*/10 * * * *'
   workflow_run:
@@ -24,23 +26,44 @@ permissions:
   actions: write
 
 concurrency:
-  group: worker-dispatcher
+  group: continuum-child-dispatcher
   cancel-in-progress: false
 
 jobs:
-  dispatch:
+  cleanup:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ secrets.TAP_PAT }}
-      GITHUB_TOKEN: ${{ secrets.TAP_PAT }}
     steps:
-      - name: Checkout control plane
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Dispatch next child task
+      - name: Remove completed public child runtime metadata
         shell: bash
-        run: bash automation/child_dispatcher.sh
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100"             --jq '.workflow_runs[]
+              | select(.status == "completed")
+              | select(
+                  .name == "Child task" or
+                  .name == "Child review" or
+                  .name == "Child dispatcher" or
+                  .name == "Worker task" or
+                  .name == "Worker review" or
+                  .name == "Worker dispatcher"
+                )
+              | .id' |
+          while IFS= read -r run_id; do
+            [[ -n "$run_id" ]] || continue
+            [[ "$run_id" == "$GITHUB_RUN_ID" ]] && continue
+            gh api --method DELETE               "repos/$GITHUB_REPOSITORY/actions/runs/$run_id"               >/dev/null 2>&1 || true
+          done
+
+  dispatch:
+    needs: cleanup
+    uses: kodmial/continuum/.github/workflows/consumer-child-dispatcher.yml@b9c348e5a50f8e59f8d30a7cc75fd25782665750
+    with:
+      worker_workflow: child-worker.yml
+      review_workflow: child-review.yml
+      engine_ref: b9c348e5a50f8e59f8d30a7cc75fd25782665750
+    secrets:
+      CHILD_RUNTIME_TOKEN: ${{ secrets.TAP_PAT }}
+      CHILD_RUNTIME_REPOSITORIES: ${{ secrets.CONTINUUM_CHILD_REPOSITORIES }}
