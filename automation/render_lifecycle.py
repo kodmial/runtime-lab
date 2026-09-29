@@ -537,7 +537,7 @@ SUPPORTED_EXACT_ARTIFACT_NAME = "opencode-coding-linux-x64"
 # binary digest to be present in the issue body so an arbitrary numeric
 # artifact can never ride this path.
 SUPPORTED_PR15_BINARY_SHA256 = (
-    "4e310bbdfab9b3fed5f95adabc1afe23b462be741a929901f058258e80328ded"
+    "d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0"
 )
 SUPPORTED_PR15_VERSION = "1.18.33"
 SUPPORTED_PR15_ARTIFACT_NAME = "opencode-coding-linux-x64"
