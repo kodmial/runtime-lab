@@ -1,15 +1,15 @@
-name: Worker review
-run-name: "Worker review #${{ inputs.task_number }}"
+name: Child review
+run-name: "Child review #${{ inputs.task_number }}"
 
 on:
   workflow_dispatch:
     inputs:
       task_number:
-        description: Private task number
+        description: Child task number
         required: true
         type: string
       pr_number:
-        description: Private pull request number
+        description: Child pull request number
         required: true
         type: string
 
@@ -39,6 +39,6 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Review and repair worker task
+      - name: Review and repair child task
         shell: bash
-        run: bash automation/private_review.sh
+        run: bash automation/child_review.sh
