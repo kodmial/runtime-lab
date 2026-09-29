@@ -926,6 +926,66 @@ def superseded_workflow_artifact_notice(
         return ""
 
 
+def superseded_dispatch_guard(
+    title: object = "", body: object = ""
+) -> dict[str, Any] | None:
+    """Pre-dispatch guard for retired exact-artifact contracts (issue #154).
+
+    Run 36629441608 (source issue #106, smoke) proved the remaining
+    reusable gap after the #133/#138 repairs: the pre-creation gate plus
+    the superseded redirect plus the structured ``permanent`` refusal
+    record are all correct, yet a smoke issue carries no
+    ``qualification:render`` label, so the workflow finalize path emits
+    ``classification=not-chain`` with an empty fingerprint and the
+    fingerprint-dedup branch never fires. Every redispatch of the same
+    retired body (artifact ``11001896223`` / run ``36492639568``) then
+    refuses identically in seconds while minting one more P0 repair
+    (up to ``MAX_RENDER_REPAIR_ATTEMPTS``) instead of staying paused.
+
+    This helper is the reusable choke point future scheduler envelopes
+    consult before dispatching: it returns a stable machine-readable
+    guard dict when the issue text carries a retired
+    (``SUPERSEDED_WORKFLOW_ARTIFACTS``) exact-artifact contract, else
+    ``None`` for ordinary or supported-contract issues. Data-driven: retiring
+    a future artifact adds one ``SUPERSEDED_WORKFLOW_ARTIFACTS`` entry
+    without touching this logic. Never raises: unparsable input means
+    "no guard", never a dispatch failure.
+    """
+    try:
+        requirement = parse_exact_workflow_artifact_requirement(title, body)
+        if requirement is None:
+            return None
+        artifact = str(requirement.get("artifact_id", "") or "").strip()
+        run = str(requirement.get("source_run_id", "") or "").strip()
+        entry = SUPERSEDED_WORKFLOW_ARTIFACTS.get((artifact, run))
+        if not entry:
+            return None
+        successor = dict(entry)
+        reason = (
+            "superseded exact artifact %s (workflow run %s) is retired "
+            "and will never execute on Render -- redispatching this exact "
+            "contract refuses identically. Use the current immutable "
+            "successor artifact %s (workflow run %s, version %s) via %s "
+            "instead of redispatching this body."
+            % (
+                artifact,
+                run,
+                entry["successor_artifact_id"],
+                entry["successor_source_run_id"],
+                entry["successor_version"],
+                entry["owner"],
+            )
+        )
+        return {
+            "artifact_id": artifact,
+            "source_run_id": run,
+            "successor": successor,
+            "reason": reason,
+        }
+    except Exception:
+        return None
+
+
 def unsupported_pr15_transport_note(
     requirement: Mapping[str, Any] | None,
     binary_sha256: object = "",
