@@ -360,6 +360,48 @@ def test_apply_opencode_env_overrides_never_clobbers_operator():
     assert fresh[OPENCODE_LOW_MEMORY_ENV_VAR] == "--smol"
 
 
+def test_worker_config_content_carries_full_qualified_profile():
+    # Issue #164 (failed run 36632841000 for source issue #58): the
+    # production worker config carried only the permission ruleset while
+    # the qualified issue #78 profile disables every unneeded subsystem
+    # by config. OPENCODE_CONFIG_CONTENT is a full config document
+    # (loadConfig + local merge in the fork), so it must carry the
+    # config-file half of the profile, not just confinement.
+    config = json.loads(OPENCODE_CONFIG_CONTENT)
+    assert config["mcp"] == {}
+    assert config["lsp"] == {}
+    assert config["formatter"] is False
+    assert config["share"] == "disabled"
+    assert config["autoupdate"] is False
+    assert config["enabled_providers"] == ["opencode"]
+    assert config["plugin"] == []
+    # Read-only git confinement stays intact alongside the profile keys.
+    bash_perm = config["permission"]["bash"]
+    assert bash_perm["*"] == "allow"
+    assert bash_perm["git *"] == "deny"
+    assert bash_perm["git status"] == "allow"
+
+
+def test_worker_config_content_matches_lowmem_config():
+    # The production worker config must equal the qualified
+    # opencode_lowmem_profile.lowmem_config() exactly, so the two can
+    # never silently diverge (OPENCODE_DB is per-job and lives in
+    # fresh_session_env, never in the shared content string).
+    from opencode_lowmem_profile import lowmem_config
+
+    assert json.loads(OPENCODE_CONFIG_CONTENT) == lowmem_config()
+
+
+def test_apply_opencode_env_overrides_never_clobbers_worker_config():
+    env = {"OPENCODE_CONFIG_CONTENT": '{"permission":{}}'}
+    out = apply_opencode_env_overrides(env)
+    assert out is env
+    assert env["OPENCODE_CONFIG_CONTENT"] == '{"permission":{}}'
+    fresh: dict[str, str] = {}
+    apply_opencode_env_overrides(fresh)
+    assert json.loads(fresh["OPENCODE_CONFIG_CONTENT"])["share"] == "disabled"
+
+
 def test_apply_opencode_env_overrides_rejects_non_mapping():
     with pytest.raises(ValueError):
         apply_opencode_env_overrides(None)  # type: ignore[arg-type]
