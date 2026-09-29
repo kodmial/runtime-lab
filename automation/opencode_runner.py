@@ -42,6 +42,7 @@ any secret-shaped values that might appear in captured command output.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import shutil
@@ -112,17 +113,59 @@ OPENCODE_INSTALL_RETRY_DELAYS = (5.0, 10.0)
 # OPENCODE_CONFIG_CONTENT in .github/workflows/opencode.yml: bash is
 # allowed, `git *` writes are denied, read-only git inspection is allowed.
 # The workflow owns all Git state; the runner never pushes or opens PRs.
-OPENCODE_CONFIG_CONTENT = (
-    '{"permission":{"bash":{"*":"allow","git *":"deny",'
-    '"git status":"allow","git status *":"allow",'
-    '"git diff":"allow","git diff *":"allow",'
-    '"git log":"allow","git log *":"allow",'
-    '"git show":"allow","git show *":"allow",'
-    '"git rev-parse *":"allow","git ls-files":"allow",'
-    '"git ls-files *":"allow","git grep *":"allow",'
-    '"git blame *":"allow","git branch --show-current":"allow",'
-    '"git remote -v":"allow"}}}'
-)
+#
+# OPENCODE_CONFIG_CONTENT is parsed by the OpenCode binary as a full config
+# document (packages/opencode/src/config/config.ts: loadConfig + merge with
+# source "local", verified against kodmial/opencode main) and merged last,
+# so it carries the whole qualified config-only profile from
+# automation/opencode_lowmem_profile.py:lowmem_config(), not just the
+# permission ruleset. The config-file half (empty mcp/lsp maps so no MCP
+# servers spawn and no language servers/downloaders start, formatter:false,
+# share:disabled, autoupdate:false, single-provider allowlist, empty plugin
+# list as defense in depth alongside OPENCODE_PURE=1) removes the remaining
+# dead weight the env-only production path left enabled: run 36632841000
+# for source issue #58 storm-aborted at base 075f632 already carrying the
+# full env switch set from issues #75/#159 while still pinned at the
+# 512 MB ceiling.
+_OPENCODE_READ_ONLY_PERMISSION = {
+    "bash": {
+        "*": "allow",
+        "git *": "deny",
+        "git status": "allow",
+        "git status *": "allow",
+        "git diff": "allow",
+        "git diff *": "allow",
+        "git log": "allow",
+        "git log *": "allow",
+        "git show": "allow",
+        "git show *": "allow",
+        "git rev-parse *": "allow",
+        "git ls-files": "allow",
+        "git ls-files *": "allow",
+        "git grep *": "allow",
+        "git blame *": "allow",
+        "git branch --show-current": "allow",
+        "git remote -v": "allow",
+    }
+}
+
+# Full qualified worker config injected via OPENCODE_CONFIG_CONTENT.
+# Keys mirror opencode_lowmem_profile.lowmem_config() exactly (permission
+# ruleset above plus the config-file kill-switches); workspace-derived
+# OPENCODE_DB stays in fresh_session_env, never here. Serialized once with
+# sorted keys so the string is deterministic for tests and /proc evidence.
+_OPENCODE_WORKER_CONFIG = {
+    "mcp": {},
+    "lsp": {},
+    "formatter": False,
+    "share": "disabled",
+    "autoupdate": False,
+    "enabled_providers": ["opencode"],
+    "plugin": [],
+    "permission": _OPENCODE_READ_ONLY_PERMISSION,
+}
+
+OPENCODE_CONFIG_CONTENT = json.dumps(_OPENCODE_WORKER_CONFIG, sort_keys=True, separators=(",", ":"))
 
 # Per-job checkout lives in this subdirectory of the isolated workspace so
 # workspace-level files (task.txt) never leak into the reported repo diff.
@@ -830,12 +873,18 @@ def default_opencode_env_overrides() -> dict[str, str]:
     Confinement settings plus the validated low-memory defaults: the
     ``BUN_OPTIONS=--smol`` GC mode (issue #56 measured ~40 MB / ~7% off
     the ~600 MB agent peak as a harmless default; run 36449610030
-    thrashed at the 512 MB ceiling without it wired into production)
-    and the remaining qualified config-only kill-switches from the
-    issue #78 profile (pure mode, default-plugins/external-skills off,
-    LSP download off, share off, autoupdate off, models-fetch off,
-    embedded web UI off; run 36629689414 storm-aborted for source issue
-    #58 with only the single BUN_OPTIONS default wired). Provider/model
+    thrashed at the 512 MB ceiling without it wired into production),
+    the remaining qualified env kill-switches from the issue #78
+    profile (pure mode, default-plugins/external-skills off, LSP
+    download off, share off, autoupdate off, models-fetch off,
+    embedded web UI off; run 36629689414 storm-aborted for source
+    issue #58 with only the single BUN_OPTIONS default wired), and the
+    config-file half of the same profile injected via
+    ``OPENCODE_CONFIG_CONTENT`` (empty mcp/lsp maps, formatter:false,
+    share:disabled, autoupdate:false, single-provider allowlist, empty
+    plugin list; run 36632841000 storm-aborted at a base already
+    carrying the full env set while the worker config still carried
+    only the permission ruleset). Provider/model
     credentials stay inherited from the process environment (Render env
     vars) and are never set or logged by this module. Explicit operator
     values always win: use :func:`apply_opencode_env_overrides`

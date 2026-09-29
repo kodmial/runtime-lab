@@ -441,6 +441,45 @@ def test_manager_init_defaults_profile_switches_without_clobber(
     assert os.environ.get("OPENCODE_PURE") == "0"
 
 
+def test_subprocess_runner_applies_worker_config_content(tmp_path, monkeypatch):
+    # Issue #164 (failed run 36632841000 for source issue #58): every
+    # OpenCode child must inherit the full qualified worker config via
+    # OPENCODE_CONFIG_CONTENT, not just the permission ruleset.
+    import json as _json
+
+    monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising=False)
+    runner = SubprocessCommandRunner()
+    result = runner.run(
+        ["sh", "-c", "echo $OPENCODE_CONFIG_CONTENT"],
+        cwd=str(tmp_path),
+        timeout=10.0,
+    )
+    assert result.returncode == 0
+    config = _json.loads((result.stdout or "").strip())
+    assert config["mcp"] == {}
+    assert config["lsp"] == {}
+    assert config["formatter"] is False
+    assert config["share"] == "disabled"
+    assert config["autoupdate"] is False
+    assert config["enabled_providers"] == ["opencode"]
+    assert config["plugin"] == []
+    assert config["permission"]["bash"]["git *"] == "deny"
+
+
+def test_manager_init_defaults_worker_config_without_clobber(
+    tmp_path, monkeypatch
+):
+    import json as _json
+
+    monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising=False)
+    _manager(tmp_path)
+    config = _json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT", "{}"))
+    assert config["share"] == "disabled"
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", '{"permission":{}}')
+    _manager(tmp_path)
+    assert os.environ.get("OPENCODE_CONFIG_CONTENT") == '{"permission":{}}'
+
+
 # ---------------------------------------------------------------------------
 # HTTP contract (live server on an ephemeral port).
 # ---------------------------------------------------------------------------
