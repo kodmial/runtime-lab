@@ -54,6 +54,7 @@ choose_issue() {
     | select(.pull_request == null)
     | select(any(.labels[]?.name; . == $p))
     | select(all(.labels[]?.name; . != "automation:paused"))
+    | select((.body // "") | contains("<!-- runtime-worker-owned -->"))
     | [.number, (.body // "")]
     | @base64
   ' <<<"$issues_json"
