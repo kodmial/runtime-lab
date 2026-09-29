@@ -247,6 +247,17 @@ def test_job_poll_resubmits_on_same_worker_while_budget_remains():
     # The fallback path now tracks the in-flight payload so a later
     # loss-resubmission retries the fallback model, not the primary one.
     assert 'JOB_PAYLOAD="$RETRY_PAYLOAD"' in job
+    # Exact-artifact jobs must survive a Render worker replacement too.
+    # A restart wipes the worker-local materialized binary, so recovery
+    # must re-push the already verified artifact before POSTing /v1/jobs.
+    redeliver_idx = job.find("Re-delivered exact artifact after worker restart")
+    resubmit_idx = job.find('RESUBMIT_RESPONSE="$(curl -fsSL', redeliver_idx)
+    assert redeliver_idx != -1
+    assert resubmit_idx > redeliver_idx
+    restart_window = job[max(0, redeliver_idx - 5000):resubmit_idx]
+    assert "$SERVICE_URL/v1/exact-artifact" in restart_window
+    assert "exact_artifact_redelivered" in restart_window
+    assert "refusing to resubmit without the pinned artifact" in restart_window
 
 
 def test_job_poll_envelope_honors_resolved_lifecycle_constants():
