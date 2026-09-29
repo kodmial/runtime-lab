@@ -16,9 +16,9 @@ jobs:
     timeout-minutes: 35
     env:
       SOURCE_SHA: 842157c38db9f8178ed0eee7af32f7536fe2346e
-      EXPECTED_SHA: 4e310bbdfab9b3fed5f95adabc1afe23b462be741a929901f058258e80328ded
+      EXPECTED_SHA: d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0
       EXPECTED_VERSION: "1.18.33"
-      EXPECTED_BYTES: "171222496"
+      EXPECTED_BYTES: "171218400"
     steps:
       - name: Checkout runtime-lab controller
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
