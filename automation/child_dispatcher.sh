@@ -4,32 +4,38 @@ set -euo pipefail
 MARKER_PATH="automation/runtime-target.marker"
 MARKER_VALUE="primary-v1"
 
-cleanup_private_runtime_runs() {
-  local workflow run_id
+cleanup_child_runtime_runs() {
+  local run_id
 
   # Public Runtime Lab is only the execution control plane for these external
-  # private tasks. Remove completed worker/review logs and prior dispatcher
-  # runs so private-project execution metadata is not retained publicly.
-  for workflow in private-worker.yml private-review.yml private-dispatcher.yml; do
-    while IFS= read -r run_id; do
-      [[ -n "$run_id" ]] || continue
-      [[ "$run_id" == "$GITHUB_RUN_ID" ]] && continue
-      gh api --method DELETE \
-        "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
-        >/dev/null 2>&1 || true
-    done < <(
-      gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --limit 100 \
-        --json databaseId,status \
-        --jq '.[] | select(.status == "completed") | .databaseId' \
-        2>/dev/null || true
-    )
-  done
+  # child tasks. Remove completed child/legacy worker logs and dispatcher runs
+  # so child-project execution metadata is not retained publicly.
+  while IFS= read -r run_id; do
+    [[ -n "$run_id" ]] || continue
+    [[ "$run_id" == "$GITHUB_RUN_ID" ]] && continue
+    gh api --method DELETE \
+      "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
+      >/dev/null 2>&1 || true
+  done < <(
+    gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" \
+      --jq '.workflow_runs[]
+        | select(.status == "completed")
+        | select(
+            .name == "Child task" or
+            .name == "Child review" or
+            .name == "Child dispatcher" or
+            .name == "Worker task" or
+            .name == "Worker review" or
+            .name == "Worker dispatcher"
+          )
+        | .id' 2>/dev/null || true
+  )
 }
 
 # The dispatcher is invoked by workflow_run as soon as a worker/review
 # completes, so this removes the finished public run promptly. The same sweep
-# also removes any historical completed private-runtime runs.
-cleanup_private_runtime_runs
+# also removes any historical completed child-runtime runs.
+cleanup_child_runtime_runs
 
 discover_target() {
   local candidate marker
@@ -45,12 +51,12 @@ discover_target() {
 }
 
 active_task_numbers() {
-  local workflow="$1"
-  gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --limit 100 \
+  local kind="$1"
+  gh run list --repo "$GITHUB_REPOSITORY" --limit 100 \
     --json status,displayTitle \
     --jq '.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending") | .displayTitle' \
     2>/dev/null |
-    sed -nE 's/^Worker (task|review) #([0-9]+)$/\2/p'
+    sed -nE "s/^(Child|Worker) ${kind} #([0-9]+)$/\\2/p"
 }
 
 task_in_set() {
@@ -60,15 +66,15 @@ task_in_set() {
 }
 
 discover_target || {
-  echo "No private runtime target is available."
+  echo "No child runtime target is available."
   exit 2
 }
 
 # No repository-level worker slot limit: independent tasks and reviews may run
 # concurrently. The per-task concurrency groups in the worker/review workflows
 # remain the duplicate/race guard for the same task.
-ACTIVE_WORKER_TASKS="$(active_task_numbers "private-worker.yml" || true)"
-ACTIVE_REVIEW_TASKS="$(active_task_numbers "private-review.yml" || true)"
+ACTIVE_WORKER_TASKS="$(active_task_numbers task || true)"
+ACTIVE_REVIEW_TASKS="$(active_task_numbers review || true)"
 dispatched=0
 
 open_prs="$(gh pr list --repo "$TARGET_REPO" --state open --limit 100 \
@@ -96,7 +102,7 @@ if [[ -n "$open_prs" ]]; then
       continue
     fi
 
-    gh workflow run private-review.yml --repo "$GITHUB_REPOSITORY" \
+    gh workflow run child-review.yml --repo "$GITHUB_REPOSITORY" \
       -f task_number="$task_number" -f pr_number="$pr_number" >/dev/null
     REVIEW_DISPATCHED["$task_number"]=1
     dispatched=$((dispatched + 1))
@@ -147,7 +153,7 @@ for priority in priority:p0 priority:p1 priority:p2; do
     body="$(jq -r '.[1]' <<<"$row")"
 
     if is_ready "$issue_number" "$body"; then
-      gh workflow run private-worker.yml --repo "$GITHUB_REPOSITORY" \
+      gh workflow run child-worker.yml --repo "$GITHUB_REPOSITORY" \
         -f task_number="$issue_number" >/dev/null
       dispatched=$((dispatched + 1))
       echo "Dispatched worker task #$issue_number."

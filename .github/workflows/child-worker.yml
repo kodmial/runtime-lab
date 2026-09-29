@@ -1,11 +1,11 @@
-name: Worker task
-run-name: "Worker task #${{ inputs.task_number }}"
+name: Child task
+run-name: "Child task #${{ inputs.task_number }}"
 
 on:
   workflow_dispatch:
     inputs:
       task_number:
-        description: Private task number
+        description: Child task number
         required: true
         type: string
 
@@ -34,6 +34,6 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Execute worker task
+      - name: Execute child task
         shell: bash
-        run: bash automation/private_worker.sh
+        run: bash automation/child_worker.sh

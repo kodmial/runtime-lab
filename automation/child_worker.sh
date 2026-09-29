@@ -4,8 +4,8 @@ set -euo pipefail
 TASK_NUMBER="${TASK_NUMBER:?TASK_NUMBER is required}"
 MARKER_PATH="automation/runtime-target.marker"
 MARKER_VALUE="primary-v1"
-WORKDIR="${RUNNER_TEMP}/private-target"
-TRANSCRIPT="${RUNNER_TEMP}/agent-private.log"
+WORKDIR="${RUNNER_TEMP}/child-target"
+TRANSCRIPT="${RUNNER_TEMP}/agent-child.log"
 RESULT_FILE="automation/runtime-results/task-${TASK_NUMBER}.md"
 MAX_AGENT_PASSES="${MAX_AGENT_PASSES:-4}"
 
@@ -22,12 +22,12 @@ discover_target() {
   return 1
 }
 
-private_comment() {
+child_comment() {
   gh issue comment "$TASK_NUMBER" --repo "$TARGET_REPO" --body "$1" >/dev/null 2>&1 || true
 }
 
 discover_target || {
-  echo "Private target discovery failed."
+  echo "Child target discovery failed."
   exit 2
 }
 
@@ -56,7 +56,7 @@ for attempt in 1 2 3; do
     break
   fi
   if [[ "$attempt" -eq 3 ]]; then
-    private_comment "<!-- runtime-worker-infra --> Worker task #$TASK_NUMBER could not install the agent runtime."
+    child_comment "<!-- runtime-worker-infra --> Worker task #$TASK_NUMBER could not install the agent runtime."
     exit 3
   fi
   sleep $((attempt * 5))
@@ -71,7 +71,7 @@ ISSUE_BODY="$(jq -r '.body // ""' <<<"$ISSUE_JSON")"
 mkdir -p "$(dirname "$RESULT_FILE")"
 BASE_PROMPT="${RUNNER_TEMP}/task-prompt.txt"
 cat >"$BASE_PROMPT" <<EOF
-Execute private repository task #$TASK_NUMBER to completion.
+Execute child repository task #$TASK_NUMBER to completion.
 
 Rules:
 - Work only in the private repository in the current directory.
@@ -90,10 +90,10 @@ Rules:
 - Write Acceptance: PASS only if every mandatory issue acceptance condition you can execute in this environment is satisfied. If something fails, keep working rather than marking PASS.
 - Do not modify the target marker file $MARKER_PATH.
 
---- PRIVATE ISSUE TITLE ---
+--- CHILD ISSUE TITLE ---
 $ISSUE_TITLE
 
---- PRIVATE ISSUE BODY ---
+--- CHILD ISSUE BODY ---
 $ISSUE_BODY
 EOF
 
@@ -109,7 +109,7 @@ for pass in $(seq 1 "$MAX_AGENT_PASSES"); do
 
 Continuation pass $pass:
 - The prior pass did not reach durable accepted completion.
-- Inspect the current working tree, local commits, and the prior private transcript at $TRANSCRIPT.
+- Inspect the current working tree, local commits, and the prior child transcript at $TRANSCRIPT.
 - Continue from the existing state; do not restart from scratch.
 - Resolve the concrete remaining blocker, rerun verification, and update $RESULT_FILE.
 EOF
@@ -133,12 +133,12 @@ EOF
 done
 
 if [[ "$accepted" != true ]]; then
-  private_comment "<!-- runtime-worker-needs-retry --> Worker task #$TASK_NUMBER exhausted this runner cycle without verified acceptance. A fresh cycle may continue."
+  child_comment "<!-- runtime-worker-needs-retry --> Worker task #$TASK_NUMBER exhausted this runner cycle without verified acceptance. A fresh cycle may continue."
   exit 30
 fi
 
 if git diff --no-ext-diff -- . | grep -Eiq '(github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+|rnd_[A-Za-z0-9]+)'; then
-  private_comment "<!-- runtime-worker-security --> Worker task #$TASK_NUMBER produced token-like material in the diff; publication was blocked."
+  child_comment "<!-- runtime-worker-security --> Worker task #$TASK_NUMBER produced token-like material in the diff; publication was blocked."
   exit 31
 fi
 
@@ -149,7 +149,7 @@ fi
 
 ahead="$(git rev-list --count "$BASE_SHA"..HEAD)"
 if [[ "$ahead" -eq 0 ]]; then
-  private_comment "<!-- runtime-worker-needs-retry --> Worker task #$TASK_NUMBER marked acceptance but produced no durable commit."
+  child_comment "<!-- runtime-worker-needs-retry --> Worker task #$TASK_NUMBER marked acceptance but produced no durable commit."
   exit 32
 fi
 
@@ -167,5 +167,5 @@ EOF
 
 PR_URL="$(gh pr create --repo "$TARGET_REPO" --base main --head "$BRANCH"   --title "$ISSUE_TITLE" --body "$PR_BODY" 2>/dev/null)"
 
-private_comment "<!-- runtime-worker-pr --> Worker task #$TASK_NUMBER produced an accepted implementation PR: $PR_URL"
-echo "Worker task #$TASK_NUMBER produced a private PR."
+child_comment "<!-- runtime-worker-pr --> Worker task #$TASK_NUMBER produced an accepted implementation PR: $PR_URL"
+echo "Worker task #$TASK_NUMBER produced a child-repository PR."

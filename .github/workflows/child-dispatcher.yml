@@ -1,4 +1,4 @@
-name: Worker dispatcher
+name: Child dispatcher
 
 on:
   workflow_dispatch:
@@ -6,12 +6,14 @@ on:
     branches:
       - main
     paths:
-      - automation/private_dispatcher.sh
-      - .github/workflows/private-dispatcher.yml
+      - automation/child_dispatcher.sh
+      - .github/workflows/child-dispatcher.yml
   schedule:
     - cron: '*/10 * * * *'
   workflow_run:
     workflows:
+      - Child task
+      - Child review
       - Worker task
       - Worker review
     types:
@@ -39,6 +41,6 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Dispatch next private task
+      - name: Dispatch next child task
         shell: bash
-        run: bash automation/private_dispatcher.sh
+        run: bash automation/child_dispatcher.sh
