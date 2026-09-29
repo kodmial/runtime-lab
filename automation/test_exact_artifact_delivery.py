@@ -582,5 +582,10 @@ def test_render_job_gate_allows_supported_contract():
     assert "EXACT_ARTIFACT_BLOCKER" in job
     assert "EXACT_IDENTITY_JSON" in job
     assert "/v1/exact-artifact" in job
+    # Regression for PR #15 Render run 36512641788: extraction must verify
+    # the archive digest from the selected runtime identity, not fall back
+    # to the historic PR #12 module default.
+    assert 'expected_archive_sha=identity.get("archive_sha256", "")' in job
+    assert 'expected_binary_sha=identity.get("binary_sha256", "")' in job
     assert job.index("EXACT_ARTIFACT_BLOCKER") < job.index(
         "One service creation per attempt")
