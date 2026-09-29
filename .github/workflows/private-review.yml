@@ -1,5 +1,5 @@
 name: Worker review
-run-name: Worker review #${{ inputs.task_number }}
+run-name: Worker review #${{ github.event.inputs.task_number }}
 
 on:
   workflow_dispatch:
