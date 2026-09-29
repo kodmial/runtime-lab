@@ -217,6 +217,49 @@ print(resolve_task_text(int(sys.argv[1]), sys.argv[2],
 PY
 )"
 
+# Retired exact-artifact hold (repair issue #161, run 36632062583): that
+# run proved the #154 pre-dispatch guard correct but unenforced on the
+# live `actions` path -- its base already contained
+# superseded_dispatch_guard, yet the retired #106 body (artifact
+# 11001896223 / run 36492639568) redispatched and refused identically
+# while minting one more P0 repair, because the scheduler envelope and
+# the repair-reset unpause never consult decide_eligible. Name the hold
+# FIRST with one stable machine-greppable verdict line so provisioned
+# envelopes and triage can key on `held-superseded` to skip repair
+# minting for contracts that refuse identically. Advisory only: the
+# exact-artifact gate below stays the single refusal choke point, and
+# this check performs no GitHub writes (see header invariant) and no
+# Render calls. An unparsable body means "no hold", never a gate trip.
+SUPERSEDED_HOLD_JSON="$(ISSUE_TITLE="$ISSUE_TITLE" ISSUE_BODY_TEXT="$ISSUE_BODY_TEXT" python3 - <<'PY' 2>/dev/null || echo "{}"
+import json, os, sys
+sys.path.insert(0, "automation")
+from render_lifecycle import superseded_dispatch_guard
+hold = superseded_dispatch_guard(
+    os.environ.get("ISSUE_TITLE", ""),
+    os.environ.get("ISSUE_BODY_TEXT", ""),
+)
+print(json.dumps(hold if hold is not None else {}))
+PY
+)"
+if [[ -n "$SUPERSEDED_HOLD_JSON" && "$SUPERSEDED_HOLD_JSON" != "{}" ]]; then
+  python3 - "$SUPERSEDED_HOLD_JSON" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    hold = json.loads(sys.argv[1])
+    successor = hold.get("successor", {}) or {}
+    print("held-superseded: artifact %s (workflow run %s) is retired "
+          "and will never execute on Render; successor artifact %s "
+          "(workflow run %s). Refusing pre-creation with zero Render "
+          "cost; see the infrastructure-blocked diagnostic below."
+          % (hold.get("artifact_id", "?"), hold.get("source_run_id", "?"),
+             successor.get("successor_artifact_id", "?"),
+             successor.get("successor_source_run_id", "?")))
+except Exception:
+    print("held-superseded: retired exact-artifact contract; refusing "
+          "pre-creation with zero Render cost.")
+PY
+fi
+
 # Exact workflow-artifact gate (regression for run 36495681860, issue
 # #115; supported path for issue #128): when the issue demands one exact
 # GitHub Actions artifact checksum-verified with no rebuild and no binary
