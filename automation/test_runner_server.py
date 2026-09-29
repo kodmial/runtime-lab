@@ -357,6 +357,38 @@ def test_env_resolution_helpers():
 
 
 # ---------------------------------------------------------------------------
+# Low-memory defaults (issue #75: run 36449610030 thrashed at the 512 MB
+# ceiling without BUN_OPTIONS=--smol wired into production).
+# ---------------------------------------------------------------------------
+
+
+def test_subprocess_runner_applies_smol_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("BUN_OPTIONS", raising=False)
+    runner = SubprocessCommandRunner()
+    result = runner.run(["sh", "-c", "echo $BUN_OPTIONS"], cwd=str(tmp_path), timeout=10.0)
+    assert result.returncode == 0
+    assert "--smol" in (result.stdout or "")
+
+
+def test_subprocess_runner_never_clobbers_operator_bun_options(tmp_path, monkeypatch):
+    monkeypatch.setenv("BUN_OPTIONS", "--custom-gc")
+    runner = SubprocessCommandRunner()
+    result = runner.run(["sh", "-c", "echo $BUN_OPTIONS"], cwd=str(tmp_path), timeout=10.0)
+    assert result.returncode == 0
+    assert "--custom-gc" in (result.stdout or "")
+    assert "--smol" not in (result.stdout or "")
+
+
+def test_manager_init_defaults_smol_without_clobber(tmp_path, monkeypatch):
+    monkeypatch.delenv("BUN_OPTIONS", raising=False)
+    _manager(tmp_path)
+    assert os.environ.get("BUN_OPTIONS") == "--smol"
+    monkeypatch.setenv("BUN_OPTIONS", "--operator")
+    _manager(tmp_path)
+    assert os.environ.get("BUN_OPTIONS") == "--operator"
+
+
+# ---------------------------------------------------------------------------
 # HTTP contract (live server on an ephemeral port).
 # ---------------------------------------------------------------------------
 

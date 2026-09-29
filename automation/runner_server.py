@@ -136,6 +136,9 @@ try:  # pragma: no cover - import path depends on entrypoint
         OPENCODE_CONFIG_CONTENT,
         OPENCODE_INSTALL_MAX_ATTEMPTS,
         OPENCODE_INSTALL_RETRY_DELAYS,
+        OPENCODE_LOW_MEMORY_BUN_OPTIONS,
+        OPENCODE_LOW_MEMORY_ENV_VAR,
+        apply_opencode_env_overrides,
         assert_fresh_session_command,
         build_changes,
         build_checkout_command,
@@ -160,6 +163,9 @@ except ImportError:  # pytest inserts automation/ on sys.path
         OPENCODE_CONFIG_CONTENT,
         OPENCODE_INSTALL_MAX_ATTEMPTS,
         OPENCODE_INSTALL_RETRY_DELAYS,
+        OPENCODE_LOW_MEMORY_BUN_OPTIONS,
+        OPENCODE_LOW_MEMORY_ENV_VAR,
+        apply_opencode_env_overrides,
         assert_fresh_session_command,
         build_changes,
         build_checkout_command,
@@ -541,6 +547,14 @@ class SubprocessCommandRunner(CommandRunner):
             child_env = scrubbed_env_for_worker()
         except Exception:
             child_env = None
+        if child_env is not None:
+            # Validated low-memory default (issue #75): BUN_OPTIONS=--smol
+            # trims ~40 MB off the agent peak (issue #56). Setdefault
+            # semantics keep explicit operator values intact.
+            try:
+                apply_opencode_env_overrides(child_env)
+            except Exception:
+                pass
         if _is_opencode_run_command(argv) and child_env is not None:
             # Fresh OpenCode session per issue: isolate the session sqlite
             # database to this job's workspace (issue #80). Scoped to the
@@ -1038,6 +1052,16 @@ class JobManager:
         # concurrent jobs never race on global state.
         os.environ.setdefault("OPENCODE_CONFIG_CONTENT", OPENCODE_CONFIG_CONTENT)
         os.environ.setdefault("GIT_TERMINAL_PROMPT", "0")
+        # Validated low-memory default (issue #75): BUN_OPTIONS=--smol
+        # trims ~40 MB off the ~600 MB agent peak (issue #56). Explicit
+        # operator values win; the per-child setdefault in
+        # SubprocessCommandRunner covers workers regardless.
+        try:
+            os.environ.setdefault(
+                OPENCODE_LOW_MEMORY_ENV_VAR, OPENCODE_LOW_MEMORY_BUN_OPTIONS
+            )
+        except Exception:
+            pass
 
     # -- experiment artifacts (issue #86) -----------------------------------
 
@@ -1281,6 +1305,13 @@ class JobManager:
             db_path = session_env.get("OPENCODE_DB", "")
             if db_path:
                 os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        except Exception:
+            pass
+        try:
+            # Validated low-memory default (issue #75): never clobbers
+            # explicit operator values; BUN_OPTIONS is not a credential
+            # so _assert_clean still holds below.
+            apply_opencode_env_overrides(child_env)
         except Exception:
             pass
         _assert_clean(child_env)

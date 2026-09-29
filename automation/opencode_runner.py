@@ -137,6 +137,16 @@ MAX_TOTAL_BYTES = 4 * 1024 * 1024
 MAX_OUTPUT_CHARS = 8000
 MAX_SUMMARY_CHARS = 4000
 
+# Validated low-memory default for the OpenCode subprocess (issue #56):
+# ``BUN_OPTIONS=--smol`` trims ~40 MB (~7%) off the ~600 MB real-agent
+# peak by selecting the small JavaScriptCore heap (more frequent GC at a
+# small performance cost). Standalone Bun executables read BUN_OPTIONS
+# (analogous to NODE_OPTIONS), so no recompile is needed. Harmless
+# default, not a fix for the 512 MB mismatch on its own; run 36449610030
+# thrashed at the cgroup ceiling without it wired into production.
+OPENCODE_LOW_MEMORY_ENV_VAR = "BUN_OPTIONS"
+OPENCODE_LOW_MEMORY_BUN_OPTIONS = "--smol"
+
 
 def find_opencode_binary() -> str | None:
     """Return the OpenCode binary path, or None when not installed.
@@ -787,9 +797,14 @@ def summarize_changes(changes: list[dict[str, str]]) -> str:
 def default_opencode_env_overrides() -> dict[str, str]:
     """Safe default env overrides for the OpenCode subprocess.
 
-    Only confinement settings are provided here; provider/model
-    credentials stay inherited from the process environment (Render env
-    vars) and are never set or logged by this module.
+    Confinement settings plus the validated low-memory default
+    (``BUN_OPTIONS=--smol``: issue #56 measured ~40 MB / ~7% off the
+    ~600 MB agent peak as a harmless default; run 36449610030 thrashed
+    at the 512 MB ceiling without it wired into production).
+    Provider/model credentials stay inherited from the process
+    environment (Render env vars) and are never set or logged by this
+    module. Explicit operator values always win: use
+    :func:`apply_opencode_env_overrides` (setdefault semantics).
     """
     return {
         "OPENCODE_CONFIG_CONTENT": OPENCODE_CONFIG_CONTENT,
@@ -797,4 +812,19 @@ def default_opencode_env_overrides() -> dict[str, str]:
         # One-shot jobs never upload share state (module-level kill switch
         # in the fork; upload side-channel only, issue #80).
         "OPENCODE_DISABLE_SHARE": "1",
+        OPENCODE_LOW_MEMORY_ENV_VAR: OPENCODE_LOW_MEMORY_BUN_OPTIONS,
     }
+
+
+def apply_opencode_env_overrides(env: dict[str, str]) -> dict[str, str]:
+    """Apply :func:`default_opencode_env_overrides` without clobbering.
+
+    Existing keys in ``env`` (explicit operator/model config) are
+    preserved; only missing keys gain the safe defaults. Returns the
+    same mapping for chaining.
+    """
+    if not hasattr(env, "items"):
+        raise ValueError("env must be a mapping")
+    for key, value in default_opencode_env_overrides().items():
+        env.setdefault(key, value)
+    return env

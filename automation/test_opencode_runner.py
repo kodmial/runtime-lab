@@ -27,7 +27,10 @@ from opencode_runner import (  # noqa: E402
     CHECKOUT_SUBDIR,
     OPENCODE_CONFIG_CONTENT,
     OPENCODE_INSTALL_COMMAND,
+    OPENCODE_LOW_MEMORY_BUN_OPTIONS,
+    OPENCODE_LOW_MEMORY_ENV_VAR,
     OPENCODE_PINNED_VERSION,
+    apply_opencode_env_overrides,
     assert_public_clone_url,
     build_changes,
     build_checkout_command,
@@ -37,6 +40,7 @@ from opencode_runner import (  # noqa: E402
     build_rev_parse_command,
     build_status_command,
     decode_change_content,
+    default_opencode_env_overrides,
     is_model_unavailable_error,
     opencode_install_shell_snippet,
     parse_git_status_porcelain,
@@ -256,6 +260,36 @@ def test_opencode_config_denies_git_writes():
     assert bash_perm["git *"] == "deny"
     for allowed in ("git status", "git diff", "git log", "git show"):
         assert bash_perm[allowed] == "allow"
+
+
+# ---------------------------------------------------------------------------
+# Low-memory defaults (issue #75: run 36449610030 thrashed at the ceiling
+# without BUN_OPTIONS=--smol wired into production).
+# ---------------------------------------------------------------------------
+
+
+def test_low_memory_default_carries_smol():
+    overrides = default_opencode_env_overrides()
+    assert overrides[OPENCODE_LOW_MEMORY_ENV_VAR] == OPENCODE_LOW_MEMORY_BUN_OPTIONS
+    assert OPENCODE_LOW_MEMORY_BUN_OPTIONS == "--smol"
+    # Confinement defaults stay intact alongside the memory default.
+    assert overrides["OPENCODE_CONFIG_CONTENT"] == OPENCODE_CONFIG_CONTENT
+    assert overrides["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_apply_opencode_env_overrides_never_clobbers_operator():
+    env = {OPENCODE_LOW_MEMORY_ENV_VAR: "--custom-gc-flag"}
+    out = apply_opencode_env_overrides(env)
+    assert out is env
+    assert env[OPENCODE_LOW_MEMORY_ENV_VAR] == "--custom-gc-flag"
+    fresh: dict[str, str] = {}
+    apply_opencode_env_overrides(fresh)
+    assert fresh[OPENCODE_LOW_MEMORY_ENV_VAR] == "--smol"
+
+
+def test_apply_opencode_env_overrides_rejects_non_mapping():
+    with pytest.raises(ValueError):
+        apply_opencode_env_overrides(None)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
