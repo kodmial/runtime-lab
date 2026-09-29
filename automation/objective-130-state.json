@@ -1,0 +1,113 @@
+{
+  "acceptance_target_bytes": 471859200,
+  "active_candidate_id": "candidate-11004835952-23dc15612f880e3f",
+  "active_workers": {},
+  "candidates": [
+    {
+      "archive_sha256": "0f0e3a6e787bcc80cbe7cff90ee0a948448bc7887633a2d5b8df19409e24b040",
+      "artifact_id": "11004835952",
+      "artifact_name": "opencode-coding-linux-x64",
+      "binary_sha256": "f09d24273e95c3045e23ee37ecd98f8e31e9aa71ec30f75444df8441f5485966",
+      "branch": "opencode/issue11-max-headless",
+      "candidate_id": "candidate-11004835952-23dc15612f880e3f",
+      "expected_version": "1.18.33",
+      "merge_sha": "84fa724616e1fddeea8e7665e38568928feffdf9",
+      "pr": 12,
+      "repo": "kodmial/opencode",
+      "source_run_id": "36498663107",
+      "source_sha": "a3c748143bbc525a7cef4f9db48e2a779418943c",
+      "source_workflow": "OpenCode Coding Artifact"
+    }
+  ],
+  "delivery": {
+    "merged": false,
+    "owner_issue": 128,
+    "sha": ""
+  },
+  "frozen_suite": "FOO_LIMIT-pytest-2-pass",
+  "frozen_workload_id": "q1-small-edit",
+  "hard_limit_bytes": 536870912,
+  "integration": {
+    "cleanup_verified": false,
+    "cutover_issue": 12,
+    "e2e_issue": 13,
+    "state": "pending",
+    "verified_e2e": false
+  },
+  "issue": 130,
+  "recovery": {
+    "dispatches": [],
+    "failures_by_signature": {}
+  },
+  "render_lock": {
+    "cleanup": "none",
+    "holder": null,
+    "service_id": null
+  },
+  "required_streak": 3,
+  "schema": "runtime-lab-objective-130/v1",
+  "seen_events": [
+    "bootstrap-docker-0",
+    "bootstrap-docker-1"
+  ],
+  "state": "marginal-optimizing",
+  "status": {
+    "active_tasks": [],
+    "blocker": "",
+    "latest_evidence": "docker 11004835952 peak=538189824 events={'max': 1952, 'oom_kill': 0, 'oom_group_kill': 0} exit=0 correctness=pass verdict=marginal",
+    "next_action": "open-optimization-task",
+    "state": "marginal-optimizing"
+  },
+  "streak_candidate_id": null,
+  "success_streak": 0,
+  "trials": [
+    {
+      "binary_sha256": "f09d24273e95c3045e23ee37ecd98f8e31e9aa71ec30f75444df8441f5485966",
+      "candidate_artifact_id": "11004835952",
+      "cleanup_verified": true,
+      "correctness": "pass",
+      "exit_code": 0,
+      "expected_binary_sha256": "f09d24273e95c3045e23ee37ecd98f8e31e9aa71ec30f75444df8441f5485966",
+      "identity_verified": true,
+      "memory_current_bytes": 63234048,
+      "memory_events": {
+        "max": 2042,
+        "oom_group_kill": 0,
+        "oom_kill": 0
+      },
+      "memory_peak_bytes": 538173440,
+      "peak_bytes": 538173440,
+      "signature": "ef813b6ca686f33c",
+      "swap_current_bytes": 0,
+      "swap_max_bytes": 0,
+      "track": "docker",
+      "verdict": "marginal",
+      "version_ok": true,
+      "workload_id": "q1-small-edit"
+    },
+    {
+      "binary_sha256": "f09d24273e95c3045e23ee37ecd98f8e31e9aa71ec30f75444df8441f5485966",
+      "candidate_artifact_id": "11004835952",
+      "cleanup_verified": true,
+      "correctness": "pass",
+      "exit_code": 0,
+      "expected_binary_sha256": "f09d24273e95c3045e23ee37ecd98f8e31e9aa71ec30f75444df8441f5485966",
+      "identity_verified": true,
+      "memory_current_bytes": 50483200,
+      "memory_events": {
+        "max": 1952,
+        "oom_group_kill": 0,
+        "oom_kill": 0
+      },
+      "memory_peak_bytes": 538189824,
+      "peak_bytes": 538189824,
+      "signature": "ef813b6ca686f33c",
+      "swap_current_bytes": 0,
+      "swap_max_bytes": 0,
+      "track": "docker",
+      "verdict": "marginal",
+      "version_ok": true,
+      "workload_id": "q1-small-edit"
+    }
+  ]
+}
