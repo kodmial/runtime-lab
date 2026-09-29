@@ -175,11 +175,20 @@ jobs:
               prsByIssue.get(issueNumber).push(pr);
             }
 
+            function isFrozenConflictPr(pr) {
+              const names = new Set((pr.labels || []).map(label =>
+                typeof label === 'string' ? label : label.name
+              ));
+              return names.has('no-auto-merge') && names.has('opencode-conflict-repair');
+            }
+
             const active = new Set();
             for (const issue of issues) {
               const prs = (prsByIssue.get(issue.number) || [])
                 .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-              const openPr = prs.find(pr => pr.state === 'open');
+              const openPr = prs.find(
+                pr => pr.state === 'open' && !isFrozenConflictPr(pr)
+              );
               if (openPr) {
                 active.add(issue.number);
                 await addLabel(issue.number, inProgress);
@@ -226,7 +235,7 @@ jobs:
               // Match NanoDictate's authoritative PR-close semantics. If the
               // latest PR for this dispatch was explicitly closed without
               // merge, do not silently reopen work after the lease expires.
-              const latestPr = prs[0] || null;
+              const latestPr = prs.find(pr => !isFrozenConflictPr(pr)) || null;
               if (
                 latestPr &&
                 latestPr.state === 'closed' &&
