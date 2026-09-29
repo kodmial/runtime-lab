@@ -35,7 +35,7 @@ import render_lifecycle as lifecycle
 from render_lifecycle import ExecutionMetadata, JobRequest
 
 
-PR15_BINARY = "4e310bbdfab9b3fed5f95adabc1afe23b462be741a929901f058258e80328ded"
+PR15_BINARY = "d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0"
 PR12_BINARY = "f09d24273e95c3045e23ee37ecd98f8e31e9aa71ec30f75444df8441f5485966"
 PR15_ARCHIVE = "a" * 64
 PR15_ARTIFACT = "1100998877"
@@ -52,8 +52,8 @@ ISSUE_PR15_BODY = """\
 - Artifact name: `opencode-coding-linux-x64`
 - Artifact ID: `1100998877`
 - Artifact archive digest: `sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`
-- Expected binary SHA-256: `4e310bbdfab9b3fed5f95adabc1afe23b462be741a929901f058258e80328ded`
-- binary SHA-256: `4e310bbdfab9b3fed5f95adabc1afe23b462be741a929901f058258e80328ded`
+- Expected binary SHA-256: `d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0`
+- binary SHA-256: `d9f930c1e288fc81a4abb12f0dd3974584ab8d28d5587cfd6c979698fe45f0c0`
 - Expected --version: `1.18.33`
 
 Download exact artifact ID `1100998877` from source run `36508913636`.
