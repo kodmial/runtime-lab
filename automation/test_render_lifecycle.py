@@ -76,6 +76,7 @@ from render_lifecycle import (  # noqa: E402
     experiment_record_path,
     knowledge_handoff_instructions,
     known_workflow_artifact_advisory,
+    superseded_workflow_artifact_notice,
     validate_experiment_record_text,
     parse_exact_workflow_artifact_requirement,
     resolve_task_text,
@@ -879,3 +880,52 @@ def test_build_exact_artifact_refusal_result_is_structured_and_permanent():
     assert build_exact_artifact_refusal_result(None)["status"] == \
         "infrastructure-blocked"
     assert build_exact_artifact_refusal_result("garbage")["permanent"] is True
+
+
+def test_superseded_workflow_artifact_notice_redirects_retired_contract():
+    # Regression for run 36503746345 (repair issue #133): the fourth
+    # live seconds-fast zero-cost refusal of the #110 contract proved
+    # the refusal loop itself is the reusable defect. The gate plus
+    # advisory plus structured permanent record are all correct, but
+    # they treat a retired contract like a merely undeliverable one,
+    # so the scheduler keeps redispatching #110 and minting identical
+    # P0 repairs. The owner direction on #110 declares artifact
+    # 11001896223 obsolete in favor of the version-stamped 11004835952
+    # candidate owned by the #130 coordinator (which already refuses
+    # 11001896223 via SUPERSEDED_ARTIFACT_IDS). The blocker and the
+    # structured record must therefore carry that redirect.
+    requirement = parse_exact_workflow_artifact_requirement(
+        "t", ISSUE_110_ARTIFACT_BODY)
+    assert requirement is not None
+    notice = superseded_workflow_artifact_notice(requirement)
+    assert "Superseded-artifact notice" in notice
+    assert "11004835952" in notice
+    assert "36498663107" in notice
+    assert "issue130_coordinator" in notice
+    message = exact_workflow_artifact_blocker(requirement)
+    assert notice in message
+    assert "infrastructure-blocked" in message
+    record = build_exact_artifact_refusal_result(
+        requirement, issue_number=110, run_id="36503746345")
+    assert record["superseded"] is True
+    assert record["successor"]["successor_artifact_id"] == "11004835952"
+    assert record["successor"]["successor_source_run_id"] == "36498663107"
+    assert "11004835952" in record["reason"]
+    # Unknown contracts are not superseded: refusal stays permanent
+    # but carries no redirect, so ordinary blocks never misdirect.
+    other = {
+        "artifact_id": "99999999999",
+        "artifact_name": "opencode-coding-linux-x64",
+        "source_run_id": "36492639568",
+        "archive_sha256": "8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df",
+        "source_sha": "",
+    }
+    assert superseded_workflow_artifact_notice(other) == ""
+    other_message = exact_workflow_artifact_blocker(other)
+    assert "Superseded-artifact notice" not in other_message
+    assert build_exact_artifact_refusal_result(
+        other, issue_number=110, run_id="x")["superseded"] is False
+    # Garbage input never raises and never yields a notice.
+    assert superseded_workflow_artifact_notice(None) == ""
+    assert superseded_workflow_artifact_notice({}) == ""
+    assert superseded_workflow_artifact_notice("11001896223") == ""
