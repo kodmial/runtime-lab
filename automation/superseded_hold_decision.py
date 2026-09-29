@@ -228,6 +228,150 @@ def _load_body_file(path: str) -> tuple[str, str]:
         return "", "body file unreadable (%s): %s" % (path, exc)
 
 
+def format_hold_notice(
+    decision: object,
+    *,
+    source_issue: object = 0,
+    failed_run_id: object = "",
+) -> str:
+    """Format the deterministic successor notice for a held refusal.
+
+    Repair issue #177 (failed run 36638450066, source issue #106, smoke):
+    that run executed at a base already containing the #171 decision CLI,
+    and the uploaded refusal record proves the CLI answers correctly live
+    (``dispatch_hold.held=true`` re-validates to exit 0 on the exact
+    ``render-qualification-106-36638450066`` bytes). Finalize still minted
+    #177 because the CLI never specified what the envelope should do
+    next: which branch wins (hold vs mint vs duplicate vs exhausted) and
+    which successor text to post while keeping the source paused.
+
+    This helper is that missing branch text: a single deterministic
+    human-readable notice naming the retired contract, the failed run,
+    and the registry successor, so every provisioned adoption posts
+    identical triage instead of divergent free-form messages. Pure and
+    never raises: a non-held or garbage decision yields "" (no notice),
+    never a crash and never a misleading redirect.
+    """
+    try:
+        if not isinstance(decision, Mapping):
+            return ""
+        if decision.get("held") is not True:
+            return ""
+        if decision.get("verdict") != HELD_SUPERSEDED_VERDICT:
+            return ""
+        artifact = str(decision.get("artifact_id", "") or "").strip()
+        run = str(decision.get("source_run_id", "") or "").strip()
+        successor = decision.get("successor", {})
+        successor = dict(successor) if isinstance(successor, Mapping) else {}
+        entry = SUPERSEDED_WORKFLOW_ARTIFACTS.get((artifact, run))
+        if not entry:
+            return ""
+        if successor != dict(entry):
+            successor = dict(entry)
+        try:
+            source = int(source_issue)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            source = 0
+        source_label = "#%d" % source if source > 0 else "the source issue"
+        failed = str(failed_run_id or "").strip() or "unknown run"
+        return (
+            "Held-superseded: Render execution for %s refused "
+            "pre-creation with zero Render cost in run %s because it "
+            "requires retired exact artifact %s (workflow run %s), which "
+            "will never execute on Render -- redispatching this exact "
+            "contract refuses identically. No new repair was minted. Use "
+            "the current immutable successor artifact %s (workflow run "
+            "%s, version %s) via %s instead of retrying this body."
+            % (
+                source_label,
+                failed,
+                artifact,
+                run,
+                successor.get("successor_artifact_id", "?"),
+                successor.get("successor_source_run_id", "?"),
+                successor.get("successor_version", "?"),
+                successor.get("owner", "?"),
+            )
+        )
+    except Exception:
+        return ""
+
+
+def finalize_repair_decision(
+    decision: object,
+    *,
+    repair_count: object = 0,
+    max_attempts: object = 10,
+    existing_repair: object = "",
+    source_issue: object = 0,
+    failed_run_id: object = "",
+) -> dict[str, Any]:
+    """Mirror the finalize mint gate with the hold check inserted first.
+
+    The provisioned ``render-executor.yml`` finalize step mints a P0
+    repair when ``REPAIR_COUNT < MAX_RENDER_REPAIR_ATTEMPTS`` with no
+    open repair carrying the source marker, posts a duplicate notice
+    when such a repair is already open, and posts the exhausted notice
+    when the budget is spent. Smoke issues always reach that gate
+    because the qualification-fingerprint dedup never fires for them
+    (``not-chain`` with an empty fingerprint).
+
+    This helper reproduces exactly those branches with one insertion:
+    a held-superseded decision (see ``decide_from_result`` /
+    ``decide_from_body``) returns ``action="hold"`` with the
+    deterministic ``format_hold_notice`` text, so the envelope keeps
+    the source paused and skips minting instead of opening one more P0
+    per redispatch. Pure and never raises: garbage inputs fail open
+    toward today's behavior (mint/duplicate/exhausted by the count
+    inputs), never toward suppressing a legitimate repair; only an
+    explicit registry-backed hold suppresses minting.
+    """
+    try:
+        held = (
+            isinstance(decision, Mapping)
+            and decision.get("held") is True
+            and decision.get("verdict") == HELD_SUPERSEDED_VERDICT
+        )
+        if held:
+            try:
+                artifact = str(decision.get("artifact_id", "") or "").strip()  # type: ignore[union-attr]
+                run = str(decision.get("source_run_id", "") or "").strip()  # type: ignore[union-attr]
+            except Exception:
+                artifact, run = "", ""
+            if (artifact, run) in SUPERSEDED_WORKFLOW_ARTIFACTS:
+                return {
+                    "action": "hold",
+                    "notice": format_hold_notice(
+                        decision,
+                        source_issue=source_issue,
+                        failed_run_id=failed_run_id,
+                    ),
+                }
+        try:
+            existing = str(existing_repair or "").strip()
+        except Exception:
+            existing = ""
+        if existing:
+            return {"action": "duplicate", "notice": ""}
+        try:
+            count = int(repair_count)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            count = 0
+        try:
+            limit = int(max_attempts)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            limit = 10
+        if count < 0:
+            count = 0
+        if limit <= 0:
+            limit = 10
+        if count < limit:
+            return {"action": "mint", "notice": ""}
+        return {"action": "exhausted", "notice": ""}
+    except Exception:
+        return {"action": "mint", "notice": ""}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
