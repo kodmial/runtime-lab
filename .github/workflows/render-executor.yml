@@ -102,28 +102,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "$ISSUE_NUMBER" in
-            58|106|110)
-              ISSUE_BODY="$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')"
-              ARTIFACT_ID="$(sed -n 's/^- Artifact ID: //p' <<<"$ISSUE_BODY" | tail -n1 | tr -d '`')"
-              BINARY_SHA="$(sed -n 's/^- Expected binary SHA-256: //p' <<<"$ISSUE_BODY" | tail -n1 | tr -d '`')"
-              [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]] || ARTIFACT_ID=0
-              [[ "$BINARY_SHA" =~ ^[0-9a-f]{64}$ ]] || BINARY_SHA="unknown"
+          ISSUE_JSON="$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json body,labels)"
+          IS_QUALIFICATION="$(jq -r '[.labels[].name] | index("qualification:render") != null' <<<"$ISSUE_JSON")"
 
-              python3 automation/record_render_qualification.py                 --result "$RENDER_RESULT_FILE"                 --memory "$RENDER_MEMORY_SUMMARY_FILE"                 --artifact-id "$ARTIFACT_ID"                 --binary-sha256 "$BINARY_SHA"                 --execute-outcome "$EXECUTE_OUTCOME"                 --cleanup-outcome "$CLEANUP_OUTCOME"                 --output "$RENDER_QUAL_RESULT_FILE"
+          if [[ "$IS_QUALIFICATION" == "true" ]]; then
+            ISSUE_BODY="$(jq -r '.body // ""' <<<"$ISSUE_JSON")"
+            ARTIFACT_ID="$(sed -n 's/^- Artifact ID: //p' <<<"$ISSUE_BODY" | tail -n1 | tr -d '`')"
+            BINARY_SHA="$(sed -n 's/^- Expected binary SHA-256: //p' <<<"$ISSUE_BODY" | tail -n1 | tr -d '`')"
+            [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]] || ARTIFACT_ID=0
+            [[ "$BINARY_SHA" =~ ^[0-9a-f]{64}$ ]] || BINARY_SHA="unknown"
 
-              BODY="$(jq -c . "$RENDER_QUAL_RESULT_FILE")"
-              gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY"                 --body "$(printf '%s\n%s' '<!-- runtime-lab-render-qualification-result -->' "$BODY")"
-              echo "classification=$(jq -r .classification "$RENDER_QUAL_RESULT_FILE")" >> "$GITHUB_OUTPUT"
-              echo "subtype=$(jq -r .subtype "$RENDER_QUAL_RESULT_FILE")" >> "$GITHUB_OUTPUT"
-              echo "fingerprint=$(jq -r .fingerprint "$RENDER_QUAL_RESULT_FILE")" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "classification=not-chain" >> "$GITHUB_OUTPUT"
-              echo "subtype=not-chain" >> "$GITHUB_OUTPUT"
-              echo "fingerprint=" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
+            python3 automation/record_render_qualification.py                 --result "$RENDER_RESULT_FILE"                 --memory "$RENDER_MEMORY_SUMMARY_FILE"                 --artifact-id "$ARTIFACT_ID"                 --binary-sha256 "$BINARY_SHA"                 --execute-outcome "$EXECUTE_OUTCOME"                 --cleanup-outcome "$CLEANUP_OUTCOME"                 --output "$RENDER_QUAL_RESULT_FILE"
+
+            BODY="$(jq -c . "$RENDER_QUAL_RESULT_FILE")"
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY"                 --body "$(printf '%s\n%s' '<!-- runtime-lab-render-qualification-result -->' "$BODY")"
+            echo "classification=$(jq -r .classification "$RENDER_QUAL_RESULT_FILE")" >> "$GITHUB_OUTPUT"
+            echo "subtype=$(jq -r .subtype "$RENDER_QUAL_RESULT_FILE")" >> "$GITHUB_OUTPUT"
+            echo "fingerprint=$(jq -r .fingerprint "$RENDER_QUAL_RESULT_FILE")" >> "$GITHUB_OUTPUT"
+          else
+            echo "classification=not-chain" >> "$GITHUB_OUTPUT"
+            echo "subtype=not-chain" >> "$GITHUB_OUTPUT"
+            echo "fingerprint=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Upload durable Render qualification evidence
         if: always()
@@ -154,10 +154,12 @@ jobs:
           gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
             --remove-label "automation:in-progress" >/dev/null 2>&1 || true
 
-          CHAIN_QUALIFICATION="no"
-          case "$ISSUE_NUMBER" in
-            58|106|110) CHAIN_QUALIFICATION="yes" ;;
-          esac
+          ISSUE_LABELS="$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name]')"
+          if jq -e 'index("qualification:render") != null' <<<"$ISSUE_LABELS" >/dev/null; then
+            CHAIN_QUALIFICATION="yes"
+          else
+            CHAIN_QUALIFICATION="no"
+          fi
 
           QUALIFICATION_FAILED="no"
           if [[ "$CHAIN_QUALIFICATION" == "yes" && "$QUALIFICATION_CLASSIFICATION" != "pass" ]]; then
