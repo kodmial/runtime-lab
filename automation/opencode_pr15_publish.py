@@ -447,14 +447,13 @@ def build_handoff_plan(
 ) -> dict[str, Any]:
     """Build the automatic handoff plan (no chat, no manual step).
 
-    Returns ``{"issue_body": ..., "commands": [...], "dispatches": [...]}``
-    where ``commands`` are the exact ``gh`` invocations the publishing
-    workflow runs IN ORDER: rewrite the downstream issue body with the
-    final exact fields, remove ``automation:paused``, add the Render
-    execution label + ``automation:in-progress``, then explicitly
-    dispatch ``issue-scheduler.yml`` (which routes the unpaused Render
-    issue) and ``render-executor.yml`` for that issue/mode. The plan
-    never classifies the candidate out on the #134 marginal verdict.
+    Returns ``{"issue_body": ..., "commands": [...], "dispatches": [...]}``.
+    The publishing workflow rewrites the downstream issue first, adds the
+    execution/qualification labels and ``automation:in-progress`` while the
+    issue is still paused, then removes ``automation:paused`` and dispatches
+    exactly one ``render-executor.yml`` run. This ordering prevents the
+    issue scheduler from racing the direct dispatch and creating a duplicate
+    Render run. The plan never gates on the #134 marginal verdict.
     """
     try:
         number = int(downstream_issue)
@@ -474,10 +473,10 @@ def build_handoff_plan(
             "gh", "issue", "edit", str(number),
             "--body-file", "<render_downstream_issue_body>",
         ],
-        ["gh", "issue", "edit", str(number), "--remove-label", "automation:paused"],
         ["gh", "issue", "edit", str(number), "--add-label", execution_label],
+        ["gh", "issue", "edit", str(number), "--add-label", "qualification:render"],
         ["gh", "issue", "edit", str(number), "--add-label", "automation:in-progress"],
-        ["gh", "workflow", "run", "issue-scheduler.yml", "--ref", "main"],
+        ["gh", "issue", "edit", str(number), "--remove-label", "automation:paused"],
         [
             "gh", "workflow", "run", "render-executor.yml", "--ref", "main",
             "-f", "issue_number=%d" % number, "-f", "mode=%s" % mode,
@@ -496,7 +495,6 @@ def build_handoff_plan(
         "issue_body": body,
         "commands": commands,
         "dispatches": [
-            {"workflow": "issue-scheduler.yml", "ref": "main", "inputs": {}},
             {
                 "workflow": "render-executor.yml",
                 "ref": "main",
