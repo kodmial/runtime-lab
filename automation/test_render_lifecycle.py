@@ -131,7 +131,7 @@ def test_agent_knowledge_handoff_is_stable_and_unique_per_run():
     assert "issue-9-run-run-with-spaces.md" in instructions
     assert "Do not repeat a known failed experiment" in instructions
     task = resolve_task_text(9, "smoke", title="Render smoke", body="Prove cleanup", run_id="abc-123")
-    assert "Repository knowledge handoff (mandatory)" in task
+    assert "Repository knowledge handoff (mandatory" in task
     assert "issue-9-run-abc-123.md" in task
 
 
@@ -147,10 +147,10 @@ def test_smoke_task_carries_memory_budget_e2e_does_not():
     assert "never run the full suite" in SMOKE_TASK_MEMORY_BUDGET
     smoke = resolve_task_text(58, "smoke", title="T", body="B", run_id="r")
     assert SMOKE_TASK_MEMORY_BUDGET in smoke
-    assert "Repository knowledge handoff (mandatory)" in smoke
+    assert "Repository knowledge handoff (mandatory, bounded for the 512 MB worker)" in smoke
     e2e = resolve_task_text(58, "e2e", title="T", body="B", run_id="r")
     assert SMOKE_TASK_MEMORY_BUDGET not in e2e
-    assert "Repository knowledge handoff (mandatory)" in e2e
+    assert "Repository knowledge handoff (mandatory):" in e2e
 
 
 def test_smoke_memory_budget_survives_body_truncation():
@@ -158,7 +158,60 @@ def test_smoke_memory_budget_survives_body_truncation():
     smoke = resolve_task_text(58, "smoke", title="T", body=long_body, run_id="r")
     assert "[truncated]" in smoke
     assert SMOKE_TASK_MEMORY_BUDGET in smoke
-    assert "Repository knowledge handoff (mandatory)" in smoke
+    assert "Repository knowledge handoff (mandatory" in smoke
+
+
+def test_smoke_handoff_is_bounded_e2e_handoff_unchanged():
+    # Regression for run 36645592095 (repair issue #188): the fifth
+    # consecutive #58 smoke storm pinned the 512 MB worker at the ceiling
+    # at a base already carrying the #176 budget, proving the budget
+    # alone insufficient. The reusable defect was the self-contradictory
+    # task text: budget item 5 ordered "bounded handoff reads" while the
+    # mandatory handoff block trailing it ordered unbounded topic/record
+    # reads (and never mentioned catalog-first discovery), so the later
+    # numbered instruction overrode the earlier budget line and a
+    # diligent agent read the monotonically growing topic notes plus
+    # full experiment records into a transcript the 512 MB worker must
+    # hold. Both live dispatch paths build payloads via
+    # resolve_task_text, so the mode-aware handoff covers every shape.
+    smoke = resolve_task_text(58, "smoke", title="T", body="B", run_id="r")
+    assert SMOKE_TASK_MEMORY_BUDGET in smoke
+    assert "Repository knowledge handoff (mandatory, bounded for the 512 MB worker)" in smoke
+    assert "at most ONE most-relevant topic note" in smoke
+    assert "knowledge_catalog.py query" in smoke
+    assert "This bound overrides any broader read scope above" in smoke
+    assert "prior records under" not in smoke
+    # The budget defers to the handoff block instead of stating a
+    # divergent bound.
+    assert "per the handoff block below" in SMOKE_TASK_MEMORY_BUDGET
+    e2e = resolve_task_text(58, "e2e", title="T", body="B", run_id="r")
+    assert SMOKE_TASK_MEMORY_BUDGET not in e2e
+    assert "Repository knowledge handoff (mandatory):" in e2e
+    assert "prior records under" in e2e
+    assert "at most ONE" not in e2e
+    # Mandatory protocol elements survive the bound on smoke.
+    for marker in ("automation/knowledge/PROTOCOL.md",
+                   "Do not repeat a known failed experiment",
+                   "issue-58-run-r.md"):
+        assert marker in smoke
+        assert marker in e2e
+
+
+def test_handoff_mode_defaults_to_full_and_rejects_unknown():
+    assert knowledge_handoff_instructions(9, "r") == knowledge_handoff_instructions(9, "r", "e2e")
+    assert "prior records under" in knowledge_handoff_instructions(9, "r")
+    assert "at most ONE" in knowledge_handoff_instructions(9, "r", "smoke")
+    with pytest.raises(ValueError):
+        knowledge_handoff_instructions(9, "r", "bogus-mode")
+
+
+def test_smoke_bounded_handoff_survives_body_truncation():
+    long_body = "z" * 5000
+    smoke = resolve_task_text(58, "smoke", title="T", body=long_body, run_id="r")
+    assert "[truncated]" in smoke
+    assert "at most ONE most-relevant topic note" in smoke
+    assert "knowledge_catalog.py query" in smoke
+    assert "issue-58-run-r.md" in smoke
 
 
 def _valid_experiment_record(issue=9, run_id="r1"):

@@ -51,9 +51,41 @@ def experiment_record_path(issue_number: int, run_id: object = "") -> str:
     safe = safe.strip("-.")[:96] or "unknown"
     return "%s/issue-%d-run-%s.md" % (KNOWLEDGE_EXPERIMENTS_DIR, issue_number, safe)
 
-def knowledge_handoff_instructions(issue_number: int, run_id: object = "") -> str:
-    """Build mandatory repository-memory handoff instructions for an agent."""
+def knowledge_handoff_instructions(issue_number: int, run_id: object = "",
+                                 execution_mode: str = "e2e") -> str:
+    """Build mandatory repository-memory handoff instructions for an agent.
+
+    The ``smoke`` variant is scope-bounded for the 512 MB Free worker
+    (repair issue #188, run 36645592095): that run storm-aborted at a
+    base already carrying the #176 smoke workload budget, whose item 5
+    orders "bounded handoff reads" while the full handoff step 2 below
+    it orders unbounded topic/record reads with no bound and without
+    mentioning the protocol's own catalog-first discovery. The later,
+    numbered, "mandatory" instruction overrides the earlier budget line,
+    so a diligent agent reads the monotonically growing topic notes
+    (``render-lifecycle.md`` grows with every repair) plus full
+    experiment records into a transcript the 512 MB worker must hold.
+    The smoke variant therefore keeps every mandatory protocol element
+    (protocol read, no-repeat rule, unique per-run record, promotion
+    discipline) but bounds the reads: catalog-first discovery, at most
+    one topic note, full records only when directly on point. E2E mode
+    keeps the full handoff unchanged: its issues own their scope.
+    """
+    validate_execution_mode(execution_mode)
     record = experiment_record_path(issue_number, run_id)
+    if execution_mode == "smoke":
+        return (
+            "Repository knowledge handoff (mandatory, bounded for the 512 MB worker):\n"
+            "1. Read %s before changing code.\n"
+            "2. Discover history with the offline catalog first "
+            "(python automation/knowledge_catalog.py query --issue <N> / --topic <slug>); "
+            "read at most ONE most-relevant topic note; open a full experiment record "
+            "only when directly on point. This bound overrides any broader read scope above.\n"
+            "3. Do not repeat a known failed experiment unless a material premise changed; state that changed premise.\n"
+            "4. Before finishing, write exactly one run record at %s. Separate observations, interpretation, and decisions; include evidence/tests and unresolved questions; never include secrets.\n"
+            "5. Promote only validated reusable facts into the relevant topic note; preserve superseded history."
+            % (KNOWLEDGE_PROTOCOL_PATH, record)
+        )
     return (
         "Repository knowledge handoff (mandatory):\n"
         "1. Read %s before changing code.\n"
@@ -421,7 +453,8 @@ EXECUTION_MODES = frozenset({"smoke", "e2e"})
 MAX_TASK_BODY_CHARS = 2000
 
 
-# Smoke-mode memory budget (repair issue #176, run 36637940250): the
+# Smoke-mode memory budget (repair issue #176, run 36637940250, extended
+# by repair issue #188, run 36645592095): the
 # Render Free worker is 0.1 CPU / 512 MB (https://render.com/docs/free,
 # re-verified 2026-09-30: unchanged) while the baseline agent floor plus
 # any real coding activity peaks near ~600 MB. Four consecutive #58 smoke
@@ -434,14 +467,22 @@ MAX_TASK_BODY_CHARS = 2000
 # part of the footprint the task controls) small while preserving the
 # real coding loop (inspect, one small edit, focused test, report).
 # E2E mode is untouched: its issues own their success criteria.
+# Issue #188 hardening: run 36645592095 stormed identically at the base
+# already carrying this budget, proving the budget alone insufficient
+# while the mandatory handoff block trailing it still ordered unbounded
+# topic/record reads (and never mentioned catalog-first discovery), so
+# the handoff -- the last, numbered, "mandatory" instruction -- overrode
+# budget item 5. The smoke handoff is therefore scope-bounded as well
+# (see knowledge_handoff_instructions), and item 5 below defers to it
+# instead of stating a divergent bound.
 SMOKE_TASK_MEMORY_BUDGET = (
     "Memory budget (binding, 512 MB worker):\n"
     "1. Inspect at most 5 repository files; prefer targeted grep/glob over broad reads.\n"
     "2. Make one small change only (one file, small diff).\n"
     "3. Run the single most relevant test file once; never run the full suite.\n"
     "4. Keep the final report concise (files changed, test result).\n"
-    "5. Knowledge handoff stays mandatory but bounded: read PROTOCOL.md and the "
-    "most relevant topic note; open full experiment records only when directly on point."
+    "5. Knowledge handoff stays mandatory but bounded per the handoff block below, "
+    "which overrides any broader read scope above."
 )
 
 
@@ -481,7 +522,7 @@ def resolve_task_text(issue_number: int, execution_mode: str,
         task = "Execute issue #%d in %s mode." % (issue_number, execution_mode)
     if execution_mode == "smoke":
         task = task + "\n\n" + SMOKE_TASK_MEMORY_BUDGET
-    return task + "\n\n" + knowledge_handoff_instructions(issue_number, run_id)
+    return task + "\n\n" + knowledge_handoff_instructions(issue_number, run_id, execution_mode)
 
 def select_base_sha(*candidates: object) -> str:
     """Return the first non-empty candidate SHA (exact base revision).
