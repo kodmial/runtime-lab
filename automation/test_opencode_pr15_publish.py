@@ -12,7 +12,7 @@ Stdlib-first, no network, no git mutations, no Render service. Proves:
   artifact/run/archive/binary/version fields for BOTH parsers
   (docker-qualification ``value()`` labels and the render gate);
 - the handoff plan updates the downstream issue BEFORE unpausing and
-  explicitly dispatches the scheduler + Render executor, and never
+  marks the issue in-progress before unpausing, dispatches exactly one Render executor, and never
   gates on the #134 marginal verdict;
 - the exact delivery path accepts the PR #15 identity in addition to
   the corrected PR #12 artifact, preserves all verification/launch/
@@ -176,7 +176,7 @@ def test_downstream_body_serves_both_parsers():
         "- Artifact ID: `1100998877`",
         "- Source workflow run: `36508913636`",
         "- Source/head SHA: `842157c38db9f8178ed0eee7af32f7536fe2346e`",
-        "- Expected binary SHA-256: `4e310b",
+        "- Expected binary SHA-256: `d9f930",
         "- Expected --version: `1.18.33`",
     ):
         assert label in body
@@ -199,12 +199,17 @@ def test_handoff_updates_before_unpause_then_dispatches():
     plan = publish.build_handoff_plan(manifest, 141, mode="e2e")
     kinds = [" ".join(argv) for argv in plan["commands"]]
     body_idx = next(i for i, cmd in enumerate(kinds) if "--body-file" in cmd)
+    in_progress_idx = next(i for i, cmd in enumerate(kinds) if "automation:in-progress" in cmd)
+    qualification_idx = next(i for i, cmd in enumerate(kinds) if "qualification:render" in cmd)
     unpause_idx = next(i for i, cmd in enumerate(kinds) if "automation:paused" in cmd)
-    sched_idx = next(i for i, cmd in enumerate(kinds) if "issue-scheduler.yml" in cmd)
     exec_idx = next(i for i, cmd in enumerate(kinds) if "render-executor.yml" in cmd)
-    assert body_idx < unpause_idx < sched_idx
-    assert sched_idx < exec_idx
-    assert plan["dispatches"][1]["inputs"] == {"issue_number": "141", "mode": "e2e"}
+    assert body_idx < qualification_idx < in_progress_idx < unpause_idx < exec_idx
+    assert not any("issue-scheduler.yml" in cmd for cmd in kinds)
+    assert plan["dispatches"] == [{
+        "workflow": "render-executor.yml",
+        "ref": "main",
+        "inputs": {"issue_number": "141", "mode": "e2e"},
+    }]
     assert "1100998877" in plan["issue_body"]
     with pytest.raises(ValueError):
         publish.build_handoff_plan(manifest, 0)
@@ -213,7 +218,7 @@ def test_handoff_updates_before_unpause_then_dispatches():
     # Dry-run executes nothing but returns the ordered argv strings.
     rendered = publish.run_handoff_plan(plan, dry_run=True)
     assert len(rendered) == len(plan["commands"])
-    assert any("issue-scheduler.yml" in line for line in rendered)
+    assert not any("issue-scheduler.yml" in line for line in rendered)
     assert any("render-executor.yml" in line for line in rendered)
 
 
