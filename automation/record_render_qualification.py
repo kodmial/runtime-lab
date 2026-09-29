@@ -58,6 +58,44 @@ def nested_identity(result: Mapping[str, Any]) -> tuple[str, str, str]:
     return downloaded, proc_sha, proc_path
 
 
+def refusal_retirement(result: Mapping[str, Any]) -> tuple[bool, bool, dict[str, Any]]:
+    """Extract the pre-creation refusal retirement signal (issue #138).
+
+    ``render-job.sh`` writes the structured refusal from
+    ``render_lifecycle.build_exact_artifact_refusal_result`` to the result
+    file when the exact-artifact gate refuses before any worker exists.
+    That record carries ``permanent`` (redispatch without a material
+    premise change refuses identically), ``superseded`` (the pinned
+    contract is retired on purpose), and ``successor`` (the immutable
+    replacement artifact mapping, empty when not superseded).
+
+    ``classify`` must propagate these three fields so the durable
+    qualification comment carries the retirement signal machine-readably
+    instead of forcing triage/schedulers to scrape the log line. Never
+    raises: unparsable input means "no retirement signal", never a
+    classification failure.
+    """
+    try:
+        if not isinstance(result, Mapping):
+            return False, False, {}
+        try:
+            permanent = bool(result.get("permanent"))
+        except Exception:
+            permanent = False
+        try:
+            superseded = bool(result.get("superseded"))
+        except Exception:
+            superseded = False
+        try:
+            successor = result.get("successor")
+            successor = dict(successor) if isinstance(successor, Mapping) else {}
+        except Exception:
+            successor = {}
+        return permanent, superseded, successor
+    except Exception:
+        return False, False, {}
+
+
 def classify(
     result: Mapping[str, Any],
     memory: Mapping[str, Any],
@@ -176,6 +214,20 @@ def classify(
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     payload["fingerprint"] = hashlib.sha256(raw).hexdigest()
+    # Retirement propagation (issue #138): the refusal record's
+    # permanent/superseded/successor fields ride the durable qualification
+    # payload so triage, the fingerprint-dedup check, and the
+    # qualification chain can see a retired contract without scraping log
+    # text. They are attached AFTER the fingerprint is computed on purpose:
+    # the fingerprint inputs stay byte-identical to the pre-#138 shape, so
+    # the already-posted marker for the retired #110 contract
+    # (17aee62ac5b68966042acecc14b0f68000374241b7943d1041afad37d3d0c32f)
+    # keeps deduping the next identical redispatch instead of minting
+    # another repair for the same failure mode.
+    permanent, superseded, successor = refusal_retirement(result)
+    payload["permanent"] = permanent
+    payload["superseded"] = superseded
+    payload["successor"] = successor
     return payload
 
 
