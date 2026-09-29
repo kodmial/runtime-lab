@@ -26,10 +26,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from opencode_runner import (  # noqa: E402
     CHECKOUT_SUBDIR,
     OPENCODE_CONFIG_CONTENT,
+    OPENCODE_DISABLE_AUTOUPDATE_ENV_VAR,
+    OPENCODE_DISABLE_DEFAULT_PLUGINS_ENV_VAR,
+    OPENCODE_DISABLE_EMBEDDED_WEB_UI_ENV_VAR,
+    OPENCODE_DISABLE_EXTERNAL_SKILLS_ENV_VAR,
+    OPENCODE_DISABLE_LSP_DOWNLOAD_ENV_VAR,
+    OPENCODE_DISABLE_MODELS_FETCH_ENV_VAR,
     OPENCODE_INSTALL_COMMAND,
     OPENCODE_LOW_MEMORY_BUN_OPTIONS,
     OPENCODE_LOW_MEMORY_ENV_VAR,
+    OPENCODE_LOW_MEMORY_EXTRA_DEFAULTS,
     OPENCODE_PINNED_VERSION,
+    OPENCODE_PURE_ENV_VAR,
+    OPENCODE_PURE_VALUE,
     apply_opencode_env_overrides,
     assert_public_clone_url,
     build_changes,
@@ -275,6 +284,70 @@ def test_low_memory_default_carries_smol():
     # Confinement defaults stay intact alongside the memory default.
     assert overrides["OPENCODE_CONFIG_CONTENT"] == OPENCODE_CONFIG_CONTENT
     assert overrides["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_low_memory_extras_carry_qualified_profile_switches():
+    # Issue #159 (failed run 36629689414 for source issue #58): the
+    # production path carried only BUN_OPTIONS while the issue #78
+    # qualified profile disables every unneeded side-channel. The
+    # canonical overrides must carry the full validated set.
+    overrides = default_opencode_env_overrides()
+    expected = {
+        OPENCODE_PURE_ENV_VAR: OPENCODE_PURE_VALUE,
+        OPENCODE_DISABLE_DEFAULT_PLUGINS_ENV_VAR: "1",
+        OPENCODE_DISABLE_EXTERNAL_SKILLS_ENV_VAR: "1",
+        OPENCODE_DISABLE_LSP_DOWNLOAD_ENV_VAR: "1",
+        OPENCODE_DISABLE_AUTOUPDATE_ENV_VAR: "1",
+        OPENCODE_DISABLE_MODELS_FETCH_ENV_VAR: "1",
+        OPENCODE_DISABLE_EMBEDDED_WEB_UI_ENV_VAR: "1",
+    }
+    assert OPENCODE_PURE_VALUE == "1"
+    for key, value in expected.items():
+        assert overrides[key] == value, key
+    # The registry and the emitted overrides must never silently diverge.
+    assert dict(OPENCODE_LOW_MEMORY_EXTRA_DEFAULTS) == expected
+    # argv stays frozen: pure mode arrives via env, so the workflow
+    # command shape and /proc cmdline identity are unchanged.
+    cmd = build_opencode_command(PREFERRED_MODEL, "do the thing")
+    assert "--pure" not in cmd
+    assert cmd[1:4] == ["run", "--auto", "--model"]
+
+
+def test_low_memory_extras_match_qualified_profile_static_env():
+    # The production subset must equal the issue #78 profile STATIC_ENV
+    # for every key production owns (OPENCODE_DB is per-job
+    # workspace-derived and OPENCODE_CONFIG_CONTENT is the confinement
+    # ruleset, so both are intentionally excluded here).
+    from opencode_lowmem_profile import STATIC_ENV
+
+    overrides = default_opencode_env_overrides()
+    for key in (
+        OPENCODE_LOW_MEMORY_ENV_VAR,
+        OPENCODE_PURE_ENV_VAR,
+        OPENCODE_DISABLE_DEFAULT_PLUGINS_ENV_VAR,
+        OPENCODE_DISABLE_EXTERNAL_SKILLS_ENV_VAR,
+        OPENCODE_DISABLE_LSP_DOWNLOAD_ENV_VAR,
+        OPENCODE_DISABLE_AUTOUPDATE_ENV_VAR,
+        OPENCODE_DISABLE_MODELS_FETCH_ENV_VAR,
+        OPENCODE_DISABLE_EMBEDDED_WEB_UI_ENV_VAR,
+        "OPENCODE_DISABLE_SHARE",
+    ):
+        assert overrides[key] == STATIC_ENV[key], key
+
+
+def test_apply_opencode_env_overrides_never_clobbers_profile_switches():
+    env = {
+        OPENCODE_PURE_ENV_VAR: "0",
+        OPENCODE_DISABLE_MODELS_FETCH_ENV_VAR: "0",
+    }
+    out = apply_opencode_env_overrides(env)
+    assert out is env
+    assert env[OPENCODE_PURE_ENV_VAR] == "0"
+    assert env[OPENCODE_DISABLE_MODELS_FETCH_ENV_VAR] == "0"
+    fresh: dict[str, str] = {}
+    apply_opencode_env_overrides(fresh)
+    assert fresh[OPENCODE_PURE_ENV_VAR] == "1"
+    assert fresh[OPENCODE_DISABLE_MODELS_FETCH_ENV_VAR] == "1"
 
 
 def test_apply_opencode_env_overrides_never_clobbers_operator():

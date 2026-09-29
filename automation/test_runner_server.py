@@ -388,6 +388,59 @@ def test_manager_init_defaults_smol_without_clobber(tmp_path, monkeypatch):
     assert os.environ.get("BUN_OPTIONS") == "--operator"
 
 
+PROFILE_SWITCH_ENV_VARS = (
+    "OPENCODE_PURE",
+    "OPENCODE_DISABLE_DEFAULT_PLUGINS",
+    "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+    "OPENCODE_DISABLE_LSP_DOWNLOAD",
+    "OPENCODE_DISABLE_AUTOUPDATE",
+    "OPENCODE_DISABLE_MODELS_FETCH",
+    "OPENCODE_DISABLE_EMBEDDED_WEB_UI",
+)
+
+
+def test_subprocess_runner_applies_profile_switches(tmp_path, monkeypatch):
+    # Issue #159 (failed run 36629689414 for source issue #58): every
+    # OpenCode child must inherit the qualified profile kill-switches,
+    # not only BUN_OPTIONS.
+    for name in PROFILE_SWITCH_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    runner = SubprocessCommandRunner()
+    probe = " && ".join("echo $%s" % name for name in PROFILE_SWITCH_ENV_VARS)
+    result = runner.run(["sh", "-c", probe], cwd=str(tmp_path), timeout=10.0)
+    assert result.returncode == 0
+    for name in PROFILE_SWITCH_ENV_VARS:
+        assert "\n1" in "\n" + (result.stdout or ""), name
+
+
+def test_subprocess_runner_never_clobbers_operator_profile_switches(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENCODE_PURE", "0")
+    monkeypatch.setenv("OPENCODE_DISABLE_MODELS_FETCH", "0")
+    runner = SubprocessCommandRunner()
+    result = runner.run(
+        ["sh", "-c", "echo $OPENCODE_PURE-$OPENCODE_DISABLE_MODELS_FETCH"],
+        cwd=str(tmp_path),
+        timeout=10.0,
+    )
+    assert result.returncode == 0
+    assert (result.stdout or "").strip() == "0-0"
+
+
+def test_manager_init_defaults_profile_switches_without_clobber(
+    tmp_path, monkeypatch
+):
+    for name in PROFILE_SWITCH_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    _manager(tmp_path)
+    for name in PROFILE_SWITCH_ENV_VARS:
+        assert os.environ.get(name) == "1", name
+    monkeypatch.setenv("OPENCODE_PURE", "0")
+    _manager(tmp_path)
+    assert os.environ.get("OPENCODE_PURE") == "0"
+
+
 # ---------------------------------------------------------------------------
 # HTTP contract (live server on an ephemeral port).
 # ---------------------------------------------------------------------------
