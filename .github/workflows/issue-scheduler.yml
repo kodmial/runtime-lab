@@ -64,8 +64,10 @@ jobs:
             const marker = '<!-- runtime-lab-scheduler-dispatch -->';
             const pauseMarker = '<!-- runtime-lab-scheduler-pause -->';
             const repairResetMarker = '<!-- runtime-lab-render-repair-reset -->';
+            const qualificationResetMarker = '<!-- runtime-lab-qualification-reset -->';
             const renderSmoke = 'execution:render-smoke';
             const renderE2E = 'execution:render-e2e';
+            const dockerQualify = 'execution:docker-qualify';
 
             let executionBackend = 'actions';
             try {
@@ -105,6 +107,7 @@ jobs:
               [paused, '6A737D', 'Automation stopped after repeated failed dispatches.'],
               [renderSmoke, '5319E7', 'Execute this ready issue through the Render smoke controller.'],
               [renderE2E, '0052CC', 'Execute this ready issue through the Render end-to-end controller.'],
+              [dockerQualify, '0E8A16', 'Execute this reusable issue through the exact-artifact Docker qualifier.'],
             ];
             for (const [name, color, description] of labelSpecs) {
               try {
@@ -199,7 +202,10 @@ jobs:
                 owner, repo, issue_number: issue.number, per_page: 100,
               });
               const resetAt = comments
-                .filter(comment => (comment.body || '').includes(repairResetMarker))
+                .filter(comment =>
+                  (comment.body || '').includes(repairResetMarker) ||
+                  (comment.body || '').includes(qualificationResetMarker)
+                )
                 .map(comment => new Date(comment.created_at).getTime())
                 .sort((a, b) => b - a)[0] || 0;
               const dispatches = comments
@@ -346,7 +352,10 @@ jobs:
                 owner, repo, issue_number: issue.number, per_page: 100,
               });
               const resetAt = previous
-                .filter(c => (c.body || '').includes(repairResetMarker))
+                .filter(c =>
+                  (c.body || '').includes(repairResetMarker) ||
+                  (c.body || '').includes(qualificationResetMarker)
+                )
                 .map(c => new Date(c.created_at).getTime())
                 .sort((a, b) => b - a)[0] || 0;
               const attempt = previous.filter(c =>
@@ -387,6 +396,15 @@ jobs:
                   core.notice(
                     'Dispatched issue #' + issue.number +
                     ' to Render executor (' + renderMode + ').'
+                  );
+                } else if (issueLabels.has(dockerQualify)) {
+                  await github.rest.actions.createWorkflowDispatch({
+                    owner, repo, workflow_id: 'docker-qualification.yml', ref: 'main',
+                    inputs: {issue_number: String(issue.number)},
+                  });
+                  core.notice(
+                    'Dispatched issue #' + issue.number +
+                    ' to the reusable Docker qualification workflow.'
                   );
                 } else {
                   await github.rest.actions.createWorkflowDispatch({
