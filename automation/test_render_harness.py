@@ -2201,3 +2201,36 @@ def test_job_emits_hold_verdict_for_retired_contract_issue110(tmp_path):
     payload = json.loads(result.read_text())
     assert payload["superseded"] is True
     assert payload["successor"]["successor_artifact_id"] == "11004835952"
+
+
+def test_job_refusal_record_carries_hold_verdict_for_retired_contract(tmp_path):
+    # Live regression for run 36633812500 (repair issue #165): that
+    # run printed the #161 `held-superseded` log verdict, yet the
+    # durable refusal evidence uploaded as
+    # `render-qualification-106-36633812500` carries no hold marker,
+    # forcing durable-evidence consumers to scrape log text. The
+    # executor gate path must persist the same machine-readable hold
+    # verdict into the result file alongside the unchanged refusal
+    # record, still with zero Render cost and no GitHub writes.
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-hold-record.log"
+    env["PATH"] = _write_exact_artifact_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    proc = _run("render-job.sh", env, str(REPO_ROOT))
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, combined
+    assert "held-superseded" in combined
+    assert "infrastructure-blocked" in combined
+    assert not log.exists() or "api.render.com/v1/services" not in log.read_text()
+    assert not state.exists() or "srv-" not in state.read_text()
+    payload = json.loads(result.read_text())
+    assert payload["status"] == "infrastructure-blocked"
+    assert payload["permanent"] is True
+    assert payload["superseded"] is True
+    hold = payload["dispatch_hold"]
+    assert hold["held"] is True
+    assert hold["verdict"] == "held-superseded"
+    assert hold["artifact_id"] == "11001896223"
+    assert hold["source_run_id"] == "36492639568"
+    assert hold["successor"]["successor_artifact_id"] == "11004835952"
+    assert hold["successor"]["successor_source_run_id"] == "36498663107"
+    assert hold["successor"] == payload["successor"]
