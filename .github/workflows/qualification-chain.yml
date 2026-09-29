@@ -1,0 +1,40 @@
+name: Qualification chain
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "3,13,23,33,43,53 * * * *"
+  issues:
+    types: [opened, reopened, closed, labeled, unlabeled]
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [closed]
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: runtime-lab-qualification-chain
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Reconcile qualification state
+        env:
+          GH_TOKEN: \${{ secrets.TAP_PAT || github.token }}
+        run: node automation/qualification_chain.js
