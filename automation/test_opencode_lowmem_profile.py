@@ -100,6 +100,7 @@ def test_env_overrides_are_complete_and_workspace_scoped(tmp_path):
         "OPENCODE_DISABLE_SHARE",
         "OPENCODE_DISABLE_AUTOUPDATE",
         "OPENCODE_DISABLE_MODELS_FETCH",
+        "OPENCODE_DISABLE_EMBEDDED_WEB_UI",
         "OPENCODE_DB",
         "OPENCODE_CONFIG_CONTENT",
     ):
@@ -110,6 +111,47 @@ def test_env_overrides_are_complete_and_workspace_scoped(tmp_path):
     assert workspace not in p.lowmem_env(str(tmp_path / "other"))["OPENCODE_DB"]
     with pytest.raises(ValueError):
         p.lowmem_env("")
+
+
+def test_lowmem_env_config_content_equals_full_config(tmp_path):
+    """Regression for run 36635571284 (repair issue #170).
+
+    lowmem_env() previously emitted a permission-only
+    OPENCODE_CONFIG_CONTENT while production (opencode_runner) and
+    lowmem_config() carry the full 8-key qualified config. A worker
+    provisioned from profile files would then run with the default
+    MCP/LSP/formatter/share/autoupdate/provider/plugin subsystems
+    active -- the exact gap that stormed run 36632841000 at the 512 MB
+    ceiling. The embedded document must equal lowmem_config() exactly.
+    """
+    env = p.lowmem_env(str(tmp_path / "ws"))
+    assert json.loads(env["OPENCODE_CONFIG_CONTENT"]) == p.lowmem_config()
+
+
+def test_lowmem_env_matches_production_worker_config(tmp_path):
+    """Profile env and the production worker must agree on the config.
+
+    automation/opencode_runner.py:OPENCODE_CONFIG_CONTENT is what the
+    live Render worker actually injects; a drift between the two means
+    the qualification profile no longer describes production.
+    """
+    import opencode_runner as r
+
+    env = p.lowmem_env(str(tmp_path / "ws"))
+    assert json.loads(env["OPENCODE_CONFIG_CONTENT"]) == json.loads(
+        r.OPENCODE_CONFIG_CONTENT
+    )
+
+
+def test_validation_rejects_permission_only_config_content(tmp_path):
+    """validate_profile must fail a stale permission-only document."""
+    config, env, cmd = _triple(str(tmp_path / "ws"))
+    stale_env = dict(env)
+    stale_env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
+        {"permission": p.lowmem_config()["permission"]}, sort_keys=True
+    )
+    errors = p.validate_profile(config, stale_env, cmd)
+    assert any("OPENCODE_CONFIG_CONTENT" in e for e in errors)
 
 
 def test_command_is_pure_fresh_session_allowlisted():
@@ -160,6 +202,14 @@ def test_profile_files_round_trip_without_secrets(tmp_path):
     with open(paths["opencode_env"], encoding="utf-8") as handle:
         text = handle.read()
     assert "BUN_OPTIONS=--smol" in text
+    # The materialized opencode.env must carry the same full config
+    # document as opencode.json (repair issue #170): a permission-only
+    # line here would provision a storm-doomed worker.
+    env_line = next(
+        line for line in text.splitlines()
+        if line.startswith("OPENCODE_CONFIG_CONTENT=")
+    )
+    assert json.loads(env_line.split("=", 1)[1]) == p.lowmem_config()
     for secret in ("TAP_PAT", "GH_TOKEN", "GITHUB_TOKEN", "sk-"):
         assert secret not in text
 
