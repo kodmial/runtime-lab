@@ -321,25 +321,40 @@ def finalize_repair_decision(
 ) -> dict[str, Any]:
     """Mirror the finalize mint gate with the hold check inserted first.
 
-    The provisioned ``render-executor.yml`` finalize step mints a P0
-    repair when ``REPAIR_COUNT < MAX_RENDER_REPAIR_ATTEMPTS`` with no
-    open repair carrying the source marker, posts a duplicate notice
-    when such a repair is already open, and posts the exhausted notice
-    when the budget is spent. Smoke issues always reach that gate
-    because the qualification-fingerprint dedup never fires for them
-    (``not-chain`` with an empty fingerprint).
+    The provisioned ``render-executor.yml`` finalize step nests its
+    branches: when ``REPAIR_COUNT < MAX_RENDER_REPAIR_ATTEMPTS`` it mints
+    a P0 repair with no open repair carrying the source marker and posts
+    a duplicate notice when such a repair is already open; otherwise
+    (budget spent) it posts the exhausted notice. Smoke issues always
+    reach that gate because the qualification-fingerprint dedup never
+    fires for them (``not-chain`` with an empty fingerprint).
 
-    This helper reproduces exactly those branches with one insertion:
+    This helper reproduces exactly that nesting with one insertion:
     a held-superseded decision (see ``decide_from_result`` /
     ``decide_from_body``) returns ``action="hold"`` with the
     deterministic ``format_hold_notice`` text, so the envelope keeps
     the source paused and skips minting instead of opening one more P0
-    per redispatch. Pure and never raises: garbage inputs fail open
+    per redispatch. In particular an already-open repair only maps to
+    ``duplicate`` while budget remains -- at or over budget the envelope
+    reports ``exhausted`` even when a repair is open, and this helper
+    does the same. Pure and never raises: garbage inputs fail open
     toward today's behavior (mint/duplicate/exhausted by the count
     inputs), never toward suppressing a legitimate repair; only an
     explicit registry-backed hold suppresses minting.
     """
     try:
+        try:
+            count = int(repair_count)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            count = 0
+        try:
+            limit = int(max_attempts)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            limit = 10
+        if count < 0:
+            count = 0
+        if limit <= 0:
+            limit = 10
         held = (
             isinstance(decision, Mapping)
             and decision.get("held") is True
@@ -360,25 +375,13 @@ def finalize_repair_decision(
                         failed_run_id=failed_run_id,
                     ),
                 }
-        try:
-            existing = str(existing_repair or "").strip()
-        except Exception:
-            existing = ""
-        if existing:
-            return {"action": "duplicate", "notice": ""}
-        try:
-            count = int(repair_count)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            count = 0
-        try:
-            limit = int(max_attempts)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            limit = 10
-        if count < 0:
-            count = 0
-        if limit <= 0:
-            limit = 10
         if count < limit:
+            try:
+                existing = str(existing_repair or "").strip()
+            except Exception:
+                existing = ""
+            if existing:
+                return {"action": "duplicate", "notice": ""}
             return {"action": "mint", "notice": ""}
         return {"action": "exhausted", "notice": ""}
     except Exception:

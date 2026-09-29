@@ -555,3 +555,143 @@ def test_finalize_unreadable_inputs_are_usage_error(tmp_path):
     )
     proc = _finalize_cli(result_file, "--body", RETIRED_BODY)
     assert proc.returncode == EXIT_USAGE_ERROR == 2
+
+
+# ---------------------------------------------------------------------------
+# Envelope parity + live bytes (repair issue #185, failed run 36642218343).
+#
+# Run 36642218343 (source issue #106, smoke) executed at base f7abb7d,
+# which already contains the complete #182 --finalize CLI -- and the
+# uploaded refusal record re-validates to action=hold/exit 0 offline --
+# yet finalize still minted #185, because the provisioned envelope never
+# calls the helper. Comparing the helper against the provisioned
+# render-executor.yml finalize text exposed one mirror infidelity: the
+# envelope nests the open-repair check INSIDE the budget check (an open
+# repair at or over budget reports exhausted, never duplicate), while
+# the helper returned duplicate whenever a repair was open. These tests
+# lock the exact nesting plus the full chain on the 36642218343 live
+# bytes without touching the network or .github/workflows/**.
+# ---------------------------------------------------------------------------
+
+
+def test_not_held_exhausted_when_repair_open_at_budget():
+    # Envelope parity: REPAIR_COUNT(10) < MAX(10) is false, so the
+    # exhausted branch wins even with an open repair carrying the
+    # source marker.
+    decision = decide_from_body("smoke", ORDINARY_BODY)
+    assert decision["held"] is False
+    outcome = finalize_repair_decision(
+        decision, repair_count=10, max_attempts=10, existing_repair="185"
+    )
+    assert outcome == {"action": "exhausted", "notice": ""}
+    outcome = finalize_repair_decision(
+        decision, repair_count=11, max_attempts=10, existing_repair="185"
+    )
+    assert outcome == {"action": "exhausted", "notice": ""}
+
+
+def test_not_held_duplicate_only_while_budget_remains():
+    decision = decide_from_body("smoke", ORDINARY_BODY)
+    outcome = finalize_repair_decision(
+        decision, repair_count=9, max_attempts=10, existing_repair="185"
+    )
+    assert outcome == {"action": "duplicate", "notice": ""}
+
+
+def test_finalize_exhausted_with_open_repair_cli():
+    proc = _cli(
+        "--finalize", "--title", "smoke", "--body", ORDINARY_BODY,
+        "--repair-count", "10", "--max-attempts", "10",
+        "--existing-repair", "185",
+    )
+    assert proc.returncode == EXIT_EXHAUSTED == 4, proc.stderr
+    assert json.loads(proc.stdout)["action"] == "exhausted"
+
+
+def _live_36642218343_refusal_record():
+    # Exact durable bytes uploaded by run 36642218343
+    # (render-qualification-106-36642218343, artifact 11067161424):
+    # status=infrastructure-blocked for retired artifact 11001896223 /
+    # run 36492639568, permanent, superseded, full successor mapping,
+    # dispatch_hold.held=true. Extra evidence keys (reason/docs/
+    # has_known_advisory/source_sha) must not disturb the decision.
+    return {
+        "archive_sha256": (
+            "8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df"
+        ),
+        "artifact_id": "11001896223",
+        "artifact_name": "opencode-coding-linux-x64",
+        "dispatch_hold": {
+            "artifact_id": "11001896223",
+            "held": True,
+            "source_run_id": "36492639568",
+            "successor": {
+                "owner": (
+                    "automation/issue130_coordinator.py "
+                    "(objective-130-state.json, active candidate 11004835952)"
+                ),
+                "successor_archive_sha256": (
+                    "0f0e3a6e787bcc80cbe7cff90ee0a948448bc7887633a2d5b8df19409"
+                    "e24b040"
+                ),
+                "successor_artifact_id": "11004835952",
+                "successor_binary_sha256": (
+                    "f09d24273e95c3045e23ee37ecd98f8e31e9aa71ec30f75444df8441f"
+                    "5485966"
+                ),
+                "successor_source_run_id": "36498663107",
+                "successor_version": "1.18.33",
+            },
+            "verdict": "held-superseded",
+        },
+        "docs": {
+            "github_artifacts": "https://docs.github.com/en/rest/actions/artifacts",
+            "render_free": "https://render.com/docs/free",
+        },
+        "has_known_advisory": True,
+        "issue_number": 106,
+        "permanent": True,
+        "reason": "infrastructure-blocked: this issue requires the exact GitHub Actions opencode-coding-linux-x64 11001896223 (workflow run 36492639568) checksum-verified before execution with no rebuild and no binary substitution.",
+        "run_id": "36642218343",
+        "source_run_id": "36492639568",
+        "source_sha": "8ed6c749577d534c55ba9555ba4918ea8be95a97",
+        "status": "infrastructure-blocked",
+        "successor": {
+            "successor_artifact_id": "11004835952",
+            "successor_source_run_id": "36498663107",
+            "successor_version": "1.18.33",
+        },
+        "superseded": True,
+    }
+
+
+def test_live_36642218343_record_holds():
+    decision = decide_from_result(_live_36642218343_refusal_record())
+    assert decision["held"] is True
+    assert decision["verdict"] == "held-superseded"
+    assert decision["artifact_id"] == "11001896223"
+    assert decision["source_run_id"] == "36492639568"
+    assert decision["successor"]["successor_artifact_id"] == "11004835952"
+    assert decision["successor"]["successor_version"] == "1.18.33"
+
+
+def test_live_36642218343_record_finalizes_to_hold(tmp_path):
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(_live_36642218343_refusal_record()), encoding="utf-8"
+    )
+    proc = _finalize_cli(
+        result_file,
+        "--repair-count", "9",
+        "--max-attempts", "10",
+        "--source-issue", "106",
+        "--failed-run-id", "36642218343",
+    )
+    assert proc.returncode == EXIT_HELD == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["action"] == "hold"
+    assert "11001896223" in payload["notice"]
+    assert "36492639568" in payload["notice"]
+    assert "11004835952" in payload["notice"]
+    assert "36642218343" in payload["notice"]
+    assert "No new repair was minted" in payload["notice"]
