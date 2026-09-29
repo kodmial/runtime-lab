@@ -136,8 +136,6 @@ try:  # pragma: no cover - import path depends on entrypoint
         OPENCODE_CONFIG_CONTENT,
         OPENCODE_INSTALL_MAX_ATTEMPTS,
         OPENCODE_INSTALL_RETRY_DELAYS,
-        OPENCODE_LOW_MEMORY_BUN_OPTIONS,
-        OPENCODE_LOW_MEMORY_ENV_VAR,
         apply_opencode_env_overrides,
         assert_fresh_session_command,
         build_changes,
@@ -147,6 +145,7 @@ try:  # pragma: no cover - import path depends on entrypoint
         build_opencode_install_command,
         build_rev_parse_command,
         build_status_command,
+        default_opencode_env_overrides,
         find_opencode_binary,
         fresh_session_env,
         is_model_unavailable_error,
@@ -163,8 +162,6 @@ except ImportError:  # pytest inserts automation/ on sys.path
         OPENCODE_CONFIG_CONTENT,
         OPENCODE_INSTALL_MAX_ATTEMPTS,
         OPENCODE_INSTALL_RETRY_DELAYS,
-        OPENCODE_LOW_MEMORY_BUN_OPTIONS,
-        OPENCODE_LOW_MEMORY_ENV_VAR,
         apply_opencode_env_overrides,
         assert_fresh_session_command,
         build_changes,
@@ -174,6 +171,7 @@ except ImportError:  # pytest inserts automation/ on sys.path
         build_opencode_install_command,
         build_rev_parse_command,
         build_status_command,
+        default_opencode_env_overrides,
         find_opencode_binary,
         fresh_session_env,
         is_model_unavailable_error,
@@ -1052,14 +1050,15 @@ class JobManager:
         # concurrent jobs never race on global state.
         os.environ.setdefault("OPENCODE_CONFIG_CONTENT", OPENCODE_CONFIG_CONTENT)
         os.environ.setdefault("GIT_TERMINAL_PROMPT", "0")
-        # Validated low-memory default (issue #75): BUN_OPTIONS=--smol
-        # trims ~40 MB off the ~600 MB agent peak (issue #56). Explicit
+        # Validated low-memory defaults (issues #75/#159): the canonical
+        # overrides (BUN_OPTIONS=--smol plus the qualified config-only
+        # kill-switches from the issue #78 profile) are defaulted here so
+        # scrubbed/inherited environments carry them too. Explicit
         # operator values win; the per-child setdefault in
         # SubprocessCommandRunner covers workers regardless.
         try:
-            os.environ.setdefault(
-                OPENCODE_LOW_MEMORY_ENV_VAR, OPENCODE_LOW_MEMORY_BUN_OPTIONS
-            )
+            for _key, _value in default_opencode_env_overrides().items():
+                os.environ.setdefault(_key, _value)
         except Exception:
             pass
 

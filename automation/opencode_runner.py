@@ -147,6 +147,36 @@ MAX_SUMMARY_CHARS = 4000
 OPENCODE_LOW_MEMORY_ENV_VAR = "BUN_OPTIONS"
 OPENCODE_LOW_MEMORY_BUN_OPTIONS = "--smol"
 
+# Remaining validated config-only low-memory switches (issue #78 qualified
+# profile, ``automation/opencode_lowmem_profile.py:STATIC_ENV``). Each is a
+# kill-switch for a network/subprocess side-channel the one-shot coding
+# task never needs on the worker: external plugin loads (including the
+# npm-install path), external skill discovery, the LSP downloader, the
+# share-sync uploader side-channel, the latest-release check (same
+# shared-egress rate-limit failure class as the installer lookup), the
+# models.dev catalog fetch, and the embedded web UI. Hermetic probes show
+# no startup-peak movement (all arms inside the noise band), so these are
+# a harmless dead-weight removal, not a claimed ~88 MiB gap closure; run
+# 36629689414 for source issue #58 storm-aborted with only BUN_OPTIONS
+# wired while the worker stayed pinned at the 512 MB ceiling.
+OPENCODE_PURE_ENV_VAR = "OPENCODE_PURE"
+OPENCODE_PURE_VALUE = "1"
+OPENCODE_DISABLE_DEFAULT_PLUGINS_ENV_VAR = "OPENCODE_DISABLE_DEFAULT_PLUGINS"
+OPENCODE_DISABLE_EXTERNAL_SKILLS_ENV_VAR = "OPENCODE_DISABLE_EXTERNAL_SKILLS"
+OPENCODE_DISABLE_LSP_DOWNLOAD_ENV_VAR = "OPENCODE_DISABLE_LSP_DOWNLOAD"
+OPENCODE_DISABLE_AUTOUPDATE_ENV_VAR = "OPENCODE_DISABLE_AUTOUPDATE"
+OPENCODE_DISABLE_MODELS_FETCH_ENV_VAR = "OPENCODE_DISABLE_MODELS_FETCH"
+OPENCODE_DISABLE_EMBEDDED_WEB_UI_ENV_VAR = "OPENCODE_DISABLE_EMBEDDED_WEB_UI"
+OPENCODE_LOW_MEMORY_EXTRA_DEFAULTS: tuple[tuple[str, str], ...] = (
+    (OPENCODE_PURE_ENV_VAR, OPENCODE_PURE_VALUE),
+    (OPENCODE_DISABLE_DEFAULT_PLUGINS_ENV_VAR, "1"),
+    (OPENCODE_DISABLE_EXTERNAL_SKILLS_ENV_VAR, "1"),
+    (OPENCODE_DISABLE_LSP_DOWNLOAD_ENV_VAR, "1"),
+    (OPENCODE_DISABLE_AUTOUPDATE_ENV_VAR, "1"),
+    (OPENCODE_DISABLE_MODELS_FETCH_ENV_VAR, "1"),
+    (OPENCODE_DISABLE_EMBEDDED_WEB_UI_ENV_VAR, "1"),
+)
+
 
 def find_opencode_binary() -> str | None:
     """Return the OpenCode binary path, or None when not installed.
@@ -797,16 +827,24 @@ def summarize_changes(changes: list[dict[str, str]]) -> str:
 def default_opencode_env_overrides() -> dict[str, str]:
     """Safe default env overrides for the OpenCode subprocess.
 
-    Confinement settings plus the validated low-memory default
-    (``BUN_OPTIONS=--smol``: issue #56 measured ~40 MB / ~7% off the
-    ~600 MB agent peak as a harmless default; run 36449610030 thrashed
-    at the 512 MB ceiling without it wired into production).
-    Provider/model credentials stay inherited from the process
-    environment (Render env vars) and are never set or logged by this
-    module. Explicit operator values always win: use
-    :func:`apply_opencode_env_overrides` (setdefault semantics).
+    Confinement settings plus the validated low-memory defaults: the
+    ``BUN_OPTIONS=--smol`` GC mode (issue #56 measured ~40 MB / ~7% off
+    the ~600 MB agent peak as a harmless default; run 36449610030
+    thrashed at the 512 MB ceiling without it wired into production)
+    and the remaining qualified config-only kill-switches from the
+    issue #78 profile (pure mode, default-plugins/external-skills off,
+    LSP download off, share off, autoupdate off, models-fetch off,
+    embedded web UI off; run 36629689414 storm-aborted for source issue
+    #58 with only the single BUN_OPTIONS default wired). Provider/model
+    credentials stay inherited from the process environment (Render env
+    vars) and are never set or logged by this module. Explicit operator
+    values always win: use :func:`apply_opencode_env_overrides`
+    (setdefault semantics). The OpenCode command argv is intentionally
+    unchanged (``--pure`` arrives via ``OPENCODE_PURE=1``): argv order
+    stays identical to the ``opencode run --auto --model`` workflow step
+    and to the /proc cmdline identity evidence.
     """
-    return {
+    overrides = {
         "OPENCODE_CONFIG_CONTENT": OPENCODE_CONFIG_CONTENT,
         "GIT_TERMINAL_PROMPT": "0",
         # One-shot jobs never upload share state (module-level kill switch
@@ -814,6 +852,9 @@ def default_opencode_env_overrides() -> dict[str, str]:
         "OPENCODE_DISABLE_SHARE": "1",
         OPENCODE_LOW_MEMORY_ENV_VAR: OPENCODE_LOW_MEMORY_BUN_OPTIONS,
     }
+    for key, value in OPENCODE_LOW_MEMORY_EXTRA_DEFAULTS:
+        overrides[key] = value
+    return overrides
 
 
 def apply_opencode_env_overrides(env: dict[str, str]) -> dict[str, str]:
