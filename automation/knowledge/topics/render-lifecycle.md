@@ -64,6 +64,8 @@
 - Do not treat permission-denied tool configuration as module exclusion for the lite variant: excluded subsystems must be absent from the lite static-import closure (including side-effect, dynamic, require, and re-export forms), validated per removal group.
 - Do not substitute the baseline OpenCode binary for an issue that requires one exact GitHub Actions artifact (numeric id + source workflow run + sha256): fail closed before any worker exists instead of burning a storm-doomed run that never tests the required binary. Evidence: `../experiments/issue-115-run-36496877520.md`.
 - Do not drop the pre-creation refusal retirement signal when classifying qualification evidence: `record_render_qualification.classify` must propagate `permanent`/`superseded`/`successor` from the refusal record into the durable payload while keeping the fingerprint inputs frozen, so posted markers keep deduping identical redispatches. Evidence: `../experiments/issue-138-run-36505951306.md`.
+- Do not judge a file-backing experiment by file-backed bytes alone: MAP_PRIVATE file pages carry the same cgroup charge once dirtied, so only peak / `max`-event movement proves 512 MB fitness (~1.1 GB redirected with zero peak movement in issue #144). Evidence: `../experiments/issue-144-run-36509899175.md`.
+- Do not remap Bun/JSC anonymous memory with MAP_SHARED file semantics: a fork child shares those pages with the parent (deterministic CoW break); the smallest safe design is MAP_PRIVATE file backing plus post-fork anonymous fallback. Evidence: `../experiments/issue-144-run-36509899175.md`.
 
 ## Open
 - Hard process termination can bypass in-process cleanup; stale-worker reconciliation is being developed separately.
@@ -151,6 +153,34 @@
 
 - PR #15 build qualifies as **marginal** under Docker 512 MiB/no-swap (not reliable, not does-not-fit): exact head `842157c3...` (`coding-no-mini`, merge `0d649350...` context only) compiled with `OPENCODE_VERSION=1.18.33 bun run --cwd packages/opencode script/build.ts --coding --single` (bun 1.4.2) yields a 171,222,496 B binary, SHA-256 `4e310bbd...28ded`, `--version 1.18.33`, `--help` run-only. The unstamped Continuum CI merge-ref binary (`0.0.0--202609290040`) is never tested: it trips the free-tier gate, so the version check fails closed first. Both constrained FOO_LIMIT trials complete the real workload (search/edit/test, exit 0, `2 passed`, walls 57/124 s) with peaks 537,804,800/547,512,320 B (~512.9/522.2 MiB), `max` 4272/126848 stall events, `oom_kill` 0, swap 0/0. Delta vs the #52 baseline: about -87/-78 MB (~-13--15%). Contract: `automation/opencode_pr15_qualify.py` (source identity plus build/version gates; measurement vocabulary reused from the proven harness, no new harness); tests: `automation/test_opencode_pr15_qualify.py` (12 tests). Evidence: `../experiments/issue-134-run-36504414238.md`, `automation/benchmark-results/pr15-qualify-issue-134-run-36504414238.json`.
 - A `max`-stall count in the hundred-thousands with `oom_kill 0` and a clean exit is still the throttle signature of a marginal fit (t2: 126,848 events, +10.6 MiB over nominal, exit 0); the mini-runtime fold-out does not move the steady-state agent footprint below the throttle edge.
+
+## mmap file-backing probe for PR #15 (issue #144)
+
+- Direct-anonymous-mmap interposition technically works but does not move
+  the 512 MiB peak: an opt-in `LD_PRELOAD` shim
+  (`automation/mmap_filebacked_shim/shim.c`, private-file mode,
+  >= 1 MiB MAP_PRIVATE anon RW only, fail-closed) redirects ~1.1 GB per
+  real-agent trial (~1000x the malloc-only libvmmalloc coverage) with zero
+  behavioral regression, yet same-binary A/B peaks are unchanged
+  (off 537,964,544/537,096,192 B vs on 537,149,440/545,255,424 B, all exit
+  0, `2 passed`, `oom_kill` 0, both arms `marginal`). MAP_PRIVATE file
+  pages carry the same cgroup charge once dirtied by the JSC GC; only
+  MAP_SHARED writeback (rejected: deterministic fork-CoW break, locked by
+  test) or real swap could reclaim them. Not wired into any delivery path.
+  Contract: `automation/mmap_filebacked.py` + `automation/mmap_filebacked_bench.py`;
+  tests: `automation/test_mmap_filebacked.py` (22 tests). Evidence:
+  `../experiments/issue-144-run-36509899175.md`,
+  `automation/benchmark-results/mmapfb-issue-144-run-36509899175.json`.
+- Bun/Zig runtime constraints for any future interposer: most mmaps
+  (incl. the 8 GiB Gigacage reservation) use raw syscalls invisible to
+  `LD_PRELOAD` (`--version`: 42 strace mmaps vs 3 libc interceptions);
+  raw exit skips destructors (telemetry needs periodic + synchronous
+  flush to per-pid files); fork children must fall back to anonymous
+  (`pthread_atfork`) to protect zero-init. Bun compiles are locally
+  deterministic but not reproducible across build environments (identical
+  source/command/toolchain, 4 KiB digest drift vs the #134 fingerprint),
+  so pin binary identity per build. Sparse per-process 2 GiB pools cost
+  ~72 KB actual disk for 35 GB apparent.
 
 ## Autonomous qualification coordinator (issue #130)
 
