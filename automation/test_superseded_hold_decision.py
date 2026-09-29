@@ -20,11 +20,14 @@ AUTOMATION = REPO_ROOT / "automation"
 sys.path.insert(0, str(AUTOMATION))
 
 from superseded_hold_decision import (  # noqa: E402
+    EXIT_DUPLICATE,
+    EXIT_EXHAUSTED,
     EXIT_HELD,
     EXIT_NOT_HELD,
     EXIT_USAGE_ERROR,
     decide_from_body,
     decide_from_result,
+    finalize_exit_code,
     finalize_repair_decision,
     format_hold_notice,
 )
@@ -365,3 +368,190 @@ def test_finalize_gate_garbage_fails_open_toward_mint():
         assert outcome["action"] == "mint"
     assert format_hold_notice(None) == ""
     assert format_hold_notice({"held": True}) == ""
+
+
+# ---------------------------------------------------------------------------
+# Executable finalize branch (repair issue #182, failed run 36640697494).
+#
+# Run 36640697494 executed at base 35fb646, which already contains the
+# #177 finalize_repair_decision library -- and its uploaded refusal record
+# (render-qualification-106-36640697494, dispatch_hold.held=true)
+# re-validates to action="hold" offline -- yet finalize still minted #182.
+# The library has no CLI surface, so the provisioned envelope cannot call
+# it without hand-rolling count plumbing in bash. These tests lock the
+# --finalize executable branch without touching the network or any file
+# under .github/workflows/**.
+# ---------------------------------------------------------------------------
+
+
+def _live_36640697494_refusal_record():
+    # Exact durable bytes uploaded by run 36640697494
+    # (render-qualification-106-36640697494): status=infrastructure-blocked,
+    # permanent, superseded, full successor mapping, dispatch_hold.held=true.
+    return {
+        "status": "infrastructure-blocked",
+        "permanent": True,
+        "superseded": True,
+        "archive_sha256": (
+            "8d5c5c3e98844c4800621031d0bbcb7c15f1039ec82ef1831928b8caeaa932df"
+        ),
+        "artifact_id": "11001896223",
+        "artifact_name": "opencode-coding-linux-x64",
+        "source_run_id": "36492639568",
+        "issue_number": 106,
+        "run_id": "36640697494",
+        "dispatch_hold": {
+            "held": True,
+            "verdict": "held-superseded",
+            "artifact_id": "11001896223",
+            "source_run_id": "36492639568",
+            "successor": {
+                "successor_artifact_id": "11004835952",
+                "successor_source_run_id": "36498663107",
+                "successor_archive_sha256": (
+                    "0f0e3a6e787bcc80cbe7cff90ee0a948448bc7887633a2d5b8df19409"
+                    "e24b040"
+                ),
+                "successor_binary_sha256": (
+                    "f09d24273e95c3045e23ee37ecd98f8e31e9aa71ec30f75444df8441f"
+                    "5485966"
+                ),
+                "successor_version": "1.18.33",
+                "owner": (
+                    "automation/issue130_coordinator.py "
+                    "(objective-130-state.json, active candidate 11004835952)"
+                ),
+            },
+        },
+    }
+
+
+def _finalize_cli(result_file=None, *extra):
+    args = []
+    if result_file is not None:
+        args += ["--result-file", str(result_file)]
+    return _cli("--finalize", *args, *extra)
+
+
+def test_finalize_exit_code_mapping():
+    assert finalize_exit_code("hold") == EXIT_HELD == 0
+    assert finalize_exit_code("mint") == EXIT_NOT_HELD == 1
+    assert finalize_exit_code("duplicate") == EXIT_DUPLICATE == 3
+    assert finalize_exit_code("exhausted") == EXIT_EXHAUSTED == 4
+    for garbage in (None, "", "MINT", 42, ["hold"]):
+        assert finalize_exit_code(garbage) == EXIT_NOT_HELD == 1
+
+
+def test_live_36640697494_record_finalizes_to_hold(tmp_path):
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(_live_36640697494_refusal_record()), encoding="utf-8"
+    )
+    proc = _finalize_cli(
+        result_file,
+        "--repair-count", "9",
+        "--max-attempts", "10",
+        "--source-issue", "106",
+        "--failed-run-id", "36640697494",
+    )
+    assert proc.returncode == EXIT_HELD == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["action"] == "hold"
+    assert "11001896223" in payload["notice"]
+    assert "36492639568" in payload["notice"]
+    assert "11004835952" in payload["notice"]
+    assert "36640697494" in payload["notice"]
+    assert "No new repair was minted" in payload["notice"]
+
+
+def test_finalize_hold_wins_over_duplicate_and_exhausted_cli(tmp_path):
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(_live_36640697494_refusal_record()), encoding="utf-8"
+    )
+    proc = _finalize_cli(
+        result_file,
+        "--repair-count", "3",
+        "--existing-repair", "177",
+        "--source-issue", "106",
+        "--failed-run-id", "36640697494",
+    )
+    assert proc.returncode == EXIT_HELD == 0, proc.stderr
+    assert json.loads(proc.stdout)["action"] == "hold"
+    proc = _finalize_cli(
+        result_file,
+        "--repair-count", "10",
+        "--source-issue", "106",
+        "--failed-run-id", "36640697494",
+    )
+    assert proc.returncode == EXIT_HELD == 0, proc.stderr
+    assert json.loads(proc.stdout)["action"] == "hold"
+
+
+def test_finalize_body_inputs_hold_without_result_file():
+    proc = _cli(
+        "--finalize", "--title", "smoke", "--body", RETIRED_BODY,
+        "--source-issue", "106", "--failed-run-id", "36640697494",
+    )
+    assert proc.returncode == EXIT_HELD == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["action"] == "hold"
+    assert "11004835952" in payload["notice"]
+
+
+def test_finalize_mint_duplicate_exhausted_cli():
+    proc = _cli("--finalize", "--title", "smoke", "--body", ORDINARY_BODY)
+    assert proc.returncode == EXIT_NOT_HELD == 1, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload == {"action": "mint", "notice": ""}
+
+    proc = _cli(
+        "--finalize", "--title", "smoke", "--body", ORDINARY_BODY,
+        "--existing-repair", "182",
+    )
+    assert proc.returncode == EXIT_DUPLICATE == 3, proc.stderr
+    assert json.loads(proc.stdout)["action"] == "duplicate"
+
+    proc = _cli(
+        "--finalize", "--title", "smoke", "--body", ORDINARY_BODY,
+        "--repair-count", "10", "--max-attempts", "10",
+    )
+    assert proc.returncode == EXIT_EXHAUSTED == 4, proc.stderr
+    assert json.loads(proc.stdout)["action"] == "exhausted"
+
+
+def test_finalize_garbage_content_fails_open_to_mint(tmp_path):
+    result_file = tmp_path / "result.json"
+    result_file.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    proc = _finalize_cli(result_file)
+    assert proc.returncode == EXIT_NOT_HELD == 1, proc.stderr
+    assert json.loads(proc.stdout)["action"] == "mint"
+
+    proc = _cli(
+        "--finalize", "--title", "smoke", "--body", ORDINARY_BODY,
+        "--repair-count", "not-a-number", "--max-attempts", "also-bad",
+    )
+    assert proc.returncode == EXIT_NOT_HELD == 1, proc.stderr
+    assert json.loads(proc.stdout)["action"] == "mint"
+
+
+def test_finalize_unreadable_inputs_are_usage_error(tmp_path):
+    proc = _finalize_cli(tmp_path / "absent.json")
+    assert proc.returncode == EXIT_USAGE_ERROR == 2
+    assert proc.stdout == ""
+
+    bad_file = tmp_path / "bad.json"
+    bad_file.write_text("{not json", encoding="utf-8")
+    proc = _finalize_cli(bad_file)
+    assert proc.returncode == EXIT_USAGE_ERROR == 2
+    assert proc.stdout == ""
+
+    proc = _cli("--finalize")
+    assert proc.returncode == EXIT_USAGE_ERROR == 2
+
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(_live_36640697494_refusal_record()), encoding="utf-8"
+    )
+    proc = _finalize_cli(result_file, "--body", RETIRED_BODY)
+    assert proc.returncode == EXIT_USAGE_ERROR == 2

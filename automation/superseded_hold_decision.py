@@ -19,14 +19,22 @@ signal-side: no provisioned envelope step can answer "is this refusal
 held-superseded?" without embedding registry logic in workflow JS/YAML.
 This module is that answer as a stdlib-only executable decision point.
 The provisioned ``render-executor.yml`` finalize step runs on a runner
-with a full checkout of ``main``, so it can adopt the hold with three
-lines and no registry duplication::
+with a full checkout of ``main``, so it can adopt the hold with one call
+and no registry duplication::
 
-    if python3 automation/superseded_hold_decision.py \
-        --result-file "$RENDER_RESULT_FILE" >/tmp/hold.json; then
-      # held-superseded: keep the source paused, note the successor,
+    if python3 automation/superseded_hold_decision.py --finalize \
+        --result-file "$RENDER_RESULT_FILE" \
+        --repair-count "$REPAIR_COUNT" \
+        --max-attempts "$MAX_RENDER_REPAIR_ATTEMPTS" \
+        --existing-repair "$EXISTING_REPAIR" \
+        --source-issue "$ISSUE_NUMBER" \
+        --failed-run-id "$GITHUB_RUN_ID" >/tmp/finalize.json; then
+      # exit 0 = hold: keep the source paused, post the returned notice,
       # and skip minting another P0 repair for an identical refusal.
     fi
+    # exit 1/3/4 = mint/duplicate/exhausted: read .action/.notice and
+    # follow the matching existing branch. Exit 2 (usage error, e.g. a
+    # missing result file) means "fall through to today's behavior".
 
 The same module answers the scheduler pre-dispatch question from the
 issue text (``--title``/``--body``/``--body-file``) wherever a checkout
@@ -34,12 +42,15 @@ exists; scheduler/auto-merge adoption itself is provisioned separately
 (the Actions token cannot push workflow-file changes).
 
 Contract (stable for provisioned envelopes):
-- stdout is always one JSON object: ``held`` (bool), ``verdict``
-  (``"held-superseded"`` or ``""``), ``artifact_id``, ``source_run_id``,
-  ``successor`` (registry mapping or ``{}``), ``reason`` (human line).
-- exit 0 means held-superseded: the contract is retired and redispatch
-  refuses identically; the envelope should hold/skip instead of minting.
-- exit 1 means not held: existing behavior continues unchanged.
+- Without ``--finalize``, stdout is always one JSON object: ``held``
+  (bool), ``verdict`` (``"held-superseded"`` or ``""``), ``artifact_id``,
+  ``source_run_id``, ``successor`` (registry mapping or ``{}``),
+  ``reason`` (human line); exit 0 means held-superseded and exit 1
+  means not held.
+- With ``--finalize``, stdout is always one JSON object: ``action``
+  (``"hold"``/``"mint"``/``"duplicate"``/``"exhausted"``) plus
+  ``notice`` (the deterministic successor text for hold, else ``""``);
+  exits mirror the action (0 hold, 1 mint, 3 duplicate, 4 exhausted).
 - exit 2 means CLI usage error (no input flags, unreadable file).
   Garbage *content* is never a usage error: unparsable bodies/records
   mean "not held" (fail open toward today's behavior), never a crash.
@@ -72,6 +83,8 @@ from render_lifecycle import (  # noqa: E402
 EXIT_HELD = 0
 EXIT_NOT_HELD = 1
 EXIT_USAGE_ERROR = 2
+EXIT_DUPLICATE = 3
+EXIT_EXHAUSTED = 4
 
 
 def _empty_decision(
@@ -372,6 +385,34 @@ def finalize_repair_decision(
         return {"action": "mint", "notice": ""}
 
 
+def finalize_exit_code(action: object) -> int:
+    """Map a finalize action to the stable CLI exit code (never raises).
+
+    Repair issue #182 (failed run 36640697494, source issue #106, smoke):
+    that run executed at base ``35fb646``, which already contains the #177
+    ``finalize_repair_decision`` library -- and the uploaded refusal record
+    (``render-qualification-106-36640697494``, ``dispatch_hold.held=true``)
+    re-validates to ``action="hold"`` with the successor notice offline.
+    Finalize still minted #182 because the helper is library-only: the
+    provisioned envelope cannot call library code without hand-rolling the
+    repair-count/duplicate/exhausted plumbing in bash, which is exactly the
+    registry duplication the hold series exists to avoid. The ``--finalize``
+    CLI mode below exposes the same branch over inputs the finalize step
+    already holds, keyed by these exit codes. Unknown actions fail open
+    toward ``mint`` (exit 1, today's behavior), never toward suppression.
+    """
+    try:
+        if action == "hold":
+            return EXIT_HELD
+        if action == "duplicate":
+            return EXIT_DUPLICATE
+        if action == "exhausted":
+            return EXIT_EXHAUSTED
+        return EXIT_NOT_HELD
+    except Exception:
+        return EXIT_NOT_HELD
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -391,6 +432,41 @@ def main(argv: list[str] | None = None) -> int:
         "--result-file",
         default="",
         help="Path to a refusal-result JSON file (e.g. $RENDER_RESULT_FILE).",
+    )
+    parser.add_argument(
+        "--finalize",
+        action="store_true",
+        help=(
+            "Emit the finalize mint/duplicate/exhausted/hold branch "
+            "instead of the hold decision. Prints one JSON object with "
+            "action/notice; exits 0 hold, 1 mint, 3 duplicate, "
+            "4 exhausted, 2 usage error."
+        ),
+    )
+    parser.add_argument(
+        "--repair-count",
+        default="0",
+        help="Finalize-mode REPAIR_COUNT (repair-attempt comments so far).",
+    )
+    parser.add_argument(
+        "--max-attempts",
+        default="10",
+        help="Finalize-mode MAX_RENDER_REPAIR_ATTEMPTS budget.",
+    )
+    parser.add_argument(
+        "--existing-repair",
+        default="",
+        help="Finalize-mode open repair number, if any (else empty).",
+    )
+    parser.add_argument(
+        "--source-issue",
+        default="0",
+        help="Finalize-mode source issue number for the hold notice.",
+    )
+    parser.add_argument(
+        "--failed-run-id",
+        default="",
+        help="Finalize-mode failed workflow run id for the hold notice.",
     )
     args = parser.parse_args(argv)
 
@@ -426,6 +502,26 @@ def main(argv: list[str] | None = None) -> int:
                 print("error: %s" % error, file=sys.stderr)
                 return EXIT_USAGE_ERROR
         decision = decide_from_body(args.title, body)
+
+    if args.finalize:
+        outcome = finalize_repair_decision(
+            decision,
+            repair_count=args.repair_count,
+            max_attempts=args.max_attempts,
+            existing_repair=args.existing_repair,
+            source_issue=args.source_issue,
+            failed_run_id=args.failed_run_id,
+        )
+        try:
+            action = str(outcome.get("action", "mint") or "mint")
+        except Exception:
+            action = "mint"
+        try:
+            notice = str(outcome.get("notice", "") or "")
+        except Exception:
+            notice = ""
+        print(json.dumps({"action": action, "notice": notice}, sort_keys=True))
+        return finalize_exit_code(action)
 
     print(json.dumps(decision, sort_keys=True))
     return EXIT_HELD if decision.get("held") is True else EXIT_NOT_HELD
