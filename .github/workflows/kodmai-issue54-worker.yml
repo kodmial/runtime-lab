@@ -1,4 +1,4 @@
-name: Kodmai issue 54 bridge worker
+name: Bridge worker
 
 on:
   issue_comment:
