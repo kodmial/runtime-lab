@@ -5,8 +5,8 @@ TASK_NUMBER="${TASK_NUMBER:?TASK_NUMBER is required}"
 PR_NUMBER="${PR_NUMBER:?PR_NUMBER is required}"
 MARKER_PATH="automation/runtime-target.marker"
 MARKER_VALUE="primary-v1"
-WORKDIR="${RUNNER_TEMP}/private-review"
-TRANSCRIPT="${RUNNER_TEMP}/review-private.log"
+WORKDIR="${RUNNER_TEMP}/child-review"
+TRANSCRIPT="${RUNNER_TEMP}/review-child.log"
 REVIEW_FILE="automation/runtime-results/task-${TASK_NUMBER}-review.md"
 MAX_REVIEW_PASSES="${MAX_REVIEW_PASSES:-3}"
 
@@ -23,12 +23,12 @@ discover_target() {
   return 1
 }
 
-private_comment() {
+child_comment() {
   gh issue comment "$TASK_NUMBER" --repo "$TARGET_REPO" --body "$1" >/dev/null 2>&1 || true
 }
 
 discover_target || {
-  echo "Private target discovery failed."
+  echo "Child target discovery failed."
   exit 2
 }
 
@@ -63,7 +63,7 @@ for attempt in 1 2 3; do
     break
   fi
   if [[ "$attempt" -eq 3 ]]; then
-    private_comment "<!-- runtime-review-infra --> Review for task #$TASK_NUMBER could not install the agent runtime."
+    child_comment "<!-- runtime-review-infra --> Review for task #$TASK_NUMBER could not install the agent runtime."
     exit 4
   fi
   sleep $((attempt * 5))
@@ -78,7 +78,7 @@ ISSUE_BODY="$(jq -r '.body // ""' <<<"$ISSUE_JSON")"
 mkdir -p "$(dirname "$REVIEW_FILE")"
 BASE_PROMPT="${RUNNER_TEMP}/review-prompt.txt"
 cat >"$BASE_PROMPT" <<EOF
-Independently review and, if necessary, repair private task #$TASK_NUMBER in the currently checked-out PR branch.
+Independently review and, if necessary, repair child task #$TASK_NUMBER in the currently checked-out PR branch.
 
 Rules:
 - Treat the full private issue body below as authoritative.
@@ -99,10 +99,10 @@ Rules:
 - If anything required still fails, keep working and do not write Review: PASS.
 - Do not modify the target marker file $MARKER_PATH.
 
---- PRIVATE ISSUE TITLE ---
+--- CHILD ISSUE TITLE ---
 $ISSUE_TITLE
 
---- PRIVATE ISSUE BODY ---
+--- CHILD ISSUE BODY ---
 $ISSUE_BODY
 EOF
 
@@ -118,7 +118,7 @@ for pass in $(seq 1 "$MAX_REVIEW_PASSES"); do
 
 Continuation review pass $pass:
 - The prior pass did not reach verified review completion.
-- Inspect current working tree, local commits, and prior private transcript at $TRANSCRIPT.
+- Inspect current working tree, local commits, and prior child transcript at $TRANSCRIPT.
 - Continue from the existing state, repair remaining blockers, rerun verification, and update $REVIEW_FILE.
 EOF
   fi
@@ -141,12 +141,12 @@ EOF
 done
 
 if [[ "$accepted" != true ]]; then
-  private_comment "<!-- runtime-review-needs-retry --> Review for task #$TASK_NUMBER did not reach verified acceptance in this runner cycle."
+  child_comment "<!-- runtime-review-needs-retry --> Review for task #$TASK_NUMBER did not reach verified acceptance in this runner cycle."
   exit 30
 fi
 
 if git diff --no-ext-diff -- . | grep -Eiq '(github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+|rnd_[A-Za-z0-9]+)'; then
-  private_comment "<!-- runtime-review-security --> Review for task #$TASK_NUMBER detected token-like material; merge was blocked."
+  child_comment "<!-- runtime-review-security --> Review for task #$TASK_NUMBER detected token-like material; merge was blocked."
   exit 31
 fi
 
@@ -171,9 +171,9 @@ fi
 set -e
 
 if [[ "$merge_rc" -ne 0 ]]; then
-  private_comment "<!-- runtime-review-merge-blocked --> Task #$TASK_NUMBER passed independent runtime review, but GitHub still blocked the merge."
+  child_comment "<!-- runtime-review-merge-blocked --> Task #$TASK_NUMBER passed independent runtime review, but GitHub still blocked the merge."
   exit 32
 fi
 
-private_comment "<!-- runtime-review-merged --> Task #$TASK_NUMBER passed independent runtime review and its PR was merged."
+child_comment "<!-- runtime-review-merged --> Task #$TASK_NUMBER passed independent runtime review and its PR was merged."
 echo "Worker task #$TASK_NUMBER reviewed and merged."
