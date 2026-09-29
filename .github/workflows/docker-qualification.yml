@@ -1,0 +1,291 @@
+name: Docker qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Reusable Docker qualification issue"
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+concurrency:
+  group: runtime-lab-docker-qualification
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ISSUE_NUMBER: \${{ inputs.issue_number }}
+      RESULT_FILE: /tmp/docker-qualification-result.json
+      EVIDENCE_DIR: /tmp/docker-qualification-evidence
+
+    steps:
+      - name: Checkout trusted harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Run exact artifact under 512 MiB no-swap
+        id: qualify
+        continue-on-error: true
+        env:
+          GH_TOKEN: \${{ secrets.TAP_PAT || github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          ISSUE_BODY="$EVIDENCE_DIR/issue.md"
+          gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' > "$ISSUE_BODY"
+
+          value() {
+            local label="$1"
+            sed -n "s/^- $label: //p" "$ISSUE_BODY" | tail -n 1 | tr -d '\`'
+          }
+
+          ARTIFACT_ID="$(value 'Artifact ID')"
+          RUN_ID="$(value 'Source workflow run')"
+          HEAD_SHA="$(value 'Source/head SHA')"
+          ARCHIVE="$(value 'Artifact archive digest' | sed 's/^sha256://')"
+          BINARY_SHA="$(value 'Expected binary SHA-256')"
+          VERSION="$(value 'Expected --version')"
+
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ARCHIVE" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$BINARY_SHA" =~ ^[0-9a-f]{64}$ ]]
+          [[ -n "$VERSION" ]]
+
+          gh api "repos/kodmial/opencode/actions/artifacts/$ARTIFACT_ID/zip" > "$EVIDENCE_DIR/artifact.zip"
+          echo "$ARCHIVE  $EVIDENCE_DIR/artifact.zip" | sha256sum -c -
+          unzip -q "$EVIDENCE_DIR/artifact.zip" -d "$EVIDENCE_DIR/artifact"
+          BIN="$EVIDENCE_DIR/artifact/opencode-coding-linux-x64"
+          chmod +x "$BIN"
+          (
+            cd "$EVIDENCE_DIR/artifact"
+            sha256sum -c opencode-coding-linux-x64.sha256
+          )
+          ACTUAL_SHA="$(sha256sum "$BIN" | awk '{print $1}')"
+          [[ "$ACTUAL_SHA" == "$BINARY_SHA" ]]
+          ACTUAL_VERSION="$("$BIN" --version | tr -d '\r\n')"
+          [[ "$ACTUAL_VERSION" == "$VERSION" ]]
+          BINARY_BYTES="$(stat -c %s "$BIN")"
+
+          {
+            echo "artifact_id=$ARTIFACT_ID"
+            echo "workflow_run_id=$RUN_ID"
+            echo "head_sha=$HEAD_SHA"
+            echo "archive_sha256=$ARCHIVE"
+            echo "binary_sha256=$ACTUAL_SHA"
+            echo "version=$ACTUAL_VERSION"
+          } > "$EVIDENCE_DIR/identity.txt"
+
+          for TRIAL in 1 2; do
+            REPO="$EVIDENCE_DIR/repo-$TRIAL"
+            mkdir -p "$REPO"
+            cat > "$REPO/foo_module.py" <<'PY'
+          FOO_LIMIT = 10
+
+          def within_limit(n):
+              return 0 <= n <= FOO_LIMIT
+          PY
+            cat > "$REPO/test_foo_module.py" <<'PY'
+          from foo_module import FOO_LIMIT, within_limit
+
+          def test_value():
+              assert FOO_LIMIT == 20
+              assert within_limit(20)
+              assert not within_limit(21)
+          PY
+            git -C "$REPO" init -q
+            git -C "$REPO" config user.email test@example.invalid
+            git -C "$REPO" config user.name qualification
+            git -C "$REPO" add -A
+            git -C "$REPO" commit -qm baseline
+
+            LOG="$EVIDENCE_DIR/trial-$TRIAL.log"
+            START="$(date +%s)"
+            set +e
+            docker run --rm --memory=512m --memory-swap=512m \
+              -v "$BIN:/usr/local/bin/opencode-coding:ro" \
+              -v "$REPO:/work:rw" -w /work ubuntu:22.04 bash -c '
+                set +e
+                /usr/local/bin/opencode-coding run --auto \
+                  --model opencode/muse-spark-1.3-contributor-free \
+                  "Search this repository for FOO_LIMIT, read the surrounding code, change it from 10 to 20, run a real check/test, fix any failure caused by the change, and finish only after the repository is correct."
+                agent_exit=$?
+                echo "agent_exit=$agent_exit"
+                echo "memory_current=$(cat /sys/fs/cgroup/memory.current 2>/dev/null || echo 0)"
+                echo "memory_peak=$(cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo 0)"
+                echo "swap_current=$(cat /sys/fs/cgroup/memory.swap.current 2>/dev/null || echo 0)"
+                echo "swap_max=$(cat /sys/fs/cgroup/memory.swap.max 2>/dev/null || echo 0)"
+                cat /sys/fs/cgroup/memory.events 2>/dev/null || true
+                exit 0
+              ' >"$LOG" 2>&1
+            DOCKER_EXIT=$?
+            set -e
+            END="$(date +%s)"
+            WALL=$((END - START))
+            echo "docker_exit=$DOCKER_EXIT" >> "$LOG"
+            echo "wall_seconds=$WALL" >> "$LOG"
+
+            CORRECTNESS="fail"
+            if python3 - "$REPO" <<'PY'
+          import importlib.util, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          spec = importlib.util.spec_from_file_location("foo_module", root / "foo_module.py")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          assert module.FOO_LIMIT == 20
+          assert module.within_limit(20)
+          assert not module.within_limit(21)
+          PY
+            then
+              CORRECTNESS="pass"
+            fi
+            echo "correctness=$CORRECTNESS" >> "$LOG"
+            git -C "$REPO" diff > "$EVIDENCE_DIR/trial-$TRIAL.diff" || true
+          done
+
+          python3 - "$EVIDENCE_DIR" "$RESULT_FILE" "$ARTIFACT_ID" "$HEAD_SHA" "$ACTUAL_SHA" "$ACTUAL_VERSION" "$BINARY_BYTES" <<'PY'
+          import hashlib, json, pathlib, re, sys
+          evidence = pathlib.Path(sys.argv[1])
+          out = pathlib.Path(sys.argv[2])
+          artifact_id = int(sys.argv[3])
+          head_sha = sys.argv[4]
+          binary_sha = sys.argv[5]
+          version = sys.argv[6]
+          binary_bytes = int(sys.argv[7])
+          limit = 512 * 1024 * 1024
+          min_headroom = 32 * 1024 * 1024
+          max_peak_allowed = limit - min_headroom
+
+          trials = []
+          for n in (1, 2):
+              text = (evidence / ("trial-%d.log" % n)).read_text(errors="replace")
+              def num(pattern, default=None):
+                  m = re.search(pattern, text, re.M)
+                  return int(m.group(1)) if m else default
+              events = {}
+              for name in ("high", "max", "oom", "oom_kill", "oom_group_kill"):
+                  events[name] = num(r"^%s\s+(\d+)$" % name, 0)
+              peak = num(r"^memory_peak=(\d+)$", 0)
+              current = num(r"^memory_current=(\d+)$", 0)
+              agent_exit = num(r"^agent_exit=(-?\d+)$", 127)
+              wall = num(r"^wall_seconds=(\d+)$", 0)
+              correctness = "pass" if re.search(r"^correctness=pass$", text, re.M) else "fail"
+              trials.append({
+                  "trial": n,
+                  "binary_sha256": binary_sha,
+                  "binary_bytes": binary_bytes,
+                  "peak_bytes": peak,
+                  "memory_current_bytes": current,
+                  "memory_peak_bytes": peak,
+                  "memory_events": events,
+                  "swap_current_bytes": num(r"^swap_current=(\d+)$", 0),
+                  "swap_max_bytes": num(r"^swap_max=(\d+)$", 0),
+                  "wall_seconds": wall,
+                  "exit_code": agent_exit,
+                  "correctness": correctness,
+                  "headroom_bytes": limit - peak if peak else None,
+              })
+
+          passes = [
+              t for t in trials
+              if t["exit_code"] == 0
+              and t["correctness"] == "pass"
+              and t["peak_bytes"] > 0
+              and t["peak_bytes"] <= max_peak_allowed
+              and t["memory_events"]["max"] == 0
+              and t["memory_events"]["oom"] == 0
+              and t["memory_events"]["oom_kill"] == 0
+          ]
+          any_memory = any(
+              t["memory_events"]["oom"] > 0
+              or t["memory_events"]["oom_kill"] > 0
+              or (t["peak_bytes"] and t["peak_bytes"] > max_peak_allowed)
+              or t["exit_code"] in (137, -9)
+              for t in trials
+          )
+          any_correctness = any(t["correctness"] != "pass" for t in trials)
+
+          if len(passes) == 2:
+              classification = "pass"
+              reason = "two independent coding trials passed with at least 32 MiB headroom and no pressure events"
+          elif any_memory:
+              classification = "memory"
+              reason = "one or more trials violated the 512 MiB/32 MiB-headroom memory contract"
+          elif any_correctness:
+              classification = "correctness"
+              reason = "agent run did not leave the deterministic coding task in a verified passing state"
+          else:
+              classification = "infrastructure"
+              reason = "qualification did not produce two valid measured coding trials"
+
+          payload = {
+              "schema": "runtime-lab-qualification-result/v1",
+              "kind": "docker",
+              "classification": classification,
+              "reason": reason,
+              "artifact_id": artifact_id,
+              "head_sha": head_sha,
+              "binary_sha256": binary_sha,
+              "version": version,
+              "limit_bytes": limit,
+              "min_headroom_bytes": min_headroom,
+              "trials": trials,
+              "max_peak_bytes": max((t["peak_bytes"] for t in trials), default=0),
+              "min_observed_headroom_bytes": min((t["headroom_bytes"] for t in trials if t["headroom_bytes"] is not None), default=None),
+          }
+          fp = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+          payload["fingerprint"] = fp
+          out.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+          print(json.dumps(payload, sort_keys=True, indent=2))
+          PY
+
+      - name: Record Docker result and wake chain
+        if: always()
+        env:
+          GH_TOKEN: \${{ secrets.TAP_PAT || github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -s "$RESULT_FILE" ]]; then
+            ISSUE_BODY="$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')"
+            ARTIFACT_ID="$(sed -n 's/^- Artifact ID: //p' <<<"$ISSUE_BODY" | tail -n1 | tr -d '\`')"
+            BINARY_SHA="$(sed -n 's/^- Expected binary SHA-256: //p' <<<"$ISSUE_BODY" | tail -n1 | tr -d '\`')"
+            [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]] || ARTIFACT_ID=0
+            [[ "$BINARY_SHA" =~ ^[0-9a-f]{64}$ ]] || BINARY_SHA="unknown"
+            jq -n \
+              --argjson artifact_id "$ARTIFACT_ID" \
+              --arg binary_sha256 "$BINARY_SHA" \
+              --arg reason "Docker qualification workflow failed before a complete measured result was produced" \
+              '{schema:"runtime-lab-qualification-result/v1",kind:"docker",classification:"infrastructure",reason:$reason,artifact_id:$artifact_id,binary_sha256:$binary_sha256}' \
+              > "$RESULT_FILE"
+          fi
+
+          BODY="$(jq -c . "$RESULT_FILE")"
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "$(printf '%s\n%s' '<!-- runtime-lab-docker-qualification-result -->' "$BODY")"
+          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --add-label "automation:paused" --remove-label "automation:in-progress" >/dev/null 2>&1 || true
+          gh workflow run qualification-chain.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+      - name: Upload durable Docker evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: docker-qualification-\${{ inputs.issue_number }}-\${{ github.run_id }}
+          path: |
+            /tmp/docker-qualification-result.json
+            /tmp/docker-qualification-evidence/
+          if-no-files-found: warn
+          retention-days: 30
