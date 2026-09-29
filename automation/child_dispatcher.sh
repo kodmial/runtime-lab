@@ -5,25 +5,31 @@ MARKER_PATH="automation/runtime-target.marker"
 MARKER_VALUE="primary-v1"
 
 cleanup_child_runtime_runs() {
-  local workflow run_id
+  local run_id
 
   # Public Runtime Lab is only the execution control plane for these external
-  # child tasks. Remove completed worker/review logs and prior dispatcher
-  # runs so child-project execution metadata is not retained publicly.
-  for workflow in private-worker.yml private-review.yml private-dispatcher.yml; do
-    while IFS= read -r run_id; do
-      [[ -n "$run_id" ]] || continue
-      [[ "$run_id" == "$GITHUB_RUN_ID" ]] && continue
-      gh api --method DELETE \
-        "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
-        >/dev/null 2>&1 || true
-    done < <(
-      gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --limit 100 \
-        --json databaseId,status \
-        --jq '.[] | select(.status == "completed") | .databaseId' \
-        2>/dev/null || true
-    )
-  done
+  # child tasks. Remove completed child/legacy worker logs and dispatcher runs
+  # so child-project execution metadata is not retained publicly.
+  while IFS= read -r run_id; do
+    [[ -n "$run_id" ]] || continue
+    [[ "$run_id" == "$GITHUB_RUN_ID" ]] && continue
+    gh api --method DELETE \
+      "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
+      >/dev/null 2>&1 || true
+  done < <(
+    gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" \
+      --jq '.workflow_runs[]
+        | select(.status == "completed")
+        | select(
+            .name == "Child task" or
+            .name == "Child review" or
+            .name == "Child dispatcher" or
+            .name == "Worker task" or
+            .name == "Worker review" or
+            .name == "Worker dispatcher"
+          )
+        | .id' 2>/dev/null || true
+  )
 }
 
 # The dispatcher is invoked by workflow_run as soon as a worker/review
