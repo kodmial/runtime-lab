@@ -107,6 +107,7 @@ jobs:
               [paused, '6A737D', 'Automation stopped after repeated failed dispatches.'],
               [renderSmoke, '5319E7', 'Execute this ready issue through the Render smoke controller.'],
               [renderE2E, '0052CC', 'Execute this ready issue through the Render end-to-end controller.'],
+              ['qualification:render', '8250DF', 'Persist and classify this Render run as a qualification result.'],
               [dockerQualify, '0E8A16', 'Execute this reusable issue through the exact-artifact Docker qualifier.'],
             ];
             for (const [name, color, description] of labelSpecs) {
