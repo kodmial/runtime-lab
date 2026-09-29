@@ -1168,6 +1168,58 @@ def _poll_job_terminal(runner: RunnerJobClient, base_url: str,
     return last
 
 
+def _push_exact_bytes_to_worker(
+    base_url: str, identity: Mapping[str, str], binary_path: str
+) -> None:
+    """Push controller-side verified bytes to the worker transport.
+
+    POSTs the raw bytes to ``<base_url>/v1/exact-artifact`` with the
+    machine-readable identity headers (bytes + checksums only; no GitHub
+    credential crosses this boundary). Fails closed on any non-201
+    answer -- the job is never submitted without worker-verified bytes.
+    """
+    import urllib.request as _urllib
+
+    raw_path = str(binary_path or "").strip()
+    if not raw_path or not os.path.isfile(raw_path):
+        raise ValueError("exact_binary_path %r is not a file" % binary_path)
+    with open(raw_path, "rb") as handle:
+        data = handle.read()
+    if not data:
+        raise ValueError("exact_binary_path %r is empty" % binary_path)
+    target = str(base_url or "").rstrip("/") + "/v1/exact-artifact"
+    request = _urllib.Request(target, data=data, method="POST")
+    request.add_header("Content-Type", "application/octet-stream")
+    request.add_header("X-Exact-Artifact-Id", str(identity.get("artifact_id", "")))
+    request.add_header(
+        "X-Exact-Artifact-Name", str(identity.get("artifact_name", ""))
+    )
+    request.add_header("X-Exact-Source-Run", str(identity.get("source_run_id", "")))
+    request.add_header(
+        "X-Exact-Archive-Sha256", str(identity.get("archive_sha256", ""))
+    )
+    request.add_header(
+        "X-Exact-Artifact-Sha256", str(identity.get("binary_sha256", ""))
+    )
+    request.add_header("X-Exact-Version", str(identity.get("version", "")))
+    try:
+        response = _urllib.urlopen(request, timeout=300)
+    except Exception as exc:
+        raise RuntimeError("exact-artifact push failed: %s" % exc) from exc
+    try:
+        status = getattr(response, "status", None) or response.getcode()
+        body = response.read()
+    finally:
+        try:
+            response.close()
+        except Exception:
+            pass
+    if status != 201:
+        raise RuntimeError(
+            "exact-artifact push rejected (HTTP %s): %s" % (status, body[:200])
+        )
+
+
 def execute_issue_attempt(
     *,
     delivery_id: str,
@@ -1186,6 +1238,8 @@ def execute_issue_attempt(
     knowledge_context: Mapping[str, Any] | None = None,
     target_repository: str = "",
     target_base_ref: str = "",
+    exact_artifact: Mapping[str, str] | None = None,
+    exact_binary_path: str = "",
 ) -> DispatchResult:
     """Run one eligible issue on exactly one free ephemeral worker.
 
@@ -1210,6 +1264,16 @@ def execute_issue_attempt(
     ``runtime-lab-target``). ``base_sha`` pins the exact target base SHA.
     The issue/task text and lifecycle stay sourced from the Runtime Lab
     issue; only the worker checkout and write-back target change.
+
+    Exact workflow artifact (issue #128): ``exact_artifact`` carries the
+    validated machine-readable identity for the supported corrected
+    artifact; it is exported on the create-service start command and in
+    the submit-job body so the worker verifies before starting OpenCode.
+    ``exact_binary_path`` optionally points at controller-side verified
+    bytes that are pushed to the worker's ``POST /v1/exact-artifact``
+    transport after health and before submit (bytes + checksums only; no
+    GitHub credential crosses that boundary). Both default to None/"",
+    keeping the ordinary baseline path unchanged.
     """
     validate_execution_mode(execution_mode)
     validate_worker_region(region)
@@ -1218,6 +1282,20 @@ def execute_issue_attempt(
         raise ValueError("issue_number must be a positive integer")
     if not owner_id:
         raise ValueError("owner_id (Render workspace id) must not be empty")
+    validated_exact: dict[str, str] | None = None
+    if exact_artifact is not None:
+        try:
+            try:
+                from automation.exact_artifact_delivery import (  # type: ignore[import-not-found]
+                    validate_exact_identity as _validate_exact,
+                )
+            except ImportError:
+                from exact_artifact_delivery import (  # type: ignore[no-redef]
+                    validate_exact_identity as _validate_exact,
+                )
+            validated_exact = dict(_validate_exact(dict(exact_artifact)))
+        except ImportError as exc:
+            raise ValueError("exact artifact support unavailable: %s" % exc) from exc
     # Cross-repository target (issue #85): explicit allow-list, fail
     # closed on unapproved repositories. Defaults to self-target so
     # existing behavior is unchanged when no target is requested.
@@ -1294,7 +1372,8 @@ def execute_issue_attempt(
     label_run = run_id or ("ctrl-%s" % (delivery_id[:8] if delivery_id else uuid.uuid4().hex[:8]))
     service_name = service_name_for_attempt(issue_number, label_run)
     payload = build_create_service_payload(
-        name=service_name, owner_id=owner_id, region=region)
+        name=service_name, owner_id=owner_id, region=region,
+        exact_artifact=validated_exact)
     creations = 1
     if creations > MAX_SERVICE_CREATIONS_PER_ATTEMPT:
         raise ValueError("attempt would create more than one service")
@@ -1363,8 +1442,11 @@ def execute_issue_attempt(
             metadata=metadata,
             source_repository=source_url,
             target_repository=target_repo_full,
+            exact_artifact=validated_exact,
         )
         job_body = request.to_dict()
+        if validated_exact is not None and exact_binary_path:
+            _push_exact_bytes_to_worker(base_url, validated_exact, exact_binary_path)
         job_id = runner_client.submit_job(base_url, job_body)
         if not job_id:
             raise RuntimeError("runner did not return a job identifier")
