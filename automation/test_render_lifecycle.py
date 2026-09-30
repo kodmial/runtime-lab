@@ -651,6 +651,12 @@ def test_restart_storm_result_carries_auditable_terminal_record():
     # but wrote no $RENDER_RESULT_FILE, so the upload carried only 2
     # of 4 files and the EXIT-trap memory merge was a no-op. The storm
     # abort must persist the same diagnostic machine-readably.
+    # Extended by repair issue #192 (run 36650750585): the first live
+    # storm record stored the bare shell resubmission streak (3) under
+    # the losses-named key while the diagnostic text and the evidence
+    # transitions both reported 4, so the numeric field disagreed with
+    # its own record. The field now counts total consecutive proven
+    # losses including the terminal loss (streak + 1).
     evidence = {
         "memory_limit_bytes": 536870912,
         "max_memory_current_bytes": 536866816,
@@ -680,7 +686,10 @@ def test_restart_storm_result_carries_auditable_terminal_record():
     assert "4 consecutive proven worker restarts" in record["error"]
     assert "resubmissions used: 3" in record["error"]
     assert record["storm"] is True
-    assert record["consecutive_restart_losses"] == 3
+    assert record["consecutive_restart_losses"] == 4
+    assert record["consecutive_restart_losses"] == record["resubmissions_used"] + 1
+    assert record["consecutive_restart_losses"] == evidence["restart_transitions"]
+    assert "4 consecutive proven worker restarts" in record["error"]
     assert record["storm_threshold"] == 3
     assert record["storm_evidence"] == evidence
     assert record["resubmissions_used"] == 3
@@ -711,7 +720,8 @@ def test_restart_storm_result_never_raises_on_garbage():
     assert record["status"] == "failed"
     assert record["success"] is False
     assert record["storm"] is True
-    assert record["consecutive_restart_losses"] == 0
+    assert record["consecutive_restart_losses"] == 1
+    assert "1 consecutive proven worker restarts" in record["error"]
     assert record["storm_threshold"] == JOB_POLL_RESTART_STORM_THRESHOLD
     assert record["storm_evidence"] == {}
     assert record["issue_number"] == 0
@@ -726,7 +736,7 @@ def test_restart_storm_result_never_raises_on_garbage():
         issue_number=58,
         run_id="r",
     )
-    assert parsed["consecutive_restart_losses"] == 3
+    assert parsed["consecutive_restart_losses"] == 4
     assert parsed["storm_threshold"] == 3
     assert "4 consecutive proven worker restarts" in parsed["error"]
 
