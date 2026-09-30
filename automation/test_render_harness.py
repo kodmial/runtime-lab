@@ -1378,7 +1378,11 @@ def test_job_poll_abandons_memory_pressure_restart_storm(tmp_path):
     # the lifecycle threshold (initial submit + 3 resubmissions, then
     # fail fast on the fourth proven loss) instead of burning the full
     # budget -- with a storm diagnostic, no second Render service, and
-    # no result file.
+    # a structured storm record (repair issue #190, run 36647809185:
+    # that live storm-abort left no result file, so the upload carried
+    # only the memory summary + state and the EXIT-trap memory merge
+    # was a no-op; the abort must persist the diagnostic
+    # machine-readably without clobbering anything).
     env, state, result = _base_env(tmp_path)
     log = tmp_path / "curl-storm.log"
     env["PATH"] = _write_lost_job_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
@@ -1408,7 +1412,18 @@ def test_job_poll_abandons_memory_pressure_restart_storm(tmp_path):
     assert "pinned_ratio=1.0000" in combined
     assert "did not finish in time" not in combined
     assert "Resubmitted runner job" in combined
-    assert not result.exists() or result.read_text().strip() == ""
+    # The storm abort persists a structured terminal record carrying
+    # the same auditable inputs as the log diagnostic.
+    storm_record = json.loads(result.read_text(encoding="utf-8"))
+    assert storm_record["status"] == "failed"
+    assert storm_record["success"] is False
+    assert storm_record["storm"] is True
+    assert "restart storm" in storm_record["error"]
+    assert storm_record["consecutive_restart_losses"] == 3
+    assert storm_record["storm_threshold"] == 3
+    assert storm_record["resubmissions_used"] == 3
+    assert storm_record["storm_evidence"]["decision_branch"] == "replacements"
+    assert storm_record["storm_evidence"]["restart_transitions"] >= 2
     calls = log.read_text()
     assert calls.count("POST http://fake-runner.local/v1/jobs") == 4
     assert "POST https://api.render.com/v1/services" not in calls

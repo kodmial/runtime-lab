@@ -1139,6 +1139,62 @@ PY
 )"
           if [[ "$STORM_CHECK" == STORM* ]]; then
             STORM_EVIDENCE="${STORM_CHECK#STORM}"
+            # Structured terminal record (repair issue #190, run
+            # 36647809185 for source issue #58): that run storm-aborted
+            # correctly but left no $RENDER_RESULT_FILE behind, so the
+            # artifact upload carried only the memory summary + state
+            # and the EXIT-trap memory merge was a no-op. Persist the
+            # same diagnostic machine-readably (best effort: never masks
+            # the refusal, never clobbers an existing result).
+            if [[ -n "${RENDER_RESULT_FILE:-}" && ! -s "$RENDER_RESULT_FILE" ]]; then
+              STORM_STREAK="$POLL_RESTART_STREAK" STORM_THRESHOLD="$POLL_STORM_THRESHOLD" \
+              STORM_RESUBMITS="$POLL_RESUBMITS" STORM_POLL_POS="$i/$POLL_MAX_ATTEMPTS" \
+              STORM_LOST_JOB="$JOB_ID" STORM_RESTART_EVIDENCE="$RESTART_EVIDENCE" \
+              python3 - "${RENDER_MEMORY_SAMPLES_FILE:-}" "$RENDER_RESULT_FILE" "$ISSUE_NUMBER" "${GITHUB_RUN_ID:-}" <<'PY' 2>/dev/null || true
+import json, os, sys
+sys.path.insert(0, "automation")
+try:
+    from render_lifecycle import build_restart_storm_result
+    from render_memory_sampler import (
+        memory_pressure_evidence,
+        pressure_decision_branch,
+        read_samples,
+    )
+    samples_path = sys.argv[1] if len(sys.argv) > 1 else ""
+    output_path = sys.argv[2] if len(sys.argv) > 2 else ""
+    try:
+        issue_number = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+    except (TypeError, ValueError):
+        issue_number = 0
+    run_id = sys.argv[4] if len(sys.argv) > 4 else ""
+    try:
+        evidence = memory_pressure_evidence(read_samples(samples_path)) if samples_path else {}
+    except Exception:
+        evidence = {}
+    if not isinstance(evidence, dict):
+        evidence = {}
+    try:
+        evidence["decision_branch"] = pressure_decision_branch(evidence)
+    except Exception:
+        pass
+    record = build_restart_storm_result(
+        lost_job_id=os.environ.get("STORM_LOST_JOB", ""),
+        consecutive_restart_losses=os.environ.get("STORM_STREAK", "0"),
+        storm_threshold=os.environ.get("STORM_THRESHOLD", ""),
+        storm_evidence=evidence,
+        resubmissions_used=os.environ.get("STORM_RESUBMITS", "0"),
+        poll_position=os.environ.get("STORM_POLL_POS", ""),
+        restart_evidence=os.environ.get("STORM_RESTART_EVIDENCE", ""),
+        issue_number=issue_number,
+        run_id=run_id,
+    )
+    if output_path:
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, indent=2) + "\n")
+except Exception:
+    pass
+PY
+            fi
             echo "::error::Runner restart storm: job $JOB_ID lost to $((POLL_RESTART_STREAK + 1)) consecutive proven worker restarts with container memory pressure (${STORM_EVIDENCE# }); resubmitting the identical payload cannot succeed on this 512 MB worker (agent peak ~600 MB); failing fast instead of burning the poll budget (resubmissions used: $POLL_RESUBMITS; poll $i/$POLL_MAX_ATTEMPTS; $RESTART_EVIDENCE). Jobs live in worker process memory, so each restart wipes the job; provision a larger worker or shrink the workload instead of retrying here." >&2
             exit 1
           fi
