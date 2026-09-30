@@ -431,3 +431,13 @@ jobs:
                 throw err;
               }
             }
+
+      - name: Wake child dispatcher
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/child-dispatcher.yml/dispatches" \
+            -f ref=main
