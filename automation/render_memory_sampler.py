@@ -388,7 +388,7 @@ def render_human_summary(summary: Mapping[str, Any]) -> str:
         return "unknown"
 
     lines = [
-        "Container memory summary (issue #57):",
+        "Container memory summary:",
         "- samples: %s ok / %s total (interval %.1fs)" % (
             summary.get("ok_samples"), summary.get("samples"),
             summary.get("sampling_interval_seconds") or 0),
