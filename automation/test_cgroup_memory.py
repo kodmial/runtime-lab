@@ -768,6 +768,18 @@ def test_harness_stops_sampler_and_summarizes_on_every_terminal_path():
     assert "job_resubmitted" in job  # transition timestamps around job loss
 
 
+def test_human_summary_header_has_no_stale_issue_attribution():
+    # Run 36652760209 for source issue #58 printed
+    # "Container memory summary (issue #57):" because the header hardcoded
+    # the originating issue. The sampler is reused across issues, so the
+    # durable log header must stay generic and never attribute telemetry
+    # to a fixed prior issue number.
+    summary = summarize_samples([])
+    header = render_human_summary(summary).splitlines()[0]
+    assert header == "Container memory summary:"
+    assert "(issue #" not in render_human_summary(summary)
+
+
 def test_harness_sampler_handles_no_secrets():
     job = _job_script()
     sampler = (AUTOMATION / "render_memory_sampler.py").read_text(encoding="utf-8")
