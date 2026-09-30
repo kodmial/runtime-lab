@@ -59,10 +59,11 @@ jobs:
 
   dispatch:
     needs: cleanup
-    uses: kodmial/continuum/.github/workflows/consumer-child-dispatcher.yml@954aa575ab385b6785f6923937fceb7ec108c966
+    uses: kodmial/continuum/.github/workflows/consumer-child-dispatcher.yml@a339a481b2f816ff6264da37ceca43697fd66e2f
     with:
       worker_workflow: child-worker.yml
       review_workflow: child-review.yml
-      engine_ref: 954aa575ab385b6785f6923937fceb7ec108c966
+      manual_pr_review_workflow: child-pr-review.yml
+      engine_ref: a339a481b2f816ff6264da37ceca43697fd66e2f
     secrets:
       CHILD_RUNTIME_TOKEN: ${{ secrets.TAP_PAT }}
