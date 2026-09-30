@@ -1419,7 +1419,9 @@ def test_job_poll_abandons_memory_pressure_restart_storm(tmp_path):
     assert storm_record["success"] is False
     assert storm_record["storm"] is True
     assert "restart storm" in storm_record["error"]
-    assert storm_record["consecutive_restart_losses"] == 3
+    assert storm_record["consecutive_restart_losses"] == 4
+    assert storm_record["consecutive_restart_losses"] == storm_record["resubmissions_used"] + 1
+    assert "4 consecutive proven worker restarts" in storm_record["error"]
     assert storm_record["storm_threshold"] == 3
     assert storm_record["resubmissions_used"] == 3
     assert storm_record["storm_evidence"]["decision_branch"] == "replacements"

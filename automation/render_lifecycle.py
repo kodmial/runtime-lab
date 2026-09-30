@@ -2175,9 +2175,14 @@ def build_restart_storm_result(
     lost job, ``status="failed"``, ``success=False``, ``error`` carrying
     the storm diagnostic) so generic readers handle it, plus ``storm``
     markers no job result carries: ``storm=True``,
-    ``consecutive_restart_losses``, the resolved ``storm_threshold``,
-    and the auditable ``storm_evidence`` inputs (limit/current bytes,
-    pinned ratio, restart transitions, stall-surge delta, deciding
+    ``consecutive_restart_losses`` (total consecutive proven losses
+    including the terminal loss, i.e. the shell resubmission streak + 1,
+    so the numeric field agrees with the diagnostic text and
+    ``storm_evidence`` restart transitions -- issue #192 found the
+    #190 record storing the bare streak, off by one against both),
+    the resolved ``storm_threshold``, and the auditable
+    ``storm_evidence`` inputs (limit/current bytes, pinned ratio,
+    restart transitions, stall-surge delta, deciding
     branch). Never raises: garbage input yields a minimal fail-closed
     record.
     """
@@ -2188,6 +2193,8 @@ def build_restart_storm_result(
     try:
         streak = int(consecutive_restart_losses)  # type: ignore[arg-type]
     except (TypeError, ValueError):
+        streak = 0
+    if streak < 0:
         streak = 0
     if storm_threshold is None:
         required = JOB_POLL_RESTART_STORM_THRESHOLD
@@ -2265,7 +2272,7 @@ def build_restart_storm_result(
         "summary": "",
         "error": error,
         "storm": True,
-        "consecutive_restart_losses": streak,
+        "consecutive_restart_losses": losses,
         "storm_threshold": required,
         "storm_evidence": evidence,
         "lost_job_id": job,
