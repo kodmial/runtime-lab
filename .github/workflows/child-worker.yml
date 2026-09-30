@@ -18,12 +18,12 @@ permissions:
 
 jobs:
   worker:
-    uses: kodmial/continuum/.github/workflows/consumer-child-worker.yml@28ae5e18b9c6648079078b78bc6aee403adb3b37
+    uses: kodmial/continuum/.github/workflows/consumer-child-worker.yml@af3f558b1751529ba51deadbe302bf4315d0b1a1
     with:
       child_id: ${{ inputs.child_id }}
       task_number: ${{ inputs.task_number }}
       model: ${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}
       max_agent_passes: 4
-      engine_ref: 28ae5e18b9c6648079078b78bc6aee403adb3b37
+      engine_ref: af3f558b1751529ba51deadbe302bf4315d0b1a1
     secrets:
       CHILD_RUNTIME_TOKEN: ${{ secrets.TAP_PAT }}
