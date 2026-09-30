@@ -1,5 +1,6 @@
 """Tests for the ephemeral Render lifecycle contract (issue #1)."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -91,6 +92,7 @@ from render_lifecycle import (  # noqa: E402
     service_name_for_attempt,
     should_fail_fast_on_unknown_job,
     should_abandon_restart_storm,
+    build_restart_storm_result,
     should_fail_fast_on_transport,
     should_probe_runner_health,
     should_resubmit_after_job_loss,
@@ -640,6 +642,93 @@ def test_restart_storm_threshold_override_is_honored():
     assert should_abandon_restart_storm(
         consecutive_restart_losses=JOB_POLL_RESTART_STORM_THRESHOLD,
         memory_pressure=True) is True
+
+
+def test_restart_storm_result_carries_auditable_terminal_record():
+    # Regression for run 36647809185 (repair issue #190): the sixth
+    # consecutive #58 smoke storm lost four jobs to proven restarts
+    # while pinned at the 512 MB ceiling and abandoned correctly --
+    # but wrote no $RENDER_RESULT_FILE, so the upload carried only 2
+    # of 4 files and the EXIT-trap memory merge was a no-op. The storm
+    # abort must persist the same diagnostic machine-readably.
+    evidence = {
+        "memory_limit_bytes": 536870912,
+        "max_memory_current_bytes": 536866816,
+        "usage_ratio": 1.0,
+        "pinned_at_limit": True,
+        "restart_transitions": 4,
+        "max_stall_surge_delta": 432,
+        "decision_branch": "replacements",
+    }
+    record = build_restart_storm_result(
+        lost_job_id="8a4e7fcf67ed477c80c8c8142b45f673",
+        consecutive_restart_losses=3,
+        storm_threshold=3,
+        storm_evidence=evidence,
+        resubmissions_used=3,
+        poll_position="40/140",
+        restart_evidence="worker restart observed (instance 4296fd8d91fc -> b171c0aa0c9e)",
+        issue_number=58,
+        run_id="36647809185",
+    )
+    # Runner-result shape so generic readers handle it; storm keys no
+    # job result carries.
+    assert record["job_id"] == "8a4e7fcf67ed477c80c8c8142b45f673"
+    assert record["status"] == "failed"
+    assert record["success"] is False
+    assert "restart storm" in record["error"]
+    assert "4 consecutive proven worker restarts" in record["error"]
+    assert "resubmissions used: 3" in record["error"]
+    assert record["storm"] is True
+    assert record["consecutive_restart_losses"] == 3
+    assert record["storm_threshold"] == 3
+    assert record["storm_evidence"] == evidence
+    assert record["resubmissions_used"] == 3
+    assert record["poll_position"] == "40/140"
+    assert record["issue_number"] == 58
+    assert record["run_id"] == "36647809185"
+    assert record["metadata"] == {
+        "issue_number": 58, "run_id": "36647809185", "storm": True,
+    }
+    # Durable evidence must be JSON-serializable for the result file.
+    json.dumps(record, sort_keys=True)
+
+
+def test_restart_storm_result_never_raises_on_garbage():
+    # Fail-closed minimal record: garbage input must not crash the
+    # poll-loop refusal path it rides.
+    record = build_restart_storm_result(
+        lost_job_id=None,
+        consecutive_restart_losses="bogus",
+        storm_threshold="bogus",
+        storm_evidence="not-a-mapping",
+        resubmissions_used=None,
+        poll_position=None,
+        restart_evidence=None,
+        issue_number="bogus",
+        run_id=None,
+    )
+    assert record["status"] == "failed"
+    assert record["success"] is False
+    assert record["storm"] is True
+    assert record["consecutive_restart_losses"] == 0
+    assert record["storm_threshold"] == JOB_POLL_RESTART_STORM_THRESHOLD
+    assert record["storm_evidence"] == {}
+    assert record["issue_number"] == 0
+    assert record["run_id"] == ""
+    assert record["error"]
+    json.dumps(record, sort_keys=True)
+    # String streak/threshold from the shell parse like ints.
+    parsed = build_restart_storm_result(
+        lost_job_id="job-1",
+        consecutive_restart_losses="3",
+        storm_threshold="3",
+        issue_number=58,
+        run_id="r",
+    )
+    assert parsed["consecutive_restart_losses"] == 3
+    assert parsed["storm_threshold"] == 3
+    assert "4 consecutive proven worker restarts" in parsed["error"]
 
 
 def test_worker_restart_discriminator_uses_health_uptime():

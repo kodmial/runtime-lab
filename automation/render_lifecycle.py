@@ -2143,6 +2143,145 @@ def should_abandon_restart_storm(*, consecutive_restart_losses: object,
     return streak >= required
 
 
+def build_restart_storm_result(
+    *,
+    lost_job_id: object = "",
+    consecutive_restart_losses: object = 0,
+    storm_threshold: object = None,
+    storm_evidence: Mapping[str, Any] | None = None,
+    resubmissions_used: object = 0,
+    poll_position: object = "",
+    restart_evidence: object = "",
+    issue_number: object = 0,
+    run_id: object = "",
+) -> dict[str, Any]:
+    """Build a machine-readable terminal record for a storm abort (issue #190).
+
+    Run 36647809185 for source issue #58 lost four consecutive jobs to
+    proven worker restarts while pinned at the 512 MB cgroup ceiling and
+    the breaker abandoned resubmission exactly as designed -- but the
+    poll loop then exited without writing ``$RENDER_RESULT_FILE``. The
+    artifact upload carried only 2 of 4 files (memory summary + state),
+    the EXIT-trap memory merge was a no-op (it requires a result file),
+    and every downstream triage/scheduler had to scrape the log line to
+    tell this permanent capacity storm apart from a transient failure
+    (the same log-only gap issues #125/#165 closed for the gate and hold
+    paths). This helper is the single choke point for the structured
+    storm shape: ``render-job.sh`` writes its output to
+    ``$RENDER_RESULT_FILE`` on the storm-abort path (only when no result
+    was recorded yet) while keeping the log diagnostic byte-identical.
+
+    The record mirrors the runner ``JobResult`` shape (``job_id`` of the
+    lost job, ``status="failed"``, ``success=False``, ``error`` carrying
+    the storm diagnostic) so generic readers handle it, plus ``storm``
+    markers no job result carries: ``storm=True``,
+    ``consecutive_restart_losses``, the resolved ``storm_threshold``,
+    and the auditable ``storm_evidence`` inputs (limit/current bytes,
+    pinned ratio, restart transitions, stall-surge delta, deciding
+    branch). Never raises: garbage input yields a minimal fail-closed
+    record.
+    """
+    try:
+        job = str(lost_job_id or "").strip()
+    except Exception:
+        job = ""
+    try:
+        streak = int(consecutive_restart_losses)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        streak = 0
+    if storm_threshold is None:
+        required = JOB_POLL_RESTART_STORM_THRESHOLD
+    else:
+        try:
+            required = int(storm_threshold)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            required = JOB_POLL_RESTART_STORM_THRESHOLD
+    try:
+        resubmits = int(resubmissions_used)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        resubmits = 0
+    try:
+        evidence = dict(storm_evidence) if isinstance(storm_evidence, Mapping) else {}
+    except Exception:
+        evidence = {}
+    try:
+        position = str(poll_position or "").strip()
+    except Exception:
+        position = ""
+    try:
+        restart = str(restart_evidence or "").strip()
+    except Exception:
+        restart = ""
+    try:
+        issue = int(issue_number)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        issue = 0
+    try:
+        run_label = "" if run_id is None else str(run_id).strip()
+    except Exception:
+        run_label = ""
+    losses = streak + 1
+    detail_bits = []
+    try:
+        limit = evidence.get("memory_limit_bytes")
+        current = evidence.get("max_memory_current_bytes")
+        ratio = evidence.get("usage_ratio")
+        ratio_text = ("%.4f" % ratio) if isinstance(ratio, float) else ratio
+        detail_bits.append(
+            "limit=%s current=%s pinned_ratio=%s restarts=%s stall_surge=%s "
+            "storm_threshold=%s via=%s"
+            % (
+                limit,
+                current,
+                ratio_text,
+                evidence.get("restart_transitions"),
+                evidence.get("max_stall_surge_delta"),
+                required,
+                evidence.get("decision_branch", evidence.get("branch")),
+            )
+        )
+    except Exception:
+        pass
+    detail = " ".join(str(bit) for bit in detail_bits if bit not in ("", None))
+    error = (
+        "Runner restart storm: job %s lost to %d consecutive proven worker "
+        "restarts with container memory pressure%s; resubmitting the "
+        "identical payload cannot succeed on this 512 MB worker (agent peak "
+        "~600 MB); failing fast instead of burning the poll budget "
+        "(resubmissions used: %d%s%s)."
+        % (
+            job or "unknown",
+            losses,
+            (" (%s)" % detail) if detail else "",
+            resubmits,
+            ("; poll %s" % position) if position else "",
+            ("; %s" % restart) if restart else "",
+        )
+    )
+    return {
+        "job_id": job,
+        "status": "failed",
+        "success": False,
+        "summary": "",
+        "error": error,
+        "storm": True,
+        "consecutive_restart_losses": streak,
+        "storm_threshold": required,
+        "storm_evidence": evidence,
+        "lost_job_id": job,
+        "resubmissions_used": resubmits,
+        "poll_position": position,
+        "restart_evidence": restart,
+        "issue_number": issue,
+        "run_id": run_label,
+        "metadata": {
+            "issue_number": issue,
+            "run_id": run_label,
+            "storm": True,
+        },
+    }
+
+
 def detect_worker_restart(prior_uptime: object,
                            current_uptime: object,
                            prior_instance_id: object = None,
