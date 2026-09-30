@@ -1,0 +1,29 @@
+name: Child PR review
+run-name: "Child PR review [${{ inputs.child_id }}] #${{ inputs.pr_number }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      child_id:
+        description: Configured child id
+        required: true
+        type: string
+      pr_number:
+        description: Child pull request number
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    uses: kodmial/continuum/.github/workflows/consumer-child-pr-review.yml@a339a481b2f816ff6264da37ceca43697fd66e2f
+    with:
+      child_id: ${{ inputs.child_id }}
+      pr_number: ${{ inputs.pr_number }}
+      model: ${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}
+      max_review_passes: 3
+      engine_ref: a339a481b2f816ff6264da37ceca43697fd66e2f
+    secrets:
+      CHILD_RUNTIME_TOKEN: ${{ secrets.TAP_PAT }}
