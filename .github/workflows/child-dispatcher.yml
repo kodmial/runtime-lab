@@ -10,6 +10,7 @@ on:
       - .github/workflows/child-dispatcher.yml
       - .github/workflows/child-worker.yml
       - .github/workflows/child-review.yml
+      - .github/workflows/child-pr-review.yml
   schedule:
     - cron: '*/10 * * * *'
   workflow_run:
@@ -59,11 +60,11 @@ jobs:
 
   dispatch:
     needs: cleanup
-    uses: kodmial/continuum/.github/workflows/consumer-child-dispatcher.yml@a339a481b2f816ff6264da37ceca43697fd66e2f
+    uses: kodmial/continuum/.github/workflows/consumer-child-dispatcher.yml@b5dae75f4debeb91f541244cd7152407916e92e7
     with:
       worker_workflow: child-worker.yml
       review_workflow: child-review.yml
       manual_pr_review_workflow: child-pr-review.yml
-      engine_ref: a339a481b2f816ff6264da37ceca43697fd66e2f
+      engine_ref: b5dae75f4debeb91f541244cd7152407916e92e7
     secrets:
       CHILD_RUNTIME_TOKEN: ${{ secrets.TAP_PAT }}
