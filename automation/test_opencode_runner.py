@@ -72,6 +72,12 @@ from runner_server import (  # noqa: E402
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "automation" / "tests"))
+
+from continuum_stub_contract import (  # noqa: E402
+    caller_stub_text,
+    parse_caller_stub,
+)
 
 
 def _payload(**overrides):
@@ -183,9 +189,21 @@ def test_opencode_command_matches_known_good_invocation():
     assert cmd[0] == "opencode"
     assert cmd[1:5] == ["run", "--auto", "--model", PREFERRED_MODEL]
     assert cmd[5] == "do the thing"
-    # Same order as .github/workflows/continuum-opencode.yml: run --auto --model <m> <prompt>.
-    workflow = (REPO_ROOT / ".github" / "workflows" / "continuum-opencode.yml").read_text()
-    assert 'opencode run --auto --model "$OPENCODE_MODEL" "$PROMPT"' in workflow
+    # The invocation moved into Continuum's reusable continuum-opencode.yml at
+    # fbf4b79, so .github/workflows/continuum-opencode.yml is now a caller stub
+    # and no longer carries the command line. What this repository can still
+    # verify is the two halves of the old check that remain here: the builder
+    # still encodes the documented known-good form (so builder and documented
+    # invocation cannot drift apart), and the caller still hands Continuum the
+    # per-issue identity that invocation is issued against.
+    runner_source = (REPO_ROOT / "automation" / "opencode_runner.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'opencode run --auto --model "$OPENCODE_MODEL" "$PROMPT"' in runner_source
+    stub = parse_caller_stub(caller_stub_text(str(REPO_ROOT), "continuum-opencode"))
+    assert stub.delegates_to("continuum-opencode.yml", "main")
+    assert stub.forwards_bare("issue_number")
+    assert stub.forwards_bare("head_ref")
     fallback = build_opencode_command(FALLBACK_MODEL, "task", opencode_bin="/fake/opencode")
     assert fallback[:5] == ["/fake/opencode", "run", "--auto", "--model", FALLBACK_MODEL]
     with pytest.raises(ValueError):

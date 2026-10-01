@@ -118,14 +118,15 @@ def test_guard_cli_passes_on_clean_fixture(tmp_path):
     assert "OK" in proc.stdout
 
 
-def test_live_workflows_detect_known_envelope_defects():
-    # Envelope-provisioning tracker: the workflow envelope is owned
-    # separately (this token cannot push .github/workflows/**), so this run
-    # repairs the consumer at runtime and locks detection of the two known
-    # escaped GH_TOKEN lines. qualification-chain.yml was already
-    # unescaped (commit befb5ee), leaving only docker-qualification.yml.
-    # When the envelope provisioning removes the remaining escaping,
-    # update this test to assert an empty finding list.
+def test_live_workflows_have_no_known_envelope_defects():
+    # Envelope-provisioning tracker, closed out. The last two escaped
+    # GH_TOKEN lines lived in docker-qualification.yml; they were unescaped and
+    # the file is now the Continuum caller stub
+    # continuum-docker-qualification.yml, which carries no credential env at
+    # all. The live tree must therefore scan clean. The detector's ability to
+    # still catch the defect is covered by
+    # test_scan_workflows_detects_a_reintroduced_envelope_defect below, so a
+    # future reintroduction fails loudly instead of being asserted here.
     findings = scan_workflows(REPO_ROOT)
     locations = sorted(
         (
@@ -134,9 +135,34 @@ def test_live_workflows_detect_known_envelope_defects():
         )
         for path, number, _ in findings
     )
+    assert locations == []
+
+
+def test_scan_workflows_detects_a_reintroduced_envelope_defect(tmp_path):
+    # Positive control for the detector itself: a synthetic caller stub that
+    # re-carries the escaped-credential pattern must still be reported, so the
+    # empty live finding list above stays a statement about the tree rather
+    # than about a detector that quietly stopped matching.
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    broken = workflows / "continuum-docker-qualification.yml"
+    broken.write_text(
+        "jobs:\n"
+        "  call:\n"
+        "    env:\n"
+        "      GH_TOKEN: \\${{ secrets.TAP_PAT || github.token }}\n",
+        encoding="utf-8",
+    )
+    findings = scan_workflows(tmp_path)
+    locations = sorted(
+        (
+            pathlib.Path(path).relative_to(tmp_path).as_posix(),
+            number,
+        )
+        for path, number, _ in findings
+    )
     assert locations == [
-        (".github/workflows/docker-qualification.yml", 40),
-        (".github/workflows/docker-qualification.yml", 257),
+        (".github/workflows/continuum-docker-qualification.yml", 4),
     ]
 
 

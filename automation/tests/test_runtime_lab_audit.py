@@ -1,20 +1,40 @@
 """Tests for the issue #14 architecture-audit helpers.
 
 Covers both unit behavior (fixtures) and live repository invariants. The live
-checks are read-only and must pass on the current main branch; the harness
-entrypoint test asserts the #4 scripts referenced by the Render executor
-workflow exist.
+checks are read-only and must pass on the current main branch.
+
+Since commit fbf4b79 the five core automation workflows are thin Continuum
+caller stubs, so the live checks are written against the *caller boundary*
+rather than against job bodies that no longer live in this repository:
+each one asserts which reusable workflow the stub delegates to, which inputs
+it forwards bare, and that nothing local reintroduces what Continuum now
+owns (a global concurrency mutex, a pinned region/model, a hardcoded harness
+path). See ``continuum_stub_contract`` for the parser behind them.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 
 import pytest
 
-from automation.runtime_lab_audit import (
+REPO_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+sys.path.insert(0, os.path.join(REPO_ROOT, "automation", "tests"))
+sys.path.insert(0, REPO_ROOT)
+
+from automation.render_lifecycle import (  # noqa: E402
+    ALLOWED_WORKER_REGIONS,
+    FORBIDDEN_WORKER_REGIONS,
+    RegionPolicyError,
+    validate_worker_region,
+)
+from automation.runtime_lab_audit import (  # noqa: E402
     ALLOWED_MODELS,
+    ALLOWED_RENDER_REGIONS,
     FALLBACK_MODEL,
     PREFERRED_MODEL,
     has_global_render_mutex,
@@ -31,16 +51,23 @@ from automation.runtime_lab_audit import (
     scheduler_max_attempts_default,
     scheduler_wip_default,
 )
-
-REPO_ROOT = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from continuum_stub_contract import (  # noqa: E402
+    caller_stub_text,
+    local_concurrency_groups,
+    parse_caller_stub,
 )
+
 WORKFLOWS = os.path.join(REPO_ROOT, ".github", "workflows")
 
 
 def _read_workflow(name: str) -> str:
     with open(os.path.join(WORKFLOWS, name), "r", encoding="utf-8") as handle:
         return handle.read()
+
+
+def _stub(name: str):
+    """Parse one live Continuum caller stub (raises if it is not one)."""
+    return parse_caller_stub(caller_stub_text(REPO_ROOT, name))
 
 
 def test_allowed_regions_are_us_plus_singapore():
@@ -119,32 +146,135 @@ def test_live_control_plane_uses_temporary_actions_backend():
 
 
 def test_live_scheduler_permits_six_concurrent_issues():
+    """The scheduler's WIP budget is Continuum's; the caller must not narrow it.
+
+    ``WIP_LIMIT: '6'`` and ``MAX_DISPATCH_ATTEMPTS: '4'`` live in
+    Continuum's reusable ``continuum-issue-scheduler.yml`` since fbf4b79, so
+    this repository can no longer read the number off a workflow file. What it
+    still owns -- and what would silently throttle the fleet to a single
+    issue -- is the caller: it must delegate to the scheduler and forward both
+    knobs as bare passthroughs, so the engine default and the consumer's
+    ``vars.AUTOMATION_*`` override both stay reachable, and it must not pin a
+    literal WIP limit that would override those variables for every caller.
+    """
     text = _read_workflow("continuum-issue-scheduler.yml")
-    assert scheduler_wip_default(text) == "6"
-    assert scheduler_max_attempts_default(text) == "4"
+    stub = _stub("continuum-issue-scheduler")
+    assert stub.delegates_to("continuum-issue-scheduler.yml", "main")
+    assert stub.secrets_inherit and not stub.has_inline_steps
+    for knob in ("wip_limit", "lease_minutes", "max_dispatch_attempts"):
+        assert knob in stub.declared_inputs, knob
+        assert stub.forwards_bare(knob), (
+            "%s must stay a bare passthrough so Continuum's own default and the "
+            "consumer's vars.AUTOMATION_* override remain reachable" % knob
+        )
+    # A reintroduced literal budget is the regression this guards.
+    assert scheduler_wip_default(text) is None
+    assert scheduler_max_attempts_default(text) is None
 
 
 def test_live_render_executor_has_no_global_mutex():
+    """The caller declares no concurrency; a bare passthrough is forwarded.
+
+    Concurrency moved into Continuum's reusable workflow, where the group is
+    built from ``inputs.issue_number`` (or the intentional
+    ``single-service`` serialization). A consumer can still reintroduce the
+    forbidden global ``runtime-lab-render`` mutex by adding a top-level
+    ``concurrency:`` block to its own caller, which is what this now guards:
+    the executor stub must carry no local group, must still expose the
+    ``concurrency_group`` knob that parameterizes Continuum's group, and must
+    forward both that knob and the issue identity it is derived from bare.
+    """
     text = _read_workflow("continuum-render-executor.yml")
-    assert has_valid_render_concurrency(text)
+    stub = _stub("continuum-render-executor")
+    assert stub.delegates_to("continuum-render-executor.yml", "main")
+    assert stub.local_concurrency_group is None
+    assert local_concurrency_groups(text) == ()
     assert not has_global_render_mutex(text)
+    for knob in ("concurrency_group", "issue_number"):
+        assert knob in stub.declared_inputs, knob
+        assert stub.forwards_bare(knob), knob
 
 
 def test_live_opencode_workflow_is_per_issue_serialized():
+    """The OpenCode caller's per-issue identity must survive the delegation.
+
+    Per-issue serialization lives in Continuum's reusable workflow and is
+    keyed on ``inputs.issue_number``, so this repository cannot assert the
+    group any more -- but it does own whether that identity reaches the
+    callee. The caller must declare no local concurrency block (which would
+    serialize the whole fleet globally) and must forward ``issue_number``
+    unrewritten, since a hardcoded or dropped value collapses every run into
+    one serial group.
+    """
     text = _read_workflow("continuum-opencode.yml")
-    assert has_per_issue_opencode_concurrency(text)
+    stub = _stub("continuum-opencode")
+    assert stub.delegates_to("continuum-opencode.yml", "main")
+    assert stub.local_concurrency_group is None
+    assert local_concurrency_groups(text) == ()
+    assert "issue_number" in stub.declared_inputs
+    assert stub.forwards_bare("issue_number"), (
+        "issue_number is what Continuum's per-issue concurrency group is "
+        "built from; forwarding anything else serializes every issue together"
+    )
+    # The scheduler-written markers the per-issue flow keys on are forwarded
+    # too; a caller that dropped one would re-enter a claimable issue.
+    for knob in ("dispatch_marker", "in_progress_label", "pause_marker"):
+        assert knob in stub.declared_inputs, knob
+        assert stub.forwards_bare(knob), knob
 
 
 def test_live_render_executor_references_harness_entrypoints():
-    text = _read_workflow("continuum-render-executor.yml")
-    assert references_render_harness_scripts(text)
+    """The executor runs in Continuum; the scripts it runs still live here.
+
+    ``automation/render-job.sh`` and ``automation/render-cleanup.sh`` were
+    never migrated -- they are consumer scripts, resolved at run time inside
+    this repository. What the caller owns is forwarding the three script
+    knobs bare (so the callee resolves them against this checkout's paths)
+    rather than pinning a path, and the local lifecycle module that binds
+    the executor to both entrypoints must still name them.
+    """
+    stub = _stub("continuum-render-executor")
+    for knob in ("job_script", "cleanup_script", "qualification_script"):
+        assert knob in stub.declared_inputs, knob
+        assert stub.forwards_bare(knob), (
+            "%s must stay a bare passthrough so the callee resolves the "
+            "consumer's own script paths" % knob
+        )
+    lifecycle = os.path.join(REPO_ROOT, "automation", "render_lifecycle.py")
+    with open(lifecycle, "r", encoding="utf-8") as handle:
+        assert references_render_harness_scripts(handle.read())
 
 
 def test_live_render_executor_pins_allowed_region_and_model():
+    """Region and model are forwarded, never pinned, and stay policy-clean.
+
+    The policy itself is enforced locally by ``render_lifecycle.py`` (and, in
+    the reusable workflow, by Continuum) against a value that arrives from the
+    consumer's ``vars.``. So the caller must forward ``render_region`` and
+    ``model`` bare, and must not name a region at all: a literal here would
+    override the repository variable of every installed caller, and any name
+    it did pin would bypass the allowlist below.
+    """
     text = _read_workflow("continuum-render-executor.yml")
-    assert "oregon" in text
-    assert "frankfurt" not in text
-    assert PREFERRED_MODEL in text
+    lowered = text.lower()
+    stub = _stub("continuum-render-executor")
+    for knob in ("render_region", "model"):
+        assert knob in stub.declared_inputs, knob
+        assert stub.forwards_bare(knob), knob
+    assert "frankfurt" not in lowered
+    for region in ALLOWED_RENDER_REGIONS:
+        assert region not in lowered, (
+            "the caller must not pin region %r; it overrides the consumer's "
+            "vars.RENDER_REGION for every installed caller" % region
+        )
+    # The local policy the forwarded value is validated against is unchanged,
+    # and still agrees with the audit's own allowlist.
+    assert frozenset(ALLOWED_RENDER_REGIONS) == set(ALLOWED_WORKER_REGIONS)
+    assert frozenset(FORBIDDEN_WORKER_REGIONS) == {"frankfurt"}
+    for region in ALLOWED_RENDER_REGIONS:
+        assert validate_worker_region(region) == region
+    with pytest.raises(RegionPolicyError):
+        validate_worker_region("frankfurt")
 
 
 def test_live_harness_entrypoints_exist():

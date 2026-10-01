@@ -26,6 +26,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTOMATION = REPO_ROOT / "automation"
 sys.path.insert(0, str(AUTOMATION))
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(AUTOMATION / "tests"))
+
+from continuum_stub_contract import (  # noqa: E402
+    caller_stub_text,
+    parse_caller_stub,
+)
 
 from render_lifecycle import (  # noqa: E402
     API_RETRY_CAP_SECONDS,
@@ -157,15 +163,35 @@ def test_scripts_use_mapped_key_and_rate_limit_handling():
 
 
 def test_render_executor_cleanup_is_unconditional_and_gates_success():
-    workflow = (
-        REPO_ROOT / ".github" / "workflows" / "continuum-render-executor.yml"
-    ).read_text(encoding="utf-8")
-    assert "- name: Delete ephemeral Render service" in workflow
-    assert "if: always()" in workflow
-    assert "bash automation/render-cleanup.sh" in workflow
-    assert 'CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}' in workflow
-    assert '"$CLEANUP_OUTCOME" != "success"' in workflow
-    assert "mandatory cleanup failed" in workflow.lower()
+    # Since fbf4b79 the executor's steps -- the "Delete ephemeral Render
+    # service" step, its `if: always()` guard and the CLEANUP_OUTCOME success
+    # gate -- run inside Continuum's reusable workflow and are no longer
+    # readable here. The other half of that contract still belongs to this
+    # repository: the cleanup script the callee invokes unconditionally, and
+    # the caller that hands it over. Assert both.
+    cleanup = _read("render-cleanup.sh")
+    # Unconditional: no success/failure branch guards the deletion; the only
+    # early exits are for genuinely nothing having been provisioned, and the
+    # header pins the step it is meant to run from as always().
+    assert "set -euo pipefail" in cleanup
+    assert "always()" in cleanup
+    assert 'if [[ ! -s "$RENDER_STATE_FILE" ]]; then' in cleanup
+    assert "exit 0" in cleanup
+    # Gates success: an unverified deletion exits non-zero, which is what the
+    # callee's CLEANUP_OUTCOME gate turns into a failed run.
+    assert "::error::" in cleanup
+    assert "Failed to delete ephemeral Render service" in cleanup
+    assert "exit 1" in cleanup
+    # DELETE stays primary; suspension is only the emergency fallback, and
+    # success is proven by a 404/410 verify rather than assumed.
+    assert "Verified Render service" in cleanup
+    assert "suspend" in cleanup.lower()
+    stub = parse_caller_stub(
+        caller_stub_text(str(REPO_ROOT), "continuum-render-executor")
+    )
+    assert stub.delegates_to("continuum-render-executor.yml", "main")
+    assert stub.forwards_bare("cleanup_script")
+
 
 def test_scripts_perform_no_github_writes():
     job = _read("render-job.sh")
