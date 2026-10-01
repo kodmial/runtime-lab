@@ -16,7 +16,9 @@ module exposes exactly that:
   ``concurrency:`` block (which would shadow Continuum's per-issue groups
   with a global mutex), a literal region/model pin (which would override the
   consumer's repository variable for every installed caller), or an inline
-  job body at all.
+  job body at all. "No inline body" is a parse-time invariant rather than a
+  reported field: a caller carrying steps is rejected outright, so there is
+  no surviving object whose ``has_inline_steps`` could be consulted.
 
 The parser is deliberately strict: a caller whose shape stops matching
 raises :class:`ValueError` instead of quietly yielding empty fields, so a
@@ -46,7 +48,6 @@ class CallerStub(NamedTuple):
     job_name: str
     job_count: int
     secrets_inherit: bool
-    has_inline_steps: bool
     local_concurrency_group: Optional[str]
     declared_inputs: Tuple[str, ...]
     forwarded: Dict[str, str]
@@ -149,7 +150,6 @@ def parse_caller_stub(text: str) -> CallerStub:
         job_name=job["name"],
         job_count=len(jobs),
         secrets_inherit=job["secrets_inherit"],
-        has_inline_steps=any(other["steps"] for other in jobs),
         local_concurrency_group=_top_level_concurrency_group(lines),
         declared_inputs=declared_inputs,
         forwarded=job["forwarded"],

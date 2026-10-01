@@ -37,6 +37,7 @@ from automation.runtime_lab_audit import (  # noqa: E402
     ALLOWED_RENDER_REGIONS,
     FALLBACK_MODEL,
     PREFERRED_MODEL,
+    RENDER_HARNESS_FILES,
     has_global_render_mutex,
     has_per_issue_opencode_concurrency,
     has_per_issue_render_concurrency,
@@ -110,6 +111,24 @@ def test_load_control_plane_rejects_unknown_backend():
 
 
 def test_concurrency_text_helpers():
+    """Fixture coverage for the concurrency text detectors.
+
+    These detectors are deliberately *not* applied to the live tree. Since
+    commit fbf4b79 every caller is a thin stub with no `concurrency:` block --
+    concurrency groups live in Continuum's reusable workflows -- so there is
+    nothing in this repository for them to read, and a live assertion would
+    pass on the absence of the very thing it claims to check. What is still
+    enforceable live is that no caller reintroduces a local block, which
+    `test_live_render_executor_has_no_global_mutex` and
+    `test_live_opencode_workflow_is_per_issue_serialized` do via
+    `local_concurrency_groups`.
+
+    The detectors are kept because they describe the policy Continuum enforces
+    (per-issue for render, per-issue for OpenCode, either of those never a
+    global mutex). They are exercised here against synthetic text in both
+    directions, so a change that inverts one of them fails instead of quietly
+    agreeing with anything.
+    """
     per_issue = "concurrency:\n  group: runtime-lab-render-${{ inputs.issue_number }}"
     assert has_per_issue_render_concurrency(per_issue)
     assert not has_global_render_mutex(per_issue)
@@ -122,6 +141,22 @@ def test_concurrency_text_helpers():
     assert has_per_issue_opencode_concurrency(
         "group: opencode-${{ inputs.issue_number || github.run_id }}"
     )
+
+    # Negative direction: each detector must reject the shapes it forbids,
+    # and the combined detector must accept only the two sanctioned groups.
+    global_mutex = "concurrency:\n  group: runtime-lab-render"
+    assert not has_per_issue_render_concurrency(global_mutex)
+    assert not has_serialized_render_concurrency(per_issue)
+    assert not has_per_issue_render_concurrency("")
+    assert not has_serialized_render_concurrency("")
+    assert not has_per_issue_opencode_concurrency("")
+    assert not has_per_issue_opencode_concurrency(
+        "group: opencode-${{ github.run_id }}"
+    )
+    # A bare global mutex is not a valid render concurrency shape either.
+    assert not has_valid_render_concurrency(global_mutex)
+    assert not has_valid_render_concurrency("")
+    assert not has_global_render_mutex("")
 
 
 def test_scheduler_text_helpers():
@@ -160,7 +195,7 @@ def test_live_scheduler_permits_six_concurrent_issues():
     text = _read_workflow("continuum-issue-scheduler.yml")
     stub = _stub("continuum-issue-scheduler")
     assert stub.delegates_to("continuum-issue-scheduler.yml", "main")
-    assert stub.secrets_inherit and not stub.has_inline_steps
+    assert stub.secrets_inherit
     for knob in ("wip_limit", "lease_minutes", "max_dispatch_attempts"):
         assert knob in stub.declared_inputs, knob
         assert stub.forwards_bare(knob), (
@@ -223,15 +258,61 @@ def test_live_opencode_workflow_is_per_issue_serialized():
         assert stub.forwards_bare(knob), knob
 
 
+def _code_level_script_mentions(module_path: str) -> set:
+    """Script entrypoint names bound by *executable* code, not by prose.
+
+    Walks the module's AST and keeps only string constants that are not a
+    docstring, so a module that merely narrates the harness in its header
+    comment does not count as binding it. This is what separates a real
+    entrypoint binding from a documentation mention.
+    """
+    import ast
+
+    with open(module_path, "r", encoding="utf-8") as handle:
+        tree = ast.parse(handle.read())
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(
+            node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            text = ast.get_docstring(node, clean=False)
+            if text is not None:
+                docstrings.add(text)
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if node.value in docstrings:
+            continue
+        for script in RENDER_HARNESS_FILES:
+            if script in node.value:
+                names.add(script)
+    return names
+
+
 def test_live_render_executor_references_harness_entrypoints():
     """The executor runs in Continuum; the scripts it runs still live here.
 
     ``automation/render-job.sh`` and ``automation/render-cleanup.sh`` were
     never migrated -- they are consumer scripts, resolved at run time inside
-    this repository. What the caller owns is forwarding the three script
-    knobs bare (so the callee resolves them against this checkout's paths)
-    rather than pinning a path, and the local lifecycle module that binds
-    the executor to both entrypoints must still name them.
+    this repository. Two real bindings connect the executor to them, and both
+    are asserted here:
+
+    1. the caller declares and forwards the three script knobs *bare*, so the
+       callee resolves them against this checkout's paths instead of a
+       hardcoded location, and
+    2. ``runtime_lab_audit`` names the same two entrypoints in a module-level
+       constant that its own presence check consumes -- a code binding, so a
+       rename of either script has to be reflected in the audit rather than
+       silently un-detecting it.
+
+    The prior version of this test additionally asserted that
+    ``render_lifecycle.py`` referenced both scripts. That was vacuous: the
+    module's only occurrence of either path is the module docstring at line 9,
+    so the assertion held on prose alone. ``render_lifecycle`` genuinely does
+    not bind the entrypoints (it is the HTTP/state contract, not the script
+    runner), so there is nothing there to assert; the bindings above are the
+    real ones.
     """
     stub = _stub("continuum-render-executor")
     for knob in ("job_script", "cleanup_script", "qualification_script"):
@@ -240,9 +321,36 @@ def test_live_render_executor_references_harness_entrypoints():
             "%s must stay a bare passthrough so the callee resolves the "
             "consumer's own script paths" % knob
         )
-    lifecycle = os.path.join(REPO_ROOT, "automation", "render_lifecycle.py")
-    with open(lifecycle, "r", encoding="utf-8") as handle:
-        assert references_render_harness_scripts(handle.read())
+    # Binding 2: the audit names both entrypoints in code, and that constant
+    # is what the presence check is driven from (so it cannot rot in a
+    # hardcoded duplicate inside the function body).
+    assert RENDER_HARNESS_FILES == (
+        "automation/render-job.sh",
+        "automation/render-cleanup.sh",
+    )
+    audit_path = os.path.join(REPO_ROOT, "automation", "runtime_lab_audit.py")
+    assert _code_level_script_mentions(audit_path) == set(RENDER_HARNESS_FILES)
+    assert render_harness_files_present(REPO_ROOT) == {
+        script: True for script in RENDER_HARNESS_FILES
+    }
+    # And the same names reach the check as plain text, which is what the
+    # audit helper is for -- proven here on the real constant, not on a
+    # docstring.
+    assert references_render_harness_scripts("\n".join(RENDER_HARNESS_FILES))
+
+
+def test_render_harness_script_reference_check_is_not_vacuous():
+    """``references_render_harness_scripts`` must reject partial references.
+
+    A substring check that accepts text naming only one of the two
+    entrypoints cannot fail on a partial rename, which is the drift it exists
+    to catch.
+    """
+    for missing in RENDER_HARNESS_FILES:
+        partial = "\n".join(s for s in RENDER_HARNESS_FILES if s != missing)
+        assert not references_render_harness_scripts(partial), missing
+    assert not references_render_harness_scripts("")
+    assert not references_render_harness_scripts("automation/render-job.sh")
 
 
 def test_live_render_executor_pins_allowed_region_and_model():

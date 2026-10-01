@@ -192,14 +192,35 @@ def test_opencode_command_matches_known_good_invocation():
     # The invocation moved into Continuum's reusable continuum-opencode.yml at
     # fbf4b79, so .github/workflows/continuum-opencode.yml is now a caller stub
     # and no longer carries the command line. What this repository can still
-    # verify is the two halves of the old check that remain here: the builder
-    # still encodes the documented known-good form (so builder and documented
-    # invocation cannot drift apart), and the caller still hands Continuum the
-    # per-issue identity that invocation is issued against.
-    runner_source = (REPO_ROOT / "automation" / "opencode_runner.py").read_text(
-        encoding="utf-8"
-    )
-    assert 'opencode run --auto --model "$OPENCODE_MODEL" "$PROMPT"' in runner_source
+    # verify is the builder's argv and the caller's forwarding of the
+    # per-issue identity the invocation is issued against.
+    #
+    # The prior version also asserted the documented command line appeared in
+    # opencode_runner.py's source text. That was vacuous -- the only occurrence
+    # is the module docstring, so the check held on prose. Assert the argv the
+    # builder actually returns instead: the flags, the model and the prompt as
+    # three distinct arguments, and their order.
+    assert cmd.index("run") < cmd.index("--auto") < cmd.index("--model")
+    assert cmd[cmd.index("--model") + 1] == PREFERRED_MODEL
+    # The prompt is its own argument, not a shell fragment glued to the model.
+    assert cmd[-1] == "do the thing"
+    assert cmd[-1] != PREFERRED_MODEL
+    assert "--model=%s" % PREFERRED_MODEL not in cmd
+    # A list, not one pre-joined shell string: every flag and the prompt are
+    # separate elements, so a model or prompt containing a space cannot split.
+    assert isinstance(cmd, list)
+    assert all(isinstance(part, str) for part in cmd)
+    spaced = build_opencode_command(PREFERRED_MODEL, "two words and a $VAR")
+    assert spaced[-1] == "two words and a $VAR"
+    assert len(spaced) == len(cmd)
+    assert cmd == [
+        "opencode",
+        "run",
+        "--auto",
+        "--model",
+        PREFERRED_MODEL,
+        "do the thing",
+    ]
     stub = parse_caller_stub(caller_stub_text(str(REPO_ROOT), "continuum-opencode"))
     assert stub.delegates_to("continuum-opencode.yml", "main")
     assert stub.forwards_bare("issue_number")

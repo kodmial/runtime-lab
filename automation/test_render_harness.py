@@ -15,6 +15,7 @@ under .github/workflows/**:
 
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -162,6 +163,279 @@ def test_scripts_use_mapped_key_and_rate_limit_handling():
         "suspension is only an emergency fallback", "")
 
 
+def _strip_shell_comment(line):
+    """Drop a shell comment, ignoring ``#`` inside single/double quotes."""
+    quote = None
+    for index, char in enumerate(line):
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif char == "#":
+            return line[:index]
+    return line
+
+
+# Bash block openers, and which of them can make a body conditional.
+# ``for`` is a bounded retry loop that always runs at least once, so it does
+# not count; a function body is not a conditional either. ``if``/``case``/
+# ``while``/``until`` all can skip their body entirely, which is exactly the
+# regression the unconditional-cleanup contract forbids.
+_CONDITIONAL_OPENERS = ("if", "case", "while", "until")
+_BLOCK_KEYWORD_RE = re.compile(
+    r"^\s*(if|elif|else|fi|case|esac|while|until|for|do|done)\b"
+)
+_FUNCTION_DEF_RE = re.compile(r"^\s*[\w.-]+\s*\(\)\s*\{")
+_EXIT_RE = re.compile(r"(?:^|[\s;&|])exit\b")
+
+
+def _shell_block_frames(lines):
+    """Return ``(kind, line_index)`` for every enclosing block of each line.
+
+    ``kind`` is one of ``if``/``case``/``while``/``until``/``for``/``func``/
+    ``brace``, so a caller can ask which frames are *conditional*.
+    """
+    frames = []
+    stack = []
+    for index, raw in enumerate(lines):
+        frames.append(tuple(stack))
+        code = _strip_shell_comment(raw)
+        stripped = code.strip()
+        if not stripped:
+            continue
+        if stripped in ("fi", "esac", "done", "}"):
+            if stack:
+                stack.pop()
+            continue
+        if _FUNCTION_DEF_RE.match(code):
+            stack.append(("func", index))
+            continue
+        match = _BLOCK_KEYWORD_RE.match(code)
+        if not match:
+            continue
+        keyword = match.group(1)
+        if keyword in ("elif", "else"):
+            # Continues the enclosing ``if``; neither opens nor closes a frame.
+            continue
+        if keyword in ("do", "fi", "esac", "done"):
+            if stack:
+                stack.pop()
+            continue
+        stack.append((keyword, index))
+    return frames
+
+
+def _conditional_depth(frames):
+    """Count the enclosing blocks that could skip their body entirely."""
+    return sum(1 for kind, _ in frames if kind in _CONDITIONAL_OPENERS)
+
+
+def _delete_line_indices(lines):
+    """Indices of the lines that perform or verify the service deletion."""
+    found = []
+    for index, raw in enumerate(lines):
+        code = _strip_shell_comment(raw)
+        if "raw_http DELETE" in code or "verify_gone" in code:
+            found.append(index)
+            continue
+        if "delete_once" in code and not _FUNCTION_DEF_RE.match(code):
+            found.append(index)
+    return found
+
+
+def test_block_tracker_reports_a_wrapped_delete_loop_as_conditional():
+    """The tracker must actually discriminate, on synthetic shell.
+
+    ``test_render_executor_cleanup_is_unconditional_and_gates_success`` reads
+    the real script and demands depth 0 everywhere. A tracker that always
+    reported 0 -- or that never pushed a frame -- would satisfy that
+    vacuously, which is exactly the failure mode this file was written to
+    remove. So the tracker's verdict is pinned on hand-written shell where
+    the answer is known: wrapping the same delete call in an ``if`` must move
+    it from 0 to 1, and every enclosing kind must be one the test counts.
+    """
+    unwrapped = [
+        "for ((i = 1; i <= 3; i++)); do",
+        '  DELETE_CODE="$(delete_once)"',
+        "done",
+    ]
+    assert _conditional_depth(_shell_block_frames(unwrapped)[1]) == 0
+
+    wrapped_if = [
+        'if [[ "${CLEANUMLD_OUTCOME:-success}" == "success" ]]; then',
+        "for ((i = 1; i <= 3; i++)); do",
+        '  DELETE_CODE="$(delete_once)"',
+        "done",
+        "fi",
+    ]
+    frames = _shell_block_frames(wrapped_if)[2]
+    assert _conditional_depth(frames) == 1
+    assert [kind for kind, _ in frames] == ["if", "for"]
+
+    wrapped_case = [
+        'case "$OUTCOME" in',
+        "  success)",
+        '    DELETE_CODE="$(delete_once)"',
+        "    ;;",
+        "esac",
+    ]
+    frames = _shell_block_frames(wrapped_case)[2]
+    assert _conditional_depth(frames) == 1
+    assert [kind for kind, _ in frames] == ["case"]
+
+    wrapped_while = ["while true; do", '  DELETE_CODE="$(delete_once)"', "done"]
+    assert _conditional_depth(_shell_block_frames(wrapped_while)[1]) == 1
+
+    # Nested twice: depth must accumulate, not saturate at 1.
+    nested = [
+        'if [[ -n "$A" ]]; then',
+        '  case "$B" in',
+        "    x)",
+        '      DELETE_CODE="$(delete_once)"',
+        "      ;;",
+        "  esac",
+        "fi",
+    ]
+    assert _conditional_depth(_shell_block_frames(nested)[3]) == 2
+
+    # A function body and a bounded retry loop are not conditionals -- they
+    # always run the body -- so they must not inflate the depth.
+    func_body = ["delete_once() {", '  raw_http DELETE "$API"', "}"]
+    assert _conditional_depth(_shell_block_frames(func_body)[1]) == 0
+
+    # `elif`/`else` belong to the enclosing `if` and must not open frames.
+    if_else = [
+        'if [[ "$A" == 1 ]]; then',
+        '  echo one',
+        'elif [[ "$A" == 2 ]]; then',
+        '  echo two',
+        "else",
+        '  echo other',
+        "fi",
+    ]
+    depths = [_conditional_depth(_shell_block_frames(if_else)[i]) for i in (1, 3, 5)]
+    assert depths == [1, 1, 1]
+    assert len(_shell_block_frames(if_else)[5]) == 1
+
+    # A `#` inside quotes is not a comment, so a block opener there must not
+    # be counted -- and a real opener after it must still be.
+    quoted_hash = [
+        'msg="# if this were real"',
+        'if [[ "$A" == 1 ]]; then',
+        "  :",
+        "fi",
+    ]
+    quoted_frames = _shell_block_frames(quoted_hash)
+    # The quoted `#` line opens nothing, so the body of the *real* `if` on
+    # the next line sits at depth 1 -- one frame, and it is the `if`.
+    assert _conditional_depth(quoted_frames[2]) == 1
+    assert [kind for kind, _ in quoted_frames[2]] == ["if"]
+    assert _conditional_depth(quoted_frames[1]) == 0
+
+    # A real comment before a real opener likewise contributes nothing.
+    commented_out = [
+        "# if [[ $A ]]; then",
+        "if [[ \"$A\" == 1 ]]; then",
+        "  :",
+        "fi",
+    ]
+    commented_frames = _shell_block_frames(commented_out)
+    assert _conditional_depth(commented_frames[2]) == 1
+    assert [kind for kind, _ in commented_frames[2]] == ["if"]
+
+    # And every kind the tracker can report is classified by something.
+    known = set(_CONDITIONAL_OPENERS) | {"for", "func", "brace"}
+    for lines in (unwrapped, wrapped_if, wrapped_case, nested, if_else):
+        for frames in _shell_block_frames(lines):
+            for kind, _ in frames:
+                assert kind in known, kind
+    # The regex exposes a named `value`/keyword group the tracker reads by
+    # name; if it is renamed the match below raises and the tracker cannot
+    # classify anything at all.
+    assert _BLOCK_KEYWORD_RE.match("  if [[ -n $A ]]; then").group(1) == "if"
+    assert _BLOCK_KEYWORD_RE.match("  echo if you like") is None
+
+
+def test_comment_stripper_respects_quotes():
+    """``_strip_shell_comment`` must not cut inside a quoted string.
+
+    The tracker decides what is code by stripping comments first. A stripper
+    that cuts at the first ``#`` regardless of quoting turns a string literal
+    into a truncated line, and the truncated text is what the block-keyword
+    and delete-line matchers then see -- so the tracker silently changes its
+    verdict without any error. Pinned here on the cases that distinguish
+    quote-aware stripping from a naive ``split("#")``.
+    """
+    # Naive stripping would return ``'msg="only '`` here.
+    assert _strip_shell_comment('msg="# not a comment"') == 'msg="# not a comment"'
+    assert _strip_shell_comment('msg="# not a comment" # a comment') == (
+        'msg="# not a comment" '
+    )
+    assert _strip_shell_comment("msg='# also literal' # trailing") == (
+        "msg='# also literal' "
+    )
+    # A `#` in one quoted string and a real comment after it.
+    assert _strip_shell_comment('a="#1" b="#2" # real') == 'a="#1" b="#2" '
+    # Whole-line and indented comments go entirely.
+    assert _strip_shell_comment("# nothing here") == ""
+    assert _strip_shell_comment("   # indented") == "   "
+    assert _strip_shell_comment("  DELETE # 204") == "  DELETE "
+    # No comment at all: the line is returned unchanged.
+    assert _strip_shell_comment('raw_http DELETE "$API/services/$ID"') == (
+        'raw_http DELETE "$API/services/$ID"'
+    )
+    # An unterminated quote means the rest of the line is literal.
+    assert _strip_shell_comment('msg="open # still quoted') == (
+        'msg="open # still quoted'
+    )
+    # And a commented-out opener must not read as a block keyword.
+    assert _BLOCK_KEYWORD_RE.match(
+        _strip_shell_comment('# if [[ "$A" == 1 ]]; then')
+    ) is None
+
+
+def test_delete_line_detector_finds_exactly_the_deletion_sites():
+    """Every DELETE and verify call must be located, not just some of them.
+
+    The cleanup test only iterates over what this function returns, so if the
+    function quietly stopped matching -- say it forgot ``verify_gone`` -- the
+    test would assert less and still pass. Pinning the exact set of hits on
+    the real script makes a narrowed matcher a failure instead.
+    """
+    with open(AUTOMATION / "render-cleanup.sh", "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    found = _delete_line_indices(lines)
+
+    # Non-empty, and every hit really does delete or verify.
+    assert found
+    for index in found:
+        assert (
+            "raw_http DELETE" in lines[index]
+            or "verify_gone" in lines[index]
+            or "delete_once" in lines[index]
+        ), lines[index]
+
+    # Each of the three kinds is represented, so no branch is dead.
+    joined = "\n".join(lines[i] for i in found)
+    assert 'raw_http DELETE "$API_BASE/services/$SERVICE_ID"' in joined
+    assert joined.count('DELETE_CODE="$(delete_once)"') == 2
+    assert joined.count('VERIFY_CODE="$(verify_gone)"') == 2
+
+    # The explanatory comment above the loop is prose, not a delete site.
+    for index in found:
+        assert "204 = deleted" not in lines[index]
+
+    # Dropping the ``verify_gone`` arm changes the answer, which is what makes
+    # that arm load-bearing rather than decorative.
+    narrowed = [
+        index
+        for index in found
+        if 'VERIFY_CODE="$(verify_gone)"' not in lines[index]
+    ]
+    assert len(narrowed) == len(found) - 2
+
+
 def test_render_executor_cleanup_is_unconditional_and_gates_success():
     # Since fbf4b79 the executor's steps -- the "Delete ephemeral Render
     # service" step, its `if: always()` guard and the CLEANUP_OUTCOME success
@@ -170,11 +444,61 @@ def test_render_executor_cleanup_is_unconditional_and_gates_success():
     # repository: the cleanup script the callee invokes unconditionally, and
     # the caller that hands it over. Assert both.
     cleanup = _read("render-cleanup.sh")
-    # Unconditional: no success/failure branch guards the deletion; the only
-    # early exits are for genuinely nothing having been provisioned, and the
-    # header pins the step it is meant to run from as always().
     assert "set -euo pipefail" in cleanup
-    assert "always()" in cleanup
+
+    # Unconditional, proved structurally rather than by a prose match: the
+    # deletion and its verification must sit at conditional depth 0. Wrapping
+    # the delete loop in `if [[ "${CLEANUMLD_OUTCOME:-success}" == "success" ]]`
+    # -- or in a `case`, a `while`, or a `&&` chain -- pushes them to depth 1
+    # and fails here. A function body (delete_once/verify_gone) and a bounded
+    # `for` retry loop are not conditionals, so the real script passes.
+    lines = cleanup.splitlines()
+    frames = _shell_block_frames(lines)
+    delete_indices = _delete_line_indices(lines)
+    assert delete_indices, "cleanup must actually issue a DELETE somewhere"
+    for index in delete_indices:
+        depth = _conditional_depth(frames[index])
+        assert depth == 0, (
+            "line %d is nested in a conditional block and could be skipped: %r"
+            % (index + 1, lines[index].strip())
+        )
+        # No short-circuit on the deletion line itself: `foo && delete_once`
+        # never runs when foo fails.
+        code = _strip_shell_comment(lines[index])
+        assert "&&" not in code and "||" not in code, (
+            "line %d chains the deletion behind a short-circuit operator: %r"
+            % (index + 1, lines[index].strip())
+        )
+    # The delete helper itself must be defined unconditionally, so a
+    # conditional wrapper cannot redefine it into a no-op.
+    assert _conditional_depth(frames[lines.index(next(
+        line for line in lines if line.startswith("delete_once()")))]) == 0
+
+    # Guard against a split `if`/`then` or `for`/`do` construct silently
+    # escaping the block tracking above.
+    for raw in lines:
+        stripped = _strip_shell_comment(raw).strip()
+        assert stripped not in ("then", "do"), (
+            "bare %r opener would defeat the block tracker" % stripped
+        )
+
+    # The only early exits are the "nothing was ever provisioned" guards, so
+    # cleanup cannot skip deletion by bailing out before the delete loop.
+    first_delete = delete_indices[0]
+    for index, raw in enumerate(lines[:first_delete]):
+        if not _EXIT_RE.search(_strip_shell_comment(raw)):
+            continue
+        enclosing = [lines[start].strip() for kind, start in frames[index]
+                     if kind in _CONDITIONAL_OPENERS]
+        assert enclosing, (
+            "line %d exits at top level before the deletion: %r"
+            % (index + 1, raw.strip())
+        )
+        condition = " ".join(enclosing)
+        assert "RENDER_STATE_FILE" in condition or "SERVICE_ID" in condition, (
+            "line %d exits under a condition unrelated to provisioning state, "
+            "which would skip deletion: %r" % (index + 1, raw.strip())
+        )
     assert 'if [[ ! -s "$RENDER_STATE_FILE" ]]; then' in cleanup
     assert "exit 0" in cleanup
     # Gates success: an unverified deletion exits non-zero, which is what the
