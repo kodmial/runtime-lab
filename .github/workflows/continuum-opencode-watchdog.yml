@@ -20,5 +20,5 @@ jobs:
     uses: kodmial/continuum/.github/workflows/continuum-opencode-watchdog.yml@main
     secrets: inherit
     with:
-      continuum_ref: "main"
+      continuum_ref: main
       watched_workflow: "OpenCode agent"

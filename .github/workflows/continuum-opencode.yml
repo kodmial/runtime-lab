@@ -122,7 +122,7 @@ jobs:
     uses: kodmial/continuum/.github/workflows/continuum-opencode.yml@main
     secrets: inherit
     with:
-      continuum_ref: "main"
+      continuum_ref: main
       mode: "${{ inputs.mode }}"
       issue_number: "${{ inputs.issue_number }}"
       pr_number: "${{ inputs.pr_number }}"

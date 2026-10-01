@@ -21,4 +21,4 @@ jobs:
     # the installed caller override that variable and silently re-enable
     # CodeRabbit for a repository that never asked for it.
     with:
-      continuum_ref: "main"
+      continuum_ref: main
