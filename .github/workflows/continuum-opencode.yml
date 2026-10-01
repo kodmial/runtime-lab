@@ -1,5 +1,21 @@
 name: OpenCode agent
 
+# The watchdog and the scheduler both need to find a run without relying on
+# issue titles, which are not unique among open issues. An issue_comment run
+# and an `issue`-mode dispatch therefore report the issue number; the repair
+# modes report the pull request number.
+run-name: >-
+  ${{ github.event_name == 'issue_comment' &&
+      format('OpenCode issue #{0}', github.event.issue.number) ||
+      github.event_name == 'workflow_dispatch' &&
+      inputs.mode == 'issue' &&
+      format('OpenCode issue #{0}', inputs.issue_number) ||
+      github.event_name == 'workflow_dispatch' &&
+      format('OpenCode repair PR #{0}', inputs.pr_number) ||
+      github.event_name == 'pull_request_review_comment' &&
+      format('OpenCode review PR #{0}', github.event.pull_request.number) ||
+      'OpenCode agent' }}
+
 on:
   issue_comment:
     types: [created]
@@ -17,6 +33,7 @@ on:
           - coderabbit-fix
           - resolve-conflict
           - ci-fix
+          - issue
       issue_number:
         description: "Issue number, for context in issue_comment runs"
         required: false
@@ -38,7 +55,23 @@ on:
         required: false
         type: string
       ci_workflow_id:
-        description: "CI workflow file to re-run after a ci-fix"
+        description: "CI workflow file to re-run after a ci-fix or an issue implementation"
+        required: false
+        type: string
+      base_ref:
+        description: "Branch the issue mode bases its implementation branch on"
+        required: false
+        type: string
+      knowledge_protocol_path:
+        description: "Knowledge-handoff protocol the issue mode must read"
+        required: false
+        type: string
+      knowledge_records_dir:
+        description: "Directory the issue mode writes its run record into"
+        required: false
+        type: string
+      issue_commit_prefix:
+        description: "Prefix of the task commit the issue mode creates"
         required: false
         type: string
       conflict_strategy:
@@ -65,6 +98,18 @@ on:
         description: "Dispatch attempts before pausing the issue"
         required: false
         type: string
+      pause_on_failure:
+        description: "Allow terminal automation pause after failed dispatches"
+        required: false
+        type: string
+      ci_repair_label:
+        description: "CI repair in-flight lock label"
+        required: false
+        type: string
+      packaging_repair_label:
+        description: "Packaging repair in-flight lock label"
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -77,7 +122,7 @@ jobs:
     uses: kodmial/continuum/.github/workflows/continuum-opencode.yml@main
     secrets: inherit
     with:
-      continuum_ref: main
+      continuum_ref: "main"
       mode: "${{ inputs.mode }}"
       issue_number: "${{ inputs.issue_number }}"
       pr_number: "${{ inputs.pr_number }}"
@@ -85,6 +130,10 @@ jobs:
       review_id: "${{ inputs.review_id }}"
       run_id: "${{ inputs.run_id }}"
       ci_workflow_id: "${{ inputs.ci_workflow_id }}"
+      base_ref: "${{ inputs.base_ref }}"
+      knowledge_protocol_path: "${{ inputs.knowledge_protocol_path }}"
+      knowledge_records_dir: "${{ inputs.knowledge_records_dir }}"
+      issue_commit_prefix: "${{ inputs.issue_commit_prefix }}"
       # `conflict_strategy` is a choice input in the callee, so a non-dispatch
       # event (issue_comment, pull_request_review) that leaves it unset must
       # still pass a listed value rather than an empty string.
@@ -93,3 +142,6 @@ jobs:
       in_progress_label: "${{ inputs.in_progress_label }}"
       pause_marker: "${{ inputs.pause_marker }}"
       max_dispatch_attempts: "${{ inputs.max_dispatch_attempts }}"
+      pause_on_failure: "${{ inputs.pause_on_failure }}"
+      ci_repair_label: "${{ inputs.ci_repair_label }}"
+      packaging_repair_label: "${{ inputs.packaging_repair_label }}"

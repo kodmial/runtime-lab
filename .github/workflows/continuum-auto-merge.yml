@@ -15,6 +15,17 @@ on:
     # reconciler, so overlap with an event-driven wake-up is harmless.
     - cron: '17,47 * * * *'
   workflow_dispatch:
+    inputs:
+      post_merge_wakeups:
+        description: >-
+          Comma-separated workflow file names to wake after a successful merge.
+          Leave empty (the default) to wake nothing.
+        required: false
+        type: string
+      post_merge_wakeup_ref:
+        description: Git ref the post-merge wake-ups are dispatched at
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -28,4 +39,6 @@ jobs:
     uses: kodmial/continuum/.github/workflows/continuum-auto-merge.yml@main
     secrets: inherit
     with:
-      continuum_ref: main
+      continuum_ref: "main"
+      post_merge_wakeups: "${{ inputs.post_merge_wakeups }}"
+      post_merge_wakeup_ref: "${{ inputs.post_merge_wakeup_ref }}"
