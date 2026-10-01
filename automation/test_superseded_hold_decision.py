@@ -565,7 +565,7 @@ def test_finalize_unreadable_inputs_are_usage_error(tmp_path):
 # uploaded refusal record re-validates to action=hold/exit 0 offline --
 # yet finalize still minted #185, because the provisioned envelope never
 # calls the helper. Comparing the helper against the provisioned
-# render-executor.yml finalize text exposed one mirror infidelity: the
+# continuum-render-executor.yml finalize text exposed one mirror infidelity: the
 # envelope nests the open-repair check INSIDE the budget check (an open
 # repair at or over budget reports exhausted, never duplicate), while
 # the helper returned duplicate whenever a repair was open. These tests

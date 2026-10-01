@@ -36,7 +36,7 @@ as constants and durable-store semantics):
   worker).
 
 Scheduling semantics reuse the repository's existing scheduler behavior
-(``.github/workflows/issue-scheduler.yml``), not a second incompatible
+(``.github/workflows/continuum-issue-scheduler.yml``), not a second incompatible
 workflow: priority:p0/p1/p2 ordering, native blocked-by dependencies
 (with the DoR ``#N is completed`` fallback plus the enforced OpenCode
 optimization DAG from issue #88 in
@@ -344,7 +344,7 @@ def normalize_headers(headers: Mapping[str, str]) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Scheduling semantics (mirror of issue-scheduler.yml).
+# Scheduling semantics (mirror of continuum-issue-scheduler.yml).
 # ---------------------------------------------------------------------------
 
 PRIORITY_LABELS = ("priority:p0", "priority:p1", "priority:p2")
@@ -512,7 +512,7 @@ class EligibilityDecision:
 def decide_eligible(snapshot: EligibilitySnapshot) -> EligibilityDecision:
     """Apply the scheduler semantics to one issue snapshot (pure, no I/O).
 
-    Mirrors issue-scheduler.yml: paused short-circuits everything, only
+    Mirrors continuum-issue-scheduler.yml: paused short-circuits everything, only
     explicitly prioritized work enters the queue, open blockers (native,
     DoR-fallback, or the enforced OpenCode optimization DAG from issue
     #88) defer, an issue with a live reservation (open PR or valid

@@ -138,7 +138,7 @@ CI_WORKFLOW_ID = "ci.yml"
 CI_STATUS_CONTEXT = "runtime-lab/ci"
 
 # Paths that can never be written through result materialization. The
-# workflow-file exclusion mirrors .github/workflows/opencode.yml: the
+# workflow-file exclusion mirrors .github/workflows/continuum-opencode.yml: the
 # temporary GITHUB_TOKEN cannot safely push workflow files, and the final
 # GitHub App path must also keep workflow writes out of task results.
 WORKFLOW_DIR_PREFIX = ".github/workflows/"

@@ -261,4 +261,4 @@ def test_bootstrap_uses_real_126_evidence_and_next_is_optimization():
     assert "marginal-optimizing" in comment
     assert "objective-130-state.json" in comment
     trigger = coord.scheduler_trigger()
-    assert trigger["workflow"].endswith("issue-scheduler.yml")
+    assert trigger["workflow"].endswith("continuum-issue-scheduler.yml")

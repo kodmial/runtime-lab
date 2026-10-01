@@ -157,9 +157,9 @@ def test_scripts_use_mapped_key_and_rate_limit_handling():
 
 
 def test_render_executor_cleanup_is_unconditional_and_gates_success():
-    workflow = (REPO_ROOT / ".github" / "workflows" / "render-executor.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "continuum-render-executor.yml"
+    ).read_text(encoding="utf-8")
     assert "- name: Delete ephemeral Render service" in workflow
     assert "if: always()" in workflow
     assert "bash automation/render-cleanup.sh" in workflow

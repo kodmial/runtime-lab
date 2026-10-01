@@ -174,7 +174,7 @@ def test_downstream_body_serves_both_parsers():
         archive_sha256=PR15_ARCHIVE,
     )
     body = publish.render_downstream_issue_body(manifest)
-    # docker-qualification.yml value('<Label>') labels.
+    # continuum-docker-qualification.yml value('<Label>') labels.
     for label in (
         "- Artifact ID: `11009286301`",
         "- Source workflow run: `36512250023`",
@@ -205,11 +205,13 @@ def test_handoff_updates_before_unpause_then_dispatches():
     in_progress_idx = next(i for i, cmd in enumerate(kinds) if "automation:in-progress" in cmd)
     qualification_idx = next(i for i, cmd in enumerate(kinds) if "qualification:render" in cmd)
     unpause_idx = next(i for i, cmd in enumerate(kinds) if "automation:paused" in cmd)
-    exec_idx = next(i for i, cmd in enumerate(kinds) if "render-executor.yml" in cmd)
+    exec_idx = next(
+        i for i, cmd in enumerate(kinds) if "continuum-render-executor.yml" in cmd
+    )
     assert body_idx < qualification_idx < in_progress_idx < unpause_idx < exec_idx
-    assert not any("issue-scheduler.yml" in cmd for cmd in kinds)
+    assert not any("continuum-issue-scheduler.yml" in cmd for cmd in kinds)
     assert plan["dispatches"] == [{
-        "workflow": "render-executor.yml",
+        "workflow": "continuum-render-executor.yml",
         "ref": "main",
         "inputs": {"issue_number": "141", "mode": "e2e"},
     }]
@@ -221,8 +223,8 @@ def test_handoff_updates_before_unpause_then_dispatches():
     # Dry-run executes nothing but returns the ordered argv strings.
     rendered = publish.run_handoff_plan(plan, dry_run=True)
     assert len(rendered) == len(plan["commands"])
-    assert not any("issue-scheduler.yml" in line for line in rendered)
-    assert any("render-executor.yml" in line for line in rendered)
+    assert not any("continuum-issue-scheduler.yml" in line for line in rendered)
+    assert any("continuum-render-executor.yml" in line for line in rendered)
 
 
 # ---------------------------------------------------------------------------

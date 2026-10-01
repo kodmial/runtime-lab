@@ -119,29 +119,29 @@ def test_live_control_plane_uses_temporary_actions_backend():
 
 
 def test_live_scheduler_permits_six_concurrent_issues():
-    text = _read_workflow("issue-scheduler.yml")
+    text = _read_workflow("continuum-issue-scheduler.yml")
     assert scheduler_wip_default(text) == "6"
     assert scheduler_max_attempts_default(text) == "4"
 
 
 def test_live_render_executor_has_no_global_mutex():
-    text = _read_workflow("render-executor.yml")
+    text = _read_workflow("continuum-render-executor.yml")
     assert has_valid_render_concurrency(text)
     assert not has_global_render_mutex(text)
 
 
 def test_live_opencode_workflow_is_per_issue_serialized():
-    text = _read_workflow("opencode.yml")
+    text = _read_workflow("continuum-opencode.yml")
     assert has_per_issue_opencode_concurrency(text)
 
 
 def test_live_render_executor_references_harness_entrypoints():
-    text = _read_workflow("render-executor.yml")
+    text = _read_workflow("continuum-render-executor.yml")
     assert references_render_harness_scripts(text)
 
 
 def test_live_render_executor_pins_allowed_region_and_model():
-    text = _read_workflow("render-executor.yml")
+    text = _read_workflow("continuum-render-executor.yml")
     assert "oregon" in text
     assert "frankfurt" not in text
     assert PREFERRED_MODEL in text

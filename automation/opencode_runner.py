@@ -5,7 +5,7 @@ public repository inside a per-job isolated workspace. It is deliberately
 stdlib-only so the Render free-tier build and the minimal CI image both work.
 
 Known-good OpenCode CLI provisioning (from NanoDictate, via
-.github/workflows/opencode.yml, excluding extra integrations and
+.github/workflows/continuum-opencode.yml, excluding extra integrations and
 release-specific behavior):
 
     curl -fsSL https://opencode.ai/install | bash -s -- --version <pinned>
@@ -31,7 +31,7 @@ checkout and deterministic change detection. OpenCode itself is confined
 with ``OPENCODE_CONFIG_CONTENT`` that denies ``git *`` writes while
 allowing read-only inspection (status/diff/log/show/rev-parse/ls-files/
 grep/blame/branch/remote), mirroring the issue-mode permissions in
-``opencode.yml``.
+``continuum-opencode.yml``.
 
 Secrets: provider/model credentials stay entirely environment-driven. This
 module never reads ``GITHUB_TOKEN``, ``GH_TOKEN`` or ``OPENCODE_API_KEY``
@@ -110,7 +110,7 @@ OPENCODE_VERSION_ENV_VAR = "OPENCODE_VERSION"
 OPENCODE_INSTALL_RETRY_DELAYS = (5.0, 10.0)
 
 # Confine OpenCode to read-only git inspection. Mirrors the issue-mode
-# OPENCODE_CONFIG_CONTENT in .github/workflows/opencode.yml: bash is
+# OPENCODE_CONFIG_CONTENT in .github/workflows/continuum-opencode.yml: bash is
 # allowed, `git *` writes are denied, read-only git inspection is allowed.
 # The workflow owns all Git state; the runner never pushes or opens PRs.
 #

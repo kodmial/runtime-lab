@@ -183,8 +183,8 @@ def test_opencode_command_matches_known_good_invocation():
     assert cmd[0] == "opencode"
     assert cmd[1:5] == ["run", "--auto", "--model", PREFERRED_MODEL]
     assert cmd[5] == "do the thing"
-    # Same order as .github/workflows/opencode.yml: run --auto --model <m> <prompt>.
-    workflow = (REPO_ROOT / ".github" / "workflows" / "opencode.yml").read_text()
+    # Same order as .github/workflows/continuum-opencode.yml: run --auto --model <m> <prompt>.
+    workflow = (REPO_ROOT / ".github" / "workflows" / "continuum-opencode.yml").read_text()
     assert 'opencode run --auto --model "$OPENCODE_MODEL" "$PROMPT"' in workflow
     fallback = build_opencode_command(FALLBACK_MODEL, "task", opencode_bin="/fake/opencode")
     assert fallback[:5] == ["/fake/opencode", "run", "--auto", "--model", FALLBACK_MODEL]

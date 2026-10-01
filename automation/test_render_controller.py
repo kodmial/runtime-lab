@@ -316,7 +316,7 @@ def test_redeliver_unknown_delivery_is_404(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Scheduling decisions (mirror of issue-scheduler.yml).
+# Scheduling decisions (mirror of continuum-issue-scheduler.yml).
 # ---------------------------------------------------------------------------
 
 def _snapshot(**overrides):

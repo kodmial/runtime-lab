@@ -451,7 +451,7 @@ def assert_worker_env_has_no_storage_credentials(
 # ---------------------------------------------------------------------------
 # TAP_PAT availability (explicit safe blocker, never a public fallback).
 #
-# NOTE (live-bootstrap correction): in `.github/workflows/opencode.yml` the
+# NOTE (live-bootstrap correction): in `.github/workflows/continuum-opencode.yml` the
 # TAP_PAT secret is mapped as GH_TOKEN/GITHUB_TOKEN
 # (``${{ secrets.TAP_PAT || github.token }}``), never under the literal
 # name ``TAP_PAT``. A literal ``os.environ["TAP_PAT"]`` check therefore

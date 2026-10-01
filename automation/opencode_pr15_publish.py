@@ -348,7 +348,7 @@ def render_downstream_issue_body(manifest: Mapping[str, str]) -> str:
     """Render the downstream Render qualification issue body (exact fields).
 
     The body carries every field BOTH parsers need: the
-    ``docker-qualification.yml`` ``value('<Label>')`` labels
+    ``continuum-docker-qualification.yml`` ``value('<Label>')`` labels
     (``Artifact ID``, ``Source workflow run``, ``Source/head SHA``,
     ``Artifact archive digest``, ``Expected binary SHA-256``,
     ``Expected --version``) and the ``render_lifecycle`` gate phrasings
@@ -451,7 +451,7 @@ def build_handoff_plan(
     The publishing workflow rewrites the downstream issue first, adds the
     execution/qualification labels and ``automation:in-progress`` while the
     issue is still paused, then removes ``automation:paused`` and dispatches
-    exactly one ``render-executor.yml`` run. This ordering prevents the
+    exactly one ``continuum-render-executor.yml`` run. This ordering prevents the
     issue scheduler from racing the direct dispatch and creating a duplicate
     Render run. The plan never gates on the #134 marginal verdict.
     """
@@ -478,7 +478,7 @@ def build_handoff_plan(
         ["gh", "issue", "edit", str(number), "--add-label", "automation:in-progress"],
         ["gh", "issue", "edit", str(number), "--remove-label", "automation:paused"],
         [
-            "gh", "workflow", "run", "render-executor.yml", "--ref", "main",
+            "gh", "workflow", "run", "continuum-render-executor.yml", "--ref", "main",
             "-f", "issue_number=%d" % number, "-f", "mode=%s" % mode,
         ],
     ]
@@ -496,7 +496,7 @@ def build_handoff_plan(
         "commands": commands,
         "dispatches": [
             {
-                "workflow": "render-executor.yml",
+                "workflow": "continuum-render-executor.yml",
                 "ref": "main",
                 "inputs": {"issue_number": str(number), "mode": mode},
             },

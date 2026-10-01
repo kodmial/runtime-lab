@@ -388,7 +388,7 @@ async function ensureDocker(state) {
     ["execution:docker-qualify"],
     state
   );
-  await dispatch(RUNTIME, "issue-scheduler.yml", {});
+  await dispatch(RUNTIME, "continuum-issue-scheduler.yml", {});
 }
 
 function optimizationPayload(state, failure, scope) {
@@ -474,7 +474,7 @@ async function ensureDockerRepair(state, result) {
         ["execution:docker-qualify"],
         state
       );
-      await dispatch(RUNTIME, "issue-scheduler.yml", {});
+      await dispatch(RUNTIME, "continuum-issue-scheduler.yml", {});
       state.stage = "docker-retry-after-repair";
       return;
     }
@@ -504,7 +504,7 @@ async function ensureDockerRepair(state, result) {
   });
   state.infra_attempts[key] = attempts + 1;
   state.stage = "docker-infrastructure-repair";
-  await dispatch(RUNTIME, "issue-scheduler.yml", {});
+  await dispatch(RUNTIME, "continuum-issue-scheduler.yml", {});
 }
 
 async function reconcile() {
@@ -605,7 +605,7 @@ async function reconcile() {
       ["execution:render-e2e"],
       state
     );
-    await dispatch(RUNTIME, "issue-scheduler.yml", {});
+    await dispatch(RUNTIME, "continuum-issue-scheduler.yml", {});
     await saveState(oldState, state);
     return;
   }
@@ -630,7 +630,7 @@ async function reconcile() {
         state
       );
       for (const n of RENDER) if (n !== passIssue) await pause(n);
-      await dispatch(RUNTIME, "issue-scheduler.yml", {});
+      await dispatch(RUNTIME, "continuum-issue-scheduler.yml", {});
     }
     await saveState(oldState, state);
     return;

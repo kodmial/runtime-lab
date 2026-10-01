@@ -1,6 +1,6 @@
 """Enforced OpenCode-fork optimization dependency DAG (issue #88).
 
-The Actions scheduler (``.github/workflows/issue-scheduler.yml``) and the
+The Actions scheduler (``.github/workflows/continuum-issue-scheduler.yml``) and the
 persistent controller (``automation/render_controller.py``) honor native
 GitHub issue dependencies plus the Definition-of-Ready ``#N is completed``
 fallback. Free-form body text such as ``Blocked by #76`` is NOT honored by

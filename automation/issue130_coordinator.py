@@ -26,7 +26,7 @@ Scope (authoritative: issue #130 body):
   before the overall objective is declared achieved.
 
 Wake-up: the existing scheduler envelope
-(``.github/workflows/issue-scheduler.yml``: push + 15-minute safety-net
+(``.github/workflows/continuum-issue-scheduler.yml``: push + 15-minute safety-net
 cron + issues/pull_request_target events + explicit ``gh workflow run``
 dispatch after merges) wakes automation after the chat closes. This
 module is the reconciler that scheduler-dispatched runs invoke; it never
@@ -51,9 +51,9 @@ from typing import Any, Mapping, Sequence
 SCHEMA = "runtime-lab-objective-130/v1"
 OBJECTIVE_ISSUE = 130
 STATE_PATH = "automation/objective-130-state.json"
-SCHEDULER_WORKFLOW = ".github/workflows/issue-scheduler.yml"
-OPENCODE_WORKFLOW = ".github/workflows/opencode.yml"
-RENDER_EXECUTOR_WORKFLOW = ".github/workflows/render-executor.yml"
+SCHEDULER_WORKFLOW = ".github/workflows/continuum-issue-scheduler.yml"
+OPENCODE_WORKFLOW = ".github/workflows/continuum-opencode.yml"
+RENDER_EXECUTOR_WORKFLOW = ".github/workflows/continuum-render-executor.yml"
 
 MIB = 1024 * 1024
 # Conservative acceptance target persisted before trials (issue #130.6):
@@ -354,8 +354,8 @@ def scheduler_trigger() -> dict[str, str]:
         "render_executor": RENDER_EXECUTOR_WORKFLOW,
         "state_file": STATE_PATH,
         "wake": "push to main + 15-min safety-net cron (7,22,37,52) + "
-        "issues/PR events + explicit 'gh workflow run issue-scheduler.yml' "
-        "after merges (scheduler reconciles and dispatches opencode.yml).",
+        "issues/PR events + explicit 'gh workflow run continuum-issue-scheduler.yml' "
+        "after merges (scheduler reconciles and dispatches continuum-opencode.yml).",
     }
 
 

@@ -18,7 +18,7 @@ The reusable defect fixed here is therefore consumer-side, not
 signal-side: no provisioned envelope step can answer "is this refusal
 held-superseded?" without embedding registry logic in workflow JS/YAML.
 This module is that answer as a stdlib-only executable decision point.
-The provisioned ``render-executor.yml`` finalize step runs on a runner
+The provisioned ``continuum-render-executor.yml`` finalize step runs on a runner
 with a full checkout of ``main``, so it can adopt the hold with one call
 and no registry duplication::
 
@@ -321,7 +321,7 @@ def finalize_repair_decision(
 ) -> dict[str, Any]:
     """Mirror the finalize mint gate with the hold check inserted first.
 
-    The provisioned ``render-executor.yml`` finalize step nests its
+    The provisioned ``continuum-render-executor.yml`` finalize step nests its
     branches: when ``REPAIR_COUNT < MAX_RENDER_REPAIR_ATTEMPTS`` it mints
     a P0 repair with no open repair carrying the source marker and posts
     a duplicate notice when such a repair is already open; otherwise
