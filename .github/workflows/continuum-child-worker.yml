@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   worker:
-    uses: kodmial/continuum/.github/workflows/consumer-child-worker.yml@main
+    uses: kodmial/continuum/.github/workflows/continuum-consumer-child-worker.yml@main
     with:
       child_id: ${{ inputs.child_id }}
       task_number: ${{ inputs.task_number }}

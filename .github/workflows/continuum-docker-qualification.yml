@@ -1,0 +1,124 @@
+name: Docker qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Reusable qualification issue whose body carries the artifact identity"
+        required: true
+        type: string
+      # Optional knobs, declared here for the same reason issue-scheduler
+      # declares its own: a stub may only forward an input it declares, and
+      # each is empty by default so the engine falls through to the consumer's
+      # `vars.` value rather than pinning one on every installed caller.
+      artifact_repository:
+        description: "Repository whose Actions artifact store holds the artifact under test"
+        required: false
+        type: string
+      binary_name:
+        description: "File name of the binary inside the artifact archive"
+        required: false
+        type: string
+      model:
+        description: "OpenCode model the qualified binary runs on inside the container"
+        required: false
+        type: string
+      docker_image:
+        description: "Container image the binary runs in"
+        required: false
+        type: string
+      memory_mib:
+        description: "Container memory limit in MiB, applied with no swap"
+        required: false
+        type: string
+      min_headroom_mib:
+        description: "Headroom the peak must leave below the limit"
+        required: false
+        type: string
+      trials:
+        description: "Independent coding trials run against the same binary"
+        required: false
+        type: string
+      result_schema:
+        description: "Schema name written into the result payload"
+        required: false
+        type: string
+      result_kind:
+        description: "Kind written into the result payload"
+        required: false
+        type: string
+      result_marker:
+        description: "Hidden marker prefixed to the recorded result comment"
+        required: false
+        type: string
+      result_file:
+        description: "Path of the qualification result file"
+        required: false
+        type: string
+      evidence_dir:
+        description: "Directory the collected run evidence is written to"
+        required: false
+        type: string
+      artifact_prefix:
+        description: "Prefix of the uploaded evidence artifact name"
+        required: false
+        type: string
+      dispatch_ref:
+        description: "Revision checked out and dispatched at"
+        required: false
+        type: string
+      in_progress_label:
+        description: "Reservation label"
+        required: false
+        type: string
+      pause_label:
+        description: "Label that pauses automation"
+        required: false
+        type: string
+      chain_workflow:
+        description: "Workflow woken after the result is recorded"
+        required: false
+        type: string
+      concurrency_group:
+        description: "Concurrency group serialising this controller's runs"
+        required: false
+        type: string
+      timeout_minutes:
+        description: "Job timeout in minutes"
+        required: false
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-docker-qualification.yml@main
+    secrets: inherit
+    with:
+      continuum_ref: main
+      # Bare passthroughs: an empty value is what lets the engine fall through
+      # to its `vars.` fallback, so pinning any of these here would override
+      # the consumer's own repository variable on every installed caller.
+      issue_number: "${{ inputs.issue_number }}"
+      artifact_repository: "${{ inputs.artifact_repository }}"
+      binary_name: "${{ inputs.binary_name }}"
+      model: "${{ inputs.model }}"
+      docker_image: "${{ inputs.docker_image }}"
+      memory_mib: "${{ inputs.memory_mib }}"
+      min_headroom_mib: "${{ inputs.min_headroom_mib }}"
+      trials: "${{ inputs.trials }}"
+      result_schema: "${{ inputs.result_schema }}"
+      result_kind: "${{ inputs.result_kind }}"
+      result_marker: "${{ inputs.result_marker }}"
+      result_file: "${{ inputs.result_file }}"
+      evidence_dir: "${{ inputs.evidence_dir }}"
+      artifact_prefix: "${{ inputs.artifact_prefix }}"
+      dispatch_ref: "${{ inputs.dispatch_ref }}"
+      in_progress_label: "${{ inputs.in_progress_label }}"
+      pause_label: "${{ inputs.pause_label }}"
+      chain_workflow: "${{ inputs.chain_workflow }}"
+      concurrency_group: "${{ inputs.concurrency_group }}"
+      timeout_minutes: "${{ inputs.timeout_minutes }}"

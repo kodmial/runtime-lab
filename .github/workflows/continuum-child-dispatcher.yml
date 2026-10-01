@@ -55,7 +55,7 @@ jobs:
 
   dispatch:
     needs: cleanup
-    uses: kodmial/continuum/.github/workflows/consumer-child-dispatcher.yml@main
+    uses: kodmial/continuum/.github/workflows/continuum-consumer-child-dispatcher.yml@main
     with:
       worker_workflow: continuum-child-worker.yml
       review_workflow: continuum-child-review.yml

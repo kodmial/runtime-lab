@@ -244,7 +244,7 @@ jobs:
               await github.rest.actions.createWorkflowDispatch({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                workflow_id: 'opencode-repair.yml',
+                workflow_id: 'continuum-opencode-repair.yml',
                 ref: 'main',
                 inputs: {
                   pr_number: process.env.PR_NUMBER,

@@ -1,0 +1,146 @@
+name: Render execution controller
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number being executed"
+        required: true
+        type: string
+      mode:
+        description: "Execution mode: smoke or e2e"
+        required: true
+        type: string
+      # Optional knobs, declared here for the same reason issue-scheduler
+      # declares its own: a stub may only forward an input it declares, and
+      # each is empty by default so the engine falls through to the consumer's
+      # `vars.` value rather than pinning one on every installed caller.
+      render_region:
+        description: "Render region the ephemeral worker is created in"
+        required: false
+        type: string
+      model:
+        description: "OpenCode model the Render lifecycle runs on"
+        required: false
+        type: string
+      state_file:
+        description: "Path of the Render lifecycle state file"
+        required: false
+        type: string
+      result_file:
+        description: "Path of the Render run result file"
+        required: false
+        type: string
+      memory_summary_file:
+        description: "Path of the Render memory summary file"
+        required: false
+        type: string
+      qualification_result_file:
+        description: "Path of the qualification record"
+        required: false
+        type: string
+      max_repair_attempts:
+        description: "Automatic recovery issues per source issue"
+        required: false
+        type: string
+      qualification_label:
+        description: "Issue label marking a durable qualification run"
+        required: false
+        type: string
+      qualification_marker:
+        description: "Marker prefixed to the recorded result comment"
+        required: false
+        type: string
+      artifact_prefix:
+        description: "Prefix of the uploaded evidence artifact name"
+        required: false
+        type: string
+      dispatch_ref:
+        description: "Revision checked out and dispatched at"
+        required: false
+        type: string
+      job_script:
+        description: "Consumer script driving the Render lifecycle"
+        required: false
+        type: string
+      cleanup_script:
+        description: "Consumer script deleting the ephemeral service"
+        required: false
+        type: string
+      qualification_script:
+        description: "Consumer script writing the qualification payload"
+        required: false
+        type: string
+      in_progress_label:
+        description: "Reservation label"
+        required: false
+        type: string
+      pause_label:
+        description: "Label that pauses automation"
+        required: false
+        type: string
+      repair_label:
+        description: "Label applied to an automatic recovery issue"
+        required: false
+        type: string
+      e2e_branch_prefix:
+        description: "Branch-head prefix the e2e mode requires"
+        required: false
+        type: string
+      chain_workflow:
+        description: "Workflow woken when a qualification needs a follow-up"
+        required: false
+        type: string
+      scheduler_workflow:
+        description: "Scheduler woken after this run resolves an issue"
+        required: false
+        type: string
+      concurrency_group:
+        description: "Concurrency group serialising this controller's runs"
+        required: false
+        type: string
+      timeout_minutes:
+        description: "Job timeout in minutes"
+        required: false
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-render-executor.yml@main
+    secrets: inherit
+    with:
+      continuum_ref: main
+      # Bare passthroughs: an empty value is what lets the engine fall through
+      # to its `vars.` fallback, so pinning any of these here would override
+      # the consumer's own repository variable on every installed caller.
+      issue_number: "${{ inputs.issue_number }}"
+      mode: "${{ inputs.mode }}"
+      render_region: "${{ inputs.render_region }}"
+      model: "${{ inputs.model }}"
+      state_file: "${{ inputs.state_file }}"
+      result_file: "${{ inputs.result_file }}"
+      memory_summary_file: "${{ inputs.memory_summary_file }}"
+      qualification_result_file: "${{ inputs.qualification_result_file }}"
+      max_repair_attempts: "${{ inputs.max_repair_attempts }}"
+      qualification_label: "${{ inputs.qualification_label }}"
+      qualification_marker: "${{ inputs.qualification_marker }}"
+      artifact_prefix: "${{ inputs.artifact_prefix }}"
+      dispatch_ref: "${{ inputs.dispatch_ref }}"
+      job_script: "${{ inputs.job_script }}"
+      cleanup_script: "${{ inputs.cleanup_script }}"
+      qualification_script: "${{ inputs.qualification_script }}"
+      in_progress_label: "${{ inputs.in_progress_label }}"
+      pause_label: "${{ inputs.pause_label }}"
+      repair_label: "${{ inputs.repair_label }}"
+      e2e_branch_prefix: "${{ inputs.e2e_branch_prefix }}"
+      chain_workflow: "${{ inputs.chain_workflow }}"
+      scheduler_workflow: "${{ inputs.scheduler_workflow }}"
+      concurrency_group: "${{ inputs.concurrency_group }}"
+      timeout_minutes: "${{ inputs.timeout_minutes }}"

@@ -1,0 +1,71 @@
+name: OpenCode repair controller
+
+on:
+  # This trusted metadata workflow never checks out or executes PR code.
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  workflow_run:
+    workflows: ["CI", "Packaging smoke"]
+    types: [completed]
+  # A consumer whose CI lives in a repository Continuum cannot watch with
+  # `workflow_run` reports its result here. All four are required: a result
+  # without the head it was measured on, or without the PR it belongs to, is
+  # not actionable and would otherwise be accepted and silently ignored.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number whose CI result is being reported"
+        required: true
+        type: string
+      head_sha:
+        description: "PR head SHA the reporting CI run evaluated"
+        required: true
+        type: string
+      conclusion:
+        description: "CI conclusion for that head: success, failure, or timed_out"
+        required: true
+        type: string
+      run_id:
+        description: "CI workflow run id, forwarded to the repair dispatch"
+        required: true
+        type: string
+      # Optional knobs, declared here for the same reason issue-scheduler
+      # declares its own: a stub may only forward an input it declares, and
+      # each is empty by default so the engine falls through to the consumer's
+      # `vars.` value rather than pinning one on every installed caller.
+      ci_repair_label:
+        description: "Label holding the one-attempt-per-head CI repair lock"
+        required: false
+        type: string
+      head_ref_pattern:
+        description: "Pattern an OpenCode branch head must match"
+        required: false
+        type: string
+      auto_merge_workflow:
+        description: "Workflow woken after a successful CI report"
+        required: false
+        type: string
+      opencode_workflow:
+        description: "Workflow a ci-fix is dispatched to"
+        required: false
+        type: string
+
+permissions: {}
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-opencode-repair.yml@main
+    secrets: inherit
+    with:
+      continuum_ref: main
+      # Bare passthroughs: an empty value is what lets the engine fall through
+      # to its `vars.` fallback, so pinning any of these here would override
+      # the consumer's own repository variable on every installed caller.
+      pr_number: "${{ inputs.pr_number }}"
+      head_sha: "${{ inputs.head_sha }}"
+      conclusion: "${{ inputs.conclusion }}"
+      run_id: "${{ inputs.run_id }}"
+      ci_repair_label: "${{ inputs.ci_repair_label }}"
+      head_ref_pattern: "${{ inputs.head_ref_pattern }}"
+      auto_merge_workflow: "${{ inputs.auto_merge_workflow }}"
+      opencode_workflow: "${{ inputs.opencode_workflow }}"

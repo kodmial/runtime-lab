@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   review:
-    uses: kodmial/continuum/.github/workflows/consumer-child-pr-review.yml@main
+    uses: kodmial/continuum/.github/workflows/continuum-consumer-child-pr-review.yml@main
     with:
       child_id: ${{ inputs.child_id }}
       pr_number: ${{ inputs.pr_number }}

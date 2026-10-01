@@ -1,0 +1,31 @@
+name: Auto-merge reviewed pull requests
+
+on:
+  # Successful PR CI explicitly dispatches this reconciler from
+  # mark-ready-for-coderabbit. CodeRabbit status/review and main pushes are
+  # additional event-driven wake-ups; no critical transition depends on cron.
+  pull_request_review:
+    types: [submitted, dismissed]
+  status:
+  push:
+    branches: [main]
+  schedule:
+    # Best-effort safety net only. All normal transitions have event hooks.
+    # A scheduled run executes the exact same idempotent latest-state
+    # reconciler, so overlap with an event-driven wake-up is harmless.
+    - cron: '17,47 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: write
+  statuses: read
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-auto-merge.yml@main
+    secrets: inherit
+    with:
+      continuum_ref: main
