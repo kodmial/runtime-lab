@@ -439,5 +439,5 @@ jobs:
         run: |
           set -euo pipefail
           gh api --method POST \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/child-dispatcher.yml/dispatches" \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/continuum-child-dispatcher.yml/dispatches" \
             -f ref=main
