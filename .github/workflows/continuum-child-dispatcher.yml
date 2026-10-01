@@ -55,11 +55,11 @@ jobs:
 
   dispatch:
     needs: cleanup
-    uses: kodmial/continuum/.github/workflows/consumer-child-dispatcher.yml@7aa2aec38a97a2639e96a2f2e1168b0571afcc0d
-    # The reusable dispatcher already defaults to the prefixed caller names.
-    # Overriding them here re-introduced the risk of pointing at a file that
-    # does not exist, so the defaults stand.
+    uses: kodmial/continuum/.github/workflows/consumer-child-dispatcher.yml@main
     with:
-      engine_ref: 7aa2aec38a97a2639e96a2f2e1168b0571afcc0d
+      worker_workflow: continuum-child-worker.yml
+      review_workflow: continuum-child-review.yml
+      manual_pr_review_workflow: continuum-child-pr-review.yml
+      engine_ref: main
     secrets:
       CHILD_RUNTIME_TOKEN: ${{ secrets.TAP_PAT }}
