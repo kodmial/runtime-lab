@@ -1,0 +1,24 @@
+name: mark-ready-for-coderabbit
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-add-review-label.yml@main
+    secrets: inherit
+    # `require_coderabbit` is deliberately NOT pinned here. CodeRabbit is an
+    # optional integration whose enabling value lives in the consumer's
+    # `vars.CONTINUUM_REQUIRE_CODERABBIT`; passing a literal here would make
+    # the installed caller override that variable and silently re-enable
+    # CodeRabbit for a repository that never asked for it.
+    with:
+      continuum_ref: "main"

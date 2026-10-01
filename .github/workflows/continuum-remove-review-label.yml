@@ -1,0 +1,16 @@
+name: remove-review-ready-on-sync
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-remove-review-label.yml@main
+    secrets: inherit
+    with:
+      continuum_ref: "main"

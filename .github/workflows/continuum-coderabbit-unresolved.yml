@@ -1,0 +1,16 @@
+name: Retry unresolved CodeRabbit findings
+
+on:
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-coderabbit-unresolved.yml@main
+    secrets: inherit
+    with:
+      continuum_ref: "main"
