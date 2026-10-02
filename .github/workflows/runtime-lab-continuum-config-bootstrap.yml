@@ -1,0 +1,40 @@
+name: Bootstrap Continuum consumer configuration
+
+on:
+  push:
+    branches:
+      - work-lock-15-stabilize-adoption
+    paths:
+      - '.github/workflows/runtime-lab-continuum-config-bootstrap.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Upsert Runtime Lab Continuum variables
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${GH_TOKEN:-}" ]] || {
+            echo "::error::TAP_PAT is required to configure repository variables"
+            exit 1
+          }
+
+          upsert() {
+            local name="$1" value="$2"
+            if gh api "repos/$GITHUB_REPOSITORY/actions/variables/$name" >/dev/null 2>&1; then
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/actions/variables/$name"                 -f name="$name" -f value="$value" >/dev/null
+            else
+              gh api --method POST "repos/$GITHUB_REPOSITORY/actions/variables"                 -f name="$name" -f value="$value" >/dev/null
+            fi
+            echo "configured $name"
+          }
+
+          upsert RENDER_JOB_SCRIPT automation/render-job.sh
+          upsert RENDER_CLEANUP_SCRIPT automation/render-cleanup.sh
+          upsert RENDER_QUALIFICATION_SCRIPT automation/record_render_qualification.py
