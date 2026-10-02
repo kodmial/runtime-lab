@@ -93,6 +93,9 @@ on:
   workflow_run:
     workflows:
       - OpenCode agent
+      - SubTask
+      - SubTask review
+      - SubTask PR review
       - Child task
       - Child review
       - Child PR review
