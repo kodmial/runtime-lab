@@ -1,0 +1,34 @@
+name: Runtime Lab Render execution
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number being executed"
+        required: true
+        type: string
+      mode:
+        description: "Execution mode: smoke or e2e"
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-render-executor.yml@main
+    secrets: inherit
+    with:
+      continuum_ref: main
+      issue_number: "${{ inputs.issue_number }}"
+      mode: "${{ inputs.mode }}"
+      job_script: automation/render-job.sh
+      cleanup_script: automation/render-cleanup.sh
+      qualification_script: automation/record_render_qualification.py
+      chain_workflow: qualification-chain.yml
+      scheduler_workflow: continuum-issue-scheduler.yml
