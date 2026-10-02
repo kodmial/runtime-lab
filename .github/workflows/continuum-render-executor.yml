@@ -63,17 +63,14 @@ on:
         description: "Consumer script driving the Render lifecycle"
         required: false
         type: string
-        default: "automation/render-job.sh"
       cleanup_script:
         description: "Consumer script deleting the ephemeral service"
         required: false
         type: string
-        default: "automation/render-cleanup.sh"
       qualification_script:
         description: "Consumer script writing the qualification payload"
         required: false
         type: string
-        default: "automation/record_render_qualification.py"
       in_progress_label:
         description: "Reservation label"
         required: false
