@@ -605,7 +605,10 @@ async function reconcile() {
       ["execution:render-e2e"],
       state
     );
-    await dispatch(RUNTIME, "continuum-issue-scheduler.yml", {});
+    await dispatch(RUNTIME, "runtime-lab-render-executor.yml", {
+      issue_number: String(INTEGRATION),
+      mode: "e2e",
+    });
     await saveState(oldState, state);
     return;
   }
@@ -630,7 +633,10 @@ async function reconcile() {
         state
       );
       for (const n of RENDER) if (n !== passIssue) await pause(n);
-      await dispatch(RUNTIME, "continuum-issue-scheduler.yml", {});
+      await dispatch(RUNTIME, "runtime-lab-render-executor.yml", {
+        issue_number: String(passIssue),
+        mode: "smoke",
+      });
     }
     await saveState(oldState, state);
     return;
