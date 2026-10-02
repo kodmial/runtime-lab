@@ -91,7 +91,11 @@ on:
   pull_request_target:
     types: [closed]
   workflow_run:
-    workflows: ["OpenCode agent"]
+    workflows:
+      - OpenCode agent
+      - Child task
+      - Child review
+      - Child PR review
     types: [completed]
 
 permissions:
