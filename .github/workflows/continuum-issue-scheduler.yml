@@ -96,9 +96,6 @@ on:
       - SubTask
       - SubTask review
       - SubTask PR review
-      - Child task
-      - Child review
-      - Child PR review
     types: [completed]
 
 permissions:
