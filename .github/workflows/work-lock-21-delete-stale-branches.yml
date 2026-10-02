@@ -1,0 +1,27 @@
+name: Work Lock 21 stale branch cleanup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/work-lock-21-delete-stale-branches.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Delete audited stale Work Lock 15 branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branches=("work-lock-15-child-canary-dispatch" "work-lock-15-delegated-run-backfill-cleanup" "work-lock-15-live-install-verification" "work-lock-15-opaque-child-id" "work-lock-15-render-canary-dispatch" "work-lock-15-render-contract-canary" "work-lock-15-render-contract-live" "work-lock-15-stabilize-adoption")
+          for branch in "${branches[@]}"; do
+            echo "Deleting ${branch}"
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${branch}"
+          done
