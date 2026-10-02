@@ -107,10 +107,11 @@ jobs:
     # event trigger the way the engine's own `issue_comment` branch expects, so an
     # unrelated comment costs a skipped run and not a full reconciliation.
     if: >-
-      github.event_name != 'issue_comment' ||
-      (github.actor == github.repository_owner &&
-       (contains(github.event.comment.body, '/oc') ||
-        contains(github.event.comment.body, '/opencode')))
+      vars.CONTINUUM_ROLE != 'child' &&
+      (github.event_name != 'issue_comment' ||
+       (github.actor == github.repository_owner &&
+        (contains(github.event.comment.body, '/oc') ||
+         contains(github.event.comment.body, '/opencode'))))
     uses: kodmial/continuum/.github/workflows/continuum-issue-scheduler.yml@main
     secrets: inherit
     with:
