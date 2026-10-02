@@ -1,5 +1,5 @@
-name: Child task
-run-name: "Child task [${{ inputs.child_id }}] #${{ inputs.task_number }}"
+name: SubTask
+run-name: "SubTask #${{ inputs.task_number }}"
 
 on:
   workflow_dispatch:
