@@ -1,0 +1,19 @@
+name: SubTask cleanup
+
+on:
+  workflow_run:
+    workflows:
+      - SubTask
+      - SubTask review
+      - SubTask PR review
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-consumer-child-run-cleanup.yml@main
+    with:
+      run_id: "${{ github.event.workflow_run.id }}"
