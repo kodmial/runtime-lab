@@ -240,6 +240,26 @@ def main(argv: list[str] | None = None) -> int:
         if not os.environ.get("GH_TOKEN"):
             raise KnowledgeStoreError("GH_TOKEN is required for central sync")
 
+        subprocess.run(
+            [
+                "gh", "variable", "set", "CONTINUUM_REVIEW_PROVIDER",
+                "--repo", "kodmial/nanodictate",
+                "--body", "coderabbit",
+            ],
+            check=True,
+        )
+        configured = subprocess.run(
+            [
+                "gh", "variable", "get", "CONTINUUM_REVIEW_PROVIDER",
+                "--repo", "kodmial/nanodictate",
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        if configured != "coderabbit":
+            raise KnowledgeStoreError("CONTINUUM_REVIEW_PROVIDER verification failed")
+
         result = sync(
             GitHubApiKnowledgeBackend(GhApi()),
             project,
