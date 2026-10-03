@@ -90,8 +90,15 @@ on:
         description: "Pause after exhausted/closed failed automation"
         required: false
         type: string
+  # Parent repositories poll delegated child issues here. Keep this wake-up
+  # independent of child Actions so private children do not spend Actions minutes.
+  # Use an offset from the busy :00/:15/:30/:45 boundaries to reduce delayed or
+  # dropped GitHub scheduled events.
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "7,17,27,37,47,57 * * * *"
+  # Preserve the legacy dispatcher wake-up on parent control-plane updates.
+  push:
+    branches: [main]
   issues:
     types: [opened, reopened, closed, labeled, unlabeled]
   issue_comment:
