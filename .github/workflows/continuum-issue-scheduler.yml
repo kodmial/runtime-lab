@@ -27,6 +27,14 @@ on:
         description: "Pause label"
         required: false
         type: string
+      qualifying_label:
+        description: "Label marking capabilities waiting on mandatory qualification"
+        required: false
+        type: string
+      blocked_label:
+        description: "Label marking capabilities whose qualification failed"
+        required: false
+        type: string
       post_pause_comment:
         description: "Comment when pausing an issue"
         required: false
@@ -126,6 +134,8 @@ jobs:
       dispatch_marker: "${{ inputs.dispatch_marker }}"
       in_progress_label: "${{ inputs.in_progress_label }}"
       pause_marker: "${{ inputs.pause_marker }}"
+      qualifying_label: "${{ inputs.qualifying_label }}"
+      blocked_label: "${{ inputs.blocked_label }}"
       post_pause_comment: "${{ inputs.post_pause_comment }}"
       reset_markers: "${{ inputs.reset_markers }}"
       require_priority_label: "${{ inputs.require_priority_label }}"
