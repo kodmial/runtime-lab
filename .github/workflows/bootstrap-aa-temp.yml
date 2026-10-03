@@ -85,13 +85,13 @@ jobs:
           Application bootstrap is handled by Work Lock #47.
           EOF
 
-          bad_refs="$(grep -RInE 'kodmial/continuum/.github/workflows/.*@(?!main)' "$work/target/.github/workflows" 2>/dev/null || true)"
-          if [[ -n "$bad_refs" ]]; then
+          if grep -RIn 'kodmial/continuum/.github/workflows/' "$work/target/.github/workflows" | grep -v '@main' >/dev/null; then
             echo '::error::Found Continuum workflow references not tracking main.'
             exit 4
           fi
-          if grep -RInE '^([[:space:]]*)(continuum_ref|engine_ref):[[:space:]]+[^"'"']*' "$work/target/.github/workflows" >/dev/null 2>&1; then
-            :
+          if grep -RInE '^[[:space:]]*(continuum_ref|engine_ref):' "$work/target/.github/workflows" | grep -vE ':[[:space:]]*main([[:space:]#]|$)' >/dev/null; then
+            echo '::error::Found Continuum ref inputs not tracking main.'
+            exit 4
           fi
 
           gh variable set CONTINUUM_REVIEW_PROVIDER --repo "$TARGET_REPO" --body 'none'
