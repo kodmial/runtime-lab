@@ -240,45 +240,6 @@ def main(argv: list[str] | None = None) -> int:
         if not os.environ.get("GH_TOKEN"):
             raise KnowledgeStoreError("GH_TOKEN is required for central sync")
 
-        review_repositories = [
-            "kodmial/kda_tar",
-            "kodmial/laravel-digital-business-cards",
-            "kodmial/homebrew-nanodictate",
-            "kodmial/macports-nanodictate",
-            "kodmial/macports-ports",
-            "kodmial/kodmai",
-            "kodmial/runtime-lab",
-            "kodmial/agent-knowledge",
-            "kodmial/continuum",
-            "kodmial/kodmaiadmin",
-            "kodmial/opencode",
-            "kodmial/quantum",
-            "kodmial/work-lock",
-        ]
-        for repository in review_repositories:
-            subprocess.run(
-                [
-                    "gh", "variable", "set", "CONTINUUM_REVIEW_PROVIDER",
-                    "--repo", repository,
-                    "--body", "pr-agent",
-                ],
-                check=True,
-            )
-            configured = subprocess.run(
-                [
-                    "gh", "variable", "get", "CONTINUUM_REVIEW_PROVIDER",
-                    "--repo", repository,
-                ],
-                check=True,
-                text=True,
-                stdout=subprocess.PIPE,
-            ).stdout.strip()
-            if configured != "pr-agent":
-                raise KnowledgeStoreError(
-                    f"CONTINUUM_REVIEW_PROVIDER verification failed for {repository}"
-                )
-            print(f"CONTINUUM_REVIEW_PROVIDER=pr-agent verified in {repository}")
-
         result = sync(
             GitHubApiKnowledgeBackend(GhApi()),
             project,
