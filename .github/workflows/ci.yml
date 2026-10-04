@@ -35,4 +35,4 @@ jobs:
       dispatch_repair: 'true'
       repair_workflow: continuum-opencode-repair.yml
       pr_number: "${{ inputs.pr_number }}"
-      skip_opencode_pull_request: 'true'
+      skip_opencode_pull_request: 'false'
