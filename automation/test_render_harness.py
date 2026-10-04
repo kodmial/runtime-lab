@@ -1781,6 +1781,210 @@ def test_job_poll_abandons_memory_pressure_restart_storm(tmp_path):
     assert "POST https://api.render.com/v1/services" not in calls
 
 
+def test_job_cancellation_trap_persists_structured_record():
+    # Static wiring for repair issue #214 (run 37199884142): that live
+    # smoke attempt was cancelled externally mid-poll and left no
+    # $RENDER_RESULT_FILE, so the artifact carried only the state file.
+    # The poll phase must trap TERM/INT and persist a cancelled record
+    # without touching the EXIT memory-sampler trap.
+    job = _read("render-job.sh")
+    assert "build_cancelled_result" in job
+    assert "render_job_write_cancelled_record" in job
+    assert "trap memory_sampler_stop_and_summarize EXIT" in job
+    assert "trap 'render_job_write_cancelled_record; exit 143' TERM INT" in job
+    assert "POLL_CURRENT_ITER" in job
+    # The handler is best-effort and never clobbers a recorded outcome.
+    assert "! -s" in job
+
+
+def _write_pending_job_bin(directory, curl_log):
+    """Fake bin where the runner job stays pending so the poll blocks.
+
+    Reproduces the pre-cancellation shape of run 37199884142 at the
+    HTTP-contract level: the submit returns a job id and every poll
+    reports it still running, while /health stays healthy. ``sleep``
+    really sleeps (via /bin/sleep) so a SIGTERM test can land mid-poll.
+    """
+    bin_dir = Path(directory) / "bin-pending"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'LOG="%s"\n' % curl_log +
+        'OUT=""; METHOD="GET"; DATA=""; URL=""; WANT_CODE=""\n'
+        'ARGS=("$@")\n'
+        'i=0\n'
+        'while [[ $i -lt ${#ARGS[@]} ]]; do\n'
+        '  case "${ARGS[$i]}" in\n'
+        '    -o) OUT="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -D) i=$((i+2));;\n'
+        '    -X) METHOD="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -w) WANT_CODE="yes"; i=$((i+2));;\n'
+        '    -d|--data*) DATA="${ARGS[$((i+1))]}"; i=$((i+2));;\n'
+        '    -H|--max-time|--connect-timeout) i=$((i+2));;\n'
+        '    -*) i=$((i+1));;\n'
+        '    *) URL="${ARGS[$i]}"; i=$((i+1));;\n'
+        '  esac\n'
+        'done\n'
+        'if [[ -n "$DATA" && "$METHOD" == "GET" ]]; then METHOD="POST"; fi\n'
+        'echo "$METHOD $URL" >> "$LOG"\n'
+        'emit() { local code="$1" body="$2";'
+        ' if [[ -n "$OUT" ]]; then printf "%s" "$body" > "$OUT";'
+        ' else printf "%s" "$body"; fi;'
+        ' if [[ -n "$WANT_CODE" ]]; then printf "%s" "$code"; fi; }\n'
+        'case "$URL" in\n'
+        '  */owners*) emit 200 \'[{"id":"own-1"}]\';;\n'
+        '  */v1/services/deploys/*|*/deploys/*) emit 200 \'{"status":"live"}\';;\n'
+        '  */v1/jobs/job-cancel-me)'
+        ' emit 200 \'{"job_id":"job-cancel-me","status":"running","success":false,"metadata":{}}\';;\n'
+        '  */v1/jobs)'
+        ' if [[ "$METHOD" == "POST" ]]; then emit 201 \'{"job_id":"job-cancel-me"}\';'
+        ' else emit 404 \'{"error":"x"}\'; fi;;\n'
+        '  */health)'
+        ' emit 200 \'{"status":"ok","ready":true,"uptime_seconds":300,"jobs":{"total":1}}\';;\n'
+        '  */services/srv-existing)'
+        ' emit 200 \'{"serviceDetails":{"plan":"free","url":"http://fake-runner.local"}}\';;\n'
+        '  *) emit 200 \'{}\';;\n'
+        'esac\n'
+        'exit 0\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    sleep = bin_dir / "sleep"
+    sleep.write_text("#!/usr/bin/env bash\nexec /bin/sleep \"$@\"\n", encoding="utf-8")
+    sleep.chmod(0o755)
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "issue" && "$2" == "view" ]]; then\n'
+        '  printf \'{"title":"Harness title","body":"Harness body"}\'\n'
+        "  exit 0\n"
+        "fi\n"
+        'echo "unexpected gh call: $*" >&2\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    return str(bin_dir)
+
+
+def test_job_sigterm_mid_poll_leaves_cancelled_record(tmp_path):
+    # Live-signal regression for run 37199884142: SIGTERM mid-poll
+    # (GitHub cancelling the step) must leave a structured cancelled
+    # record instead of the 1-of-4-files artifact that run produced.
+    import signal
+    import time
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-cancel.log"
+    env["PATH"] = _write_pending_job_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    env["RENDER_MEMORY_SAMPLES_FILE"] = str(tmp_path / "cancel-samples.jsonl")
+    env["RENDER_MEMORY_SUMMARY_FILE"] = str(tmp_path / "cancel-memory.json")
+    state.write_text(json.dumps({
+        "serviceId": "srv-existing",
+        "deployId": "dep-1",
+        "region": "oregon",
+        "model": PREFERRED_MODEL,
+        "plan": "free",
+    }))
+    assert not result.exists()
+    proc = subprocess.Popen(
+        ["bash", str(AUTOMATION / "render-job.sh")],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, env=env, cwd=str(REPO_ROOT),
+        start_new_session=True,
+    )
+    try:
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            time.sleep(1)
+            if log.exists() and "GET http://fake-runner.local/v1/jobs/job-cancel-me" in log.read_text():
+                break
+        assert log.exists() and "GET http://fake-runner.local/v1/jobs/job-cancel-me" in log.read_text(), (
+            "render-job.sh never reached the poll phase"
+        )
+        proc.send_signal(signal.SIGTERM)
+        out, _ = proc.communicate(timeout=120)
+    finally:
+        if proc.poll() is None:
+            try:
+                import os as _os
+                _os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                proc.kill()
+            proc.wait(timeout=30)
+            out = ""
+    assert result.exists(), "TERM trap must persist a cancelled record; got stdout: %s" % out
+    payload = json.loads(result.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["success"] is False
+    assert payload["cancelled"] is True
+    assert payload["job_id"] == "job-cancel-me"
+    assert "cancelled externally" in payload["error"]
+    assert payload["service_id"] == "srv-existing"
+    assert payload["issue_number"] == 4
+    assert payload["run_id"] == "999"
+    assert payload["metadata"]["cancelled"] is True
+    # The TERM trap must not provision anything or clobber identity.
+    calls = log.read_text()
+    assert "POST https://api.render.com/v1/services" not in calls
+    assert json.loads(state.read_text())["serviceId"] == "srv-existing"
+
+
+def test_job_cancellation_trap_never_clobbers_existing_result(tmp_path):
+    # The TERM handler guards on an empty result file: a recorded
+    # terminal outcome (e.g. a prior storm abort) must survive a later
+    # cancellation signal unchanged.
+    import signal
+    import time
+    env, state, result = _base_env(tmp_path)
+    log = tmp_path / "curl-cancel-noclobber.log"
+    env["PATH"] = _write_pending_job_bin(tmp_path, log) + os.pathsep + env.get("PATH", "")
+    env["RENDER_MEMORY_SAMPLES_FILE"] = str(tmp_path / "noclobber-samples.jsonl")
+    env["RENDER_MEMORY_SUMMARY_FILE"] = str(tmp_path / "noclobber-memory.json")
+    state.write_text(json.dumps({
+        "serviceId": "srv-existing",
+        "deployId": "dep-1",
+        "region": "oregon",
+        "model": PREFERRED_MODEL,
+        "plan": "free",
+    }))
+    sentinel = {"status": "failed", "success": False, "storm": True, "sentinel": True}
+    result.write_text(json.dumps(sentinel))
+    proc = subprocess.Popen(
+        ["bash", str(AUTOMATION / "render-job.sh")],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, env=env, cwd=str(REPO_ROOT),
+        start_new_session=True,
+    )
+    try:
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            time.sleep(1)
+            if log.exists() and "GET http://fake-runner.local/v1/jobs/job-cancel-me" in log.read_text():
+                break
+        proc.send_signal(signal.SIGTERM)
+        out, _ = proc.communicate(timeout=120)
+    finally:
+        if proc.poll() is None:
+            try:
+                import os as _os
+                _os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                proc.kill()
+            proc.wait(timeout=30)
+    current = json.loads(result.read_text(encoding="utf-8"))
+    # The TERM handler must not overwrite the recorded outcome: the
+    # sentinel's own keys survive byte-identical. The EXIT trap may
+    # additionally merge best-effort memory_telemetry into the existing
+    # result (established storm-record behavior), which is enrichment,
+    # not clobbering.
+    for key, value in sentinel.items():
+        assert current.get(key) == value, (
+            "cancellation trap must not overwrite an existing result"
+        )
+    assert current.get("cancelled") is None
+
+
 def _write_transport_bin(directory, curl_log, *, fail_polls, fail_probes):
     """Fake bin where job polls return HTTP 502 and /health probes fail.
 

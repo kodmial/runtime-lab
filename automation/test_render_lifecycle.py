@@ -96,6 +96,7 @@ from render_lifecycle import (  # noqa: E402
     should_fail_fast_on_transport,
     should_probe_runner_health,
     should_resubmit_after_job_loss,
+    build_cancelled_result,
     validate_worker_region,
     verify_free_plan_response,
 )
@@ -739,6 +740,83 @@ def test_restart_storm_result_never_raises_on_garbage():
     assert parsed["consecutive_restart_losses"] == 4
     assert parsed["storm_threshold"] == 3
     assert "4 consecutive proven worker restarts" in parsed["error"]
+
+
+def test_cancelled_result_carries_auditable_terminal_record():
+    # Regression for run 37199884142 (repair issue #214): that smoke
+    # attempt submitted a runner job and was then cancelled externally
+    # while polling (execute=cancelled, cleanup=success), leaving no
+    # $RENDER_RESULT_FILE behind, so the artifact carried only the state
+    # file. The cancellation trap must persist the same diagnostic
+    # machine-readably.
+    record = build_cancelled_result(
+        job_id="fab26d8d10424b8d8b87c555f070ce73",
+        service_id="srv-db13pcegekts73c29f3g",
+        poll_position="7/140",
+        resubmissions_used=0,
+        issue_number=9,
+        run_id="37199884142",
+    )
+    # Runner-result shape so generic readers handle it; cancelled keys no
+    # job result carries.
+    assert record["job_id"] == "fab26d8d10424b8d8b87c555f070ce73"
+    assert record["status"] == "failed"
+    assert record["success"] is False
+    assert record["cancelled"] is True
+    assert "cancelled externally" in record["error"]
+    assert "fab26d8d10424b8d8b87c555f070ce73" in record["error"]
+    assert "srv-db13pcegekts73c29f3g" in record["error"]
+    assert "not as a worker failure" in record["error"]
+    assert record["service_id"] == "srv-db13pcegekts73c29f3g"
+    assert record["poll_position"] == "7/140"
+    assert record["resubmissions_used"] == 0
+    assert record["issue_number"] == 9
+    assert record["run_id"] == "37199884142"
+    assert record["metadata"] == {
+        "issue_number": 9, "run_id": "37199884142", "cancelled": True,
+    }
+    # Distinct from the storm/exact shapes so no poll consumer can
+    # mistake it for a worker-executed outcome.
+    assert record.get("storm") is None
+    assert record.get("permanent") is None
+    # Durable evidence must be JSON-serializable for the result file.
+    json.dumps(record, sort_keys=True)
+
+
+def test_cancelled_result_never_raises_on_garbage():
+    # Fail-closed minimal record: garbage input must not crash the
+    # TERM/INT trap path it rides.
+    record = build_cancelled_result(
+        job_id=None,
+        service_id=None,
+        poll_position=None,
+        resubmissions_used="bogus",
+        issue_number="bogus",
+        run_id=None,
+    )
+    assert record["status"] == "failed"
+    assert record["success"] is False
+    assert record["cancelled"] is True
+    assert record["job_id"] == ""
+    assert record["service_id"] == ""
+    assert record["poll_position"] == ""
+    assert record["resubmissions_used"] == 0
+    assert record["issue_number"] == 0
+    assert record["run_id"] == ""
+    assert record["error"]
+    json.dumps(record, sort_keys=True)
+    # String resubmissions from the shell parse like ints; negatives clamp.
+    parsed = build_cancelled_result(
+        job_id="job-1",
+        service_id="srv-1",
+        poll_position="3/140",
+        resubmissions_used="2",
+        issue_number=9,
+        run_id="r",
+    )
+    assert parsed["resubmissions_used"] == 2
+    assert "resubmissions used: 2" in parsed["error"]
+    assert build_cancelled_result(resubmissions_used=-5)["resubmissions_used"] == 0
 
 
 def test_worker_restart_discriminator_uses_health_uptime():
