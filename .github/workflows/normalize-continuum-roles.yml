@@ -35,7 +35,8 @@ jobs:
 
           set_var "$GITHUB_REPOSITORY" CONTINUUM_ROLE parent
 
-          resolver=".continuum-engine/.github/scripts/delegation_repository.sh"
+          export CONTINUUM_ENGINE_ROOT="$PWD/.continuum-engine"
+          resolver="$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh"
           plan="$(PARENT_CONFIG=.continuum.yml CHILD_REPOSITORIES="" bash "$resolver" plan)"
           count=0
           while IFS= read -r row; do
