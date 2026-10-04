@@ -388,9 +388,9 @@ def sync_steps(
         "python3 automation/memory_benchmark.py --run-id fork-sync-%s"
         % _short(candidate),
         "# 8. obsolete-delta scan (drop patches upstream made redundant)",
-        "python3 -c 'import opencode_fork_maintenance as m; print(m.render_delta_inventory(m.load_maintenance()))'",
+        "python3 -c 'from automation import opencode_fork_maintenance as m; print(m.render_delta_inventory(m.load_maintenance()))'",
         "# 9. budget gate (blocks auto-merge over the hard limit)",
-        "python3 -c 'import opencode_fork_maintenance as m; m.assert_merge_allowed(<peak_bytes>, m.load_maintenance())'",
+        "PEAK_BYTES=${PEAK_BYTES:?set measured peak bytes}; python3 -c 'import os; from automation import opencode_fork_maintenance as m; m.assert_merge_allowed(int(os.environ[\"PEAK_BYTES\"]), m.load_maintenance())'",
         "# 10. publish the concise delta inventory with the sync result",
         "git status --porcelain # reviewer reads deltas by purpose, not raw diff size",
     ]
@@ -502,6 +502,37 @@ def assert_merge_allowed(peak_bytes: int, maintenance: dict) -> dict:
     return verdict
 
 
+def _upstream_in_place_implements(delta: dict, contents: dict[str, str]) -> bool:
+    """Return True when upstream file contents already carry the fork behavior.
+
+    Path presence alone misses the case where upstream keeps the same
+    files but independently implements the fork patch in place (e.g.
+    D2 bounds in ``tool/task.ts``). Only the delta's own
+    ``touches.modified`` files are inspected so the pre-existing
+    ``Truncate`` service (``tool/truncate.ts``) or the already-bounded
+    ``tool/shell.ts`` cannot cause a false positive.
+    """
+    if not contents:
+        return False
+    touches = delta.get("touches", {}) or {}
+    modified = [p for p in touches.get("modified", []) if isinstance(p, str)]
+    combined = "\n".join(contents.get(p, "") for p in modified if p in contents)
+    if not combined:
+        return False
+    delta_id = delta.get("id", "")
+    if delta_id == "D2-bounded-output":
+        # Fork bound: task.ts routes renderOutput through Truncate.output()
+        # with tail direction plus a file-backed retrieval hint, exactly as
+        # shell.ts does. Require all three signals together.
+        has_truncate = "Truncate" in combined
+        has_tail = "tail" in combined
+        has_retrieval = (
+            "outputPath" in combined or "Full output saved to" in combined
+        )
+        return bool(has_truncate and has_tail and has_retrieval)
+    return False
+
+
 def detect_obsolete_deltas(
     upstream_files: list[str] | dict[str, str], maintenance: dict
 ) -> list[dict[str, str]]:
@@ -509,15 +540,22 @@ def detect_obsolete_deltas(
 
     ``upstream_files`` is either a list of upstream repo-relative paths
     or a mapping of path to file content from the candidate revision.
-    Each delta is reported as ``active`` (all probes still present),
-    ``needs-review`` (some probes moved/renamed), or ``obsolete``
-    (no probe present: upstream removed/changed the forked subsystem
-    so the patch can be dropped).
+    Each delta is reported as ``active`` (all probes still present and
+    no in-place upstream implementation detected), ``needs-review``
+    (some probes moved/renamed), or ``obsolete`` (no probe present, or
+    upstream already ships the fork behavior: it carries the fork-added
+    files or its in-place file contents implement the patch, so the
+    patch can be dropped).
     """
     if isinstance(upstream_files, dict):
         paths = set(upstream_files.keys())
+        contents = dict(upstream_files)
+        for key, value in contents.items():
+            if not isinstance(value, str):
+                raise ValueError("upstream file contents must be strings")
     elif isinstance(upstream_files, list):
         paths = set(upstream_files)
+        contents = {}
     else:
         raise ValueError("upstream_files must be a path list or path->content map")
     if any(not isinstance(p, str) or not p for p in paths):
@@ -526,7 +564,26 @@ def detect_obsolete_deltas(
     for delta in maintenance.get("deltas", []):
         probes = list(delta.get("upstream_probes", []))
         present = [p for p in probes if p in paths]
-        if len(present) == len(probes):
+        touches = delta.get("touches", {}) or {}
+        added = [p for p in touches.get("added", []) if isinstance(p, str)]
+        added_overlap = sorted(p for p in added if p in paths)
+        if added_overlap:
+            status = "obsolete"
+            reason = (
+                "upstream already ships %d fork-added file(s) (%s) so %s "
+                "adds no delta and the patch can be dropped"
+                % (len(added_overlap), ", ".join(added_overlap), delta["id"])
+            )
+        elif len(present) == len(probes) and _upstream_in_place_implements(
+            delta, contents
+        ):
+            status = "obsolete"
+            reason = (
+                "all %d upstream probes still present but upstream file "
+                "contents already implement %s in place so the patch can "
+                "be dropped" % (len(probes), delta["id"])
+            )
+        elif len(present) == len(probes):
             status = "active"
             reason = "all %d upstream probes still present" % len(probes)
         elif not present:
