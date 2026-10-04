@@ -190,8 +190,13 @@ def test_smoke_handoff_is_bounded_e2e_handoff_bounded_wider():
     # same way: that e2e run storm-aborted identically with four
     # consecutive proven restarts pinned at the 512 MB ceiling, proving
     # the e2e full-handoff exemption is the remaining unbounded read
-    # path. E2E keeps a slightly wider window (two topic notes) while
-    # staying bounded; the issue's own task scope is unchanged.
+    # path. Repair issue #220 (run 37204386633, head 91a88d5) hardens the
+    # e2e window to parity with smoke: that run storm-aborted
+    # identically with the #215 two-note window live (four consecutive
+    # proven restarts, limit=current=536870912, pinned ratio 1.0, via
+    # replacements, Python RSS only ~33 MB), proving the wider window
+    # still feeds the pinned storm. E2E scope stays wider in files/edits/
+    # tests (10 vs 5); only the history window is at parity (ONE note).
     smoke = resolve_task_text(58, "smoke", title="T", body="B", run_id="r")
     assert SMOKE_TASK_MEMORY_BUDGET in smoke
     assert "Repository knowledge handoff (mandatory, bounded for the 512 MB worker)" in smoke
@@ -207,7 +212,8 @@ def test_smoke_handoff_is_bounded_e2e_handoff_bounded_wider():
     assert E2E_TASK_MEMORY_BUDGET in e2e
     assert "per the handoff block below" in E2E_TASK_MEMORY_BUDGET
     assert "Repository knowledge handoff (mandatory, bounded for the 512 MB worker)" in e2e
-    assert "at most TWO most-relevant topic notes" in e2e
+    assert "at most ONE most-relevant topic note" in e2e
+    assert "at most TWO" not in e2e
     assert "knowledge_catalog.py query" in e2e
     assert "This bound overrides any broader read scope above" in e2e
     assert "prior records under" not in e2e
@@ -222,8 +228,9 @@ def test_smoke_handoff_is_bounded_e2e_handoff_bounded_wider():
 def test_handoff_mode_defaults_to_bounded_e2e_and_rejects_unknown():
     assert knowledge_handoff_instructions(9, "r") == knowledge_handoff_instructions(9, "r", "e2e")
     assert "bounded for the 512 MB worker" in knowledge_handoff_instructions(9, "r")
-    assert "at most TWO" in knowledge_handoff_instructions(9, "r")
+    assert "at most ONE" in knowledge_handoff_instructions(9, "r")
     assert "at most ONE" in knowledge_handoff_instructions(9, "r", "smoke")
+    assert "at most TWO" not in knowledge_handoff_instructions(9, "r")
     with pytest.raises(ValueError):
         knowledge_handoff_instructions(9, "r", "bogus-mode")
 
@@ -242,6 +249,46 @@ def test_e2e_budget_bounds_transcript_while_keeping_wider_scope():
     e2e = resolve_task_text(6, "e2e", title="Prove the Render path", body="slugify utility", run_id="37201361478")
     assert E2E_TASK_MEMORY_BUDGET in e2e
     assert "issue-6-run-37201361478.md" in e2e
+
+
+def test_e2e_handoff_parity_after_second_storm_run_37204386633():
+    # Repair issue #220 (run 37204386633, head 91a88d5): that e2e run for
+    # source issue #6 storm-aborted identically with the #215 envelope
+    # live (four consecutive proven worker restarts, cgroup
+    # limit=current=536870912 pinned at ratio 1.0 via replacements,
+    # Python RSS only ~33 MB, stall surge 418 quiet), proving the wider
+    # two-note e2e history window still feeds the pinned-at-ceiling
+    # storm on the 512 MB Free worker (vendor contract
+    # https://render.com/docs/free: free = 0.1 CPU / 512 MB, anytime
+    # restart; a larger worker needs a paid plan the free-tier guard
+    # refuses). The reusable fix narrows the e2e handoff to parity with
+    # smoke (ONE note) while keeping e2e's wider file/edit/test scope.
+    e2e = resolve_task_text(6, "e2e", title="Prove the Render path", body="slugify utility", run_id="37204386633")
+    assert E2E_TASK_MEMORY_BUDGET in e2e
+    assert SMOKE_TASK_MEMORY_BUDGET not in e2e
+    assert "at most ONE most-relevant topic note" in e2e
+    assert "at most TWO" not in e2e
+    assert "knowledge_catalog.py query" in e2e
+    assert "This bound overrides any broader read scope above" in e2e
+    assert "issue-6-run-37204386633.md" in e2e
+    # File/edit/test scope stays wider than smoke; only history is parity.
+    assert "at most 10 repository files" in E2E_TASK_MEMORY_BUDGET
+    assert "at most 5 repository files" in SMOKE_TASK_MEMORY_BUDGET
+    smoke = resolve_task_text(6, "smoke", title="T", body="B", run_id="r")
+    assert "at most ONE most-relevant topic note" in smoke
+    # Both modes share the single-note history bound now.
+    assert knowledge_handoff_instructions(6, "r", "e2e").count("ONE most-relevant") == 1
+    assert knowledge_handoff_instructions(6, "r", "smoke").count("ONE most-relevant") == 1
+
+
+def test_e2e_bounded_handoff_survives_body_truncation():
+    long_body = "w" * 5000
+    e2e = resolve_task_text(6, "e2e", title="T", body=long_body, run_id="r")
+    assert "[truncated]" in e2e
+    assert E2E_TASK_MEMORY_BUDGET in e2e
+    assert "at most ONE most-relevant topic note" in e2e
+    assert "knowledge_catalog.py query" in e2e
+    assert "issue-6-run-r.md" in e2e
 
 
 def test_smoke_bounded_handoff_survives_body_truncation():

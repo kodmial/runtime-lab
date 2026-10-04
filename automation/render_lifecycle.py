@@ -74,10 +74,15 @@ def knowledge_handoff_instructions(issue_number: int, run_id: object = "",
     restarts while pinned at the 512 MB cgroup ceiling at a base already
     carrying the smoke budget plus the smoke handoff bound, proving the
     e2e exemption ("its issues own their scope") is the remaining
-    unbounded transcript path on the same 512 MB worker. E2E keeps a
-    slightly wider history window (at most two topic notes) and its own
-    workload budget (see ``E2E_TASK_MEMORY_BUDGET``); the issue's own
-    task scope is unchanged.
+    unbounded transcript path on the same 512 MB worker. E2E keeps its
+    own workload budget (see ``E2E_TASK_MEMORY_BUDGET``) with the same
+    single-note history window as smoke (repair issue #220, run
+    37204386633): that e2e run storm-aborted identically at head
+    91a88d5 already carrying the #215 budget plus the two-note e2e
+    handoff (four consecutive proven restarts, cgroup pinned at
+    536870912 bytes with Python RSS only ~33 MB, via replacements),
+    proving the wider two-note window still feeds the pinned storm on
+    the same 512 MB worker; the issue's own task scope is unchanged.
     """
     validate_execution_mode(execution_mode)
     record = experiment_record_path(issue_number, run_id)
@@ -100,7 +105,7 @@ def knowledge_handoff_instructions(issue_number: int, run_id: object = "",
             "1. Read %s before changing code.\n"
             "2. Discover history with the offline catalog first "
             "(python automation/knowledge_catalog.py query --issue <N> / --topic <slug>); "
-            "read at most TWO most-relevant topic notes; open a full experiment record "
+            "read at most ONE most-relevant topic note; open a full experiment record "
             "only when directly on point. This bound overrides any broader read scope above.\n"
             "3. Do not repeat a known failed experiment unless a material premise changed; state that changed premise.\n"
             "4. Before finishing, write exactly one run record at %s. Separate observations, interpretation, and decisions; include evidence/tests and unresolved questions; never include secrets.\n"
@@ -501,7 +506,8 @@ SMOKE_TASK_MEMORY_BUDGET = (
     "which overrides any broader read scope above."
 )
 
-# E2E-mode memory budget (repair issue #215, run 37201361478): the
+# E2E-mode memory budget (repair issue #215, run 37201361478, hardened
+# by repair issue #220, run 37204386633): the
 # Render Free worker is 0.1 CPU / 512 MB (https://render.com/docs/free,
 # re-verified 2026-10-04: free plan is 0.1 CPU / 512 MB RAM with restarts
 # at any time; a larger worker requires a paid compute plan, which the
@@ -521,6 +527,12 @@ SMOKE_TASK_MEMORY_BUDGET = (
 # small while preserving the real coding loop. Item 5 defers to the
 # bounded e2e handoff block (see knowledge_handoff_instructions) instead
 # of stating a divergent bound, mirroring the #188 smoke hardening.
+# Repair issue #220 (run 37204386633, head 91a88d5): that run storm-aborted
+# identically with the #215 envelope live (four consecutive proven
+# restarts, limit=current=536870912, pinned ratio 1.0, via replacements,
+# Python RSS only ~33 MB), proving the two-note e2e history window still
+# feeds the pinned storm; the e2e handoff therefore carries the same
+# single-note bound as smoke while the file/edit/test scope stays wider.
 E2E_TASK_MEMORY_BUDGET = (
     "Memory budget (binding, 512 MB worker):\n"
     "1. Inspect at most 10 repository files; prefer targeted grep/glob over broad reads.\n"
