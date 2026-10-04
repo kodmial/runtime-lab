@@ -91,6 +91,10 @@ on:
         description: "Workflow woken when a qualification needs a follow-up"
         required: false
         type: string
+      capacity_workflow:
+        description: "Dedicated optimization/profile/capacity decision workflow for capacity-classified failures"
+        required: false
+        type: string
       scheduler_workflow:
         description: "Scheduler woken after this run resolves an issue"
         required: false
@@ -141,6 +145,7 @@ jobs:
       repair_label: "${{ inputs.repair_label }}"
       e2e_branch_prefix: "${{ inputs.e2e_branch_prefix }}"
       chain_workflow: "${{ inputs.chain_workflow }}"
+      capacity_workflow: "${{ inputs.capacity_workflow }}"
       scheduler_workflow: "${{ inputs.scheduler_workflow }}"
       concurrency_group: "${{ inputs.concurrency_group }}"
       timeout_minutes: "${{ inputs.timeout_minutes }}"

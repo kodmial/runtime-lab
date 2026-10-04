@@ -47,6 +47,10 @@ on:
         description: "Dispatch only labelled issues"
         required: false
         type: string
+      ready_label:
+        description: "Optional admission label for automatic implementation"
+        required: false
+        type: string
       command_grace_minutes:
         description: "Race window after a manual owner command"
         required: false
@@ -121,25 +125,23 @@ permissions:
 
 jobs:
   call:
-    # A child keeps local scheduling disabled, but issue events must reach
-    # the reusable scheduler so it can wake the verified parent immediately.
-    # Only issues and issue_comment are admitted for a child, matching the
-    # reusable wake-up job: child cron stays skipped so polling never burns
-    # private child runner minutes, and child push, pull_request_target,
-    # workflow_run, and workflow_dispatch stay cheap caller skips instead of
-    # empty reusable runs. Unrelated issue comments remain cheap skips.
-    # A manual owner `/oc` is in-flight work the scheduler must reserve, and
-    # trusted qualification result comments wake the scheduler immediately;
-    # cron remains the missed-event backstop.
-    # Child `issues` wakes are owner-gated and limited to opened/reopened/
-    # closed: an ungated issues trigger lets any user who can open, label, or
-    # close a child issue burn a TAP_PAT-authenticated parent dispatch per
-    # event, and bulk label churn fans out to N sequential parent dispatches.
-    # Non-owner or label-only child activity stays a cheap caller skip and is
-    # picked up by the parent's cron reconciliation instead.
+    # Zero-child-runner invariant (kodmial/continuum#261): a child never
+    # invokes the reusable scheduler, so delegated scheduling cannot depend
+    # on private child Actions capacity. A child with zero Actions minutes
+    # allocates no runner here — every child event is a cheap caller skip.
+    # The public parent's scheduled reconciliation (cron below, plus push /
+    # workflow_run wakes) independently discovers verified child repositories
+    # and their open eligible tasks, so a missed child event can never strand
+    # work. Maximum pickup latency is bounded by the parent cron interval.
+    # The reusable wake_parent job is retained only as a best-effort
+    # acceleration for already-installed child callers that still forward
+    # issue events; it is never required for eventual dispatch.
+    # Parent filtering is unchanged: unrelated issue comments stay cheap
+    # caller skips. A manual owner `/oc` is in-flight work the scheduler must
+    # reserve, and trusted qualification result comments wake the scheduler
+    # immediately; cron remains the missed-event backstop.
     if: >-
-      (vars.CONTINUUM_ROLE != 'child' || github.event_name == 'issues' || github.event_name == 'issue_comment') &&
-      (github.event_name != 'issues' || vars.CONTINUUM_ROLE != 'child' || (github.actor == github.repository_owner && (github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'closed'))) &&
+      vars.CONTINUUM_ROLE != 'child' &&
       (github.event_name != 'issue_comment' ||
        (github.actor == github.repository_owner &&
         (contains(github.event.comment.body, '/oc') ||
@@ -171,6 +173,7 @@ jobs:
       post_pause_comment: "${{ inputs.post_pause_comment }}"
       reset_markers: "${{ inputs.reset_markers }}"
       require_priority_label: "${{ inputs.require_priority_label }}"
+      ready_label: "${{ inputs.ready_label }}"
       command_grace_minutes: "${{ inputs.command_grace_minutes }}"
       child_owned_marker: "${{ inputs.child_owned_marker }}"
       legacy_child_owned_marker: "${{ inputs.legacy_child_owned_marker }}"

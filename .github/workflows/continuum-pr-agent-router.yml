@@ -15,6 +15,14 @@ on:
         description: Pull request number for an explicit manual route
         required: false
         type: string
+      target_child_id:
+        description: Opaque verified child id for delegated PR-Agent routing
+        required: false
+        type: string
+      expected_head_sha:
+        description: Exact PR HEAD for delegated routing
+        required: false
+        type: string
   issue_comment:
     types: [created]
 
@@ -47,3 +55,5 @@ jobs:
       review_workflow: "${{ inputs.review_workflow }}"
       review_provider: "${{ inputs.review_provider }}"
       pr_number: "${{ inputs.pr_number }}"
+      target_child_id: "${{ inputs.target_child_id }}"
+      expected_head_sha: "${{ inputs.expected_head_sha }}"

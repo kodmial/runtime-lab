@@ -17,6 +17,15 @@ on:
   pull_request_review_comment:
     types: [created, edited]
 
+  # Bounded repository-local safety net for deferred quota waits. The
+  # controller is non-blocking and exits immediately when nothing is due, so
+  # a scheduled safety-net tick costs no review slot. Once a durable dueAt
+  # passes without any review/comment/status event, the next tick reconciles
+  # the queue. Offset :03 avoids the busy :00 boundary and the
+  # auto-merge/scheduler slots.
+  schedule:
+    - cron: '3,13,23,33,43,53 * * * *'
+
   # Manual/safety-net reconciliation.
   workflow_dispatch:
 
