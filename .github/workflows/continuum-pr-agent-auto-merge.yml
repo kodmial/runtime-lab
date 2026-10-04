@@ -1,0 +1,63 @@
+name: PR-Agent merge gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number carrying the candidate HEAD"
+        required: false
+        type: string
+      head_sha:
+        description: "Exact HEAD SHA the review evaluated"
+        required: false
+        type: string
+      review_json:
+        description: "Canonical upstream review JSON for the exact HEAD"
+        required: false
+        type: string
+      improve_jsonl:
+        description: "Runner-local push_outputs file payload for the exact HEAD"
+        required: false
+        type: string
+      persistent_state_json:
+        description: "Upstream native persistent finding state for the latest full review"
+        required: false
+        type: string
+      post_merge_wakeups:
+        description: "Workflows to wake after a successful merge, comma-separated."
+        required: false
+        type: string
+      post_merge_wakeup_ref:
+        description: "Git ref used for post-merge wakeups."
+        required: false
+        type: string
+      required_workflow_gate_label:
+        description: "Label enabling an additional required workflow gate."
+        required: false
+        type: string
+      required_workflow_gate_name:
+        description: "Required workflow name when the gate label is present."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  statuses: read
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-pr-agent-auto-merge.yml@main
+    secrets: inherit
+    with:
+      continuum_ref: main
+      pr_number: "${{ inputs.pr_number }}"
+      head_sha: "${{ inputs.head_sha }}"
+      review_json: "${{ inputs.review_json }}"
+      improve_jsonl: "${{ inputs.improve_jsonl }}"
+      persistent_state_json: "${{ inputs.persistent_state_json }}"
+      post_merge_wakeups: "${{ inputs.post_merge_wakeups }}"
+      post_merge_wakeup_ref: "${{ inputs.post_merge_wakeup_ref }}"
+      required_workflow_gate_label: "${{ inputs.required_workflow_gate_label }}"
+      required_workflow_gate_name: "${{ inputs.required_workflow_gate_name }}"
