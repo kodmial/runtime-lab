@@ -7,6 +7,10 @@ on:
         description: "Pull request number carrying the candidate HEAD"
         required: false
         type: string
+      target_child_id:
+        description: "Opaque verified child id for delegated PR-Agent execution"
+        required: false
+        type: string
       head_sha:
         description: "Exact HEAD SHA the review evaluated"
         required: false
@@ -53,6 +57,7 @@ jobs:
     with:
       continuum_ref: main
       pr_number: "${{ inputs.pr_number }}"
+      target_child_id: "${{ inputs.target_child_id }}"
       head_sha: "${{ inputs.head_sha }}"
       review_json: "${{ inputs.review_json }}"
       improve_jsonl: "${{ inputs.improve_jsonl }}"
