@@ -19,7 +19,7 @@ on:
     types: [created]
 
 permissions:
-  actions: read
+  actions: write
   contents: read
   issues: read
   pull-requests: read
