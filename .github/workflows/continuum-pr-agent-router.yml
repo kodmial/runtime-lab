@@ -1,0 +1,49 @@
+name: PR-Agent review router
+
+on:
+  workflow_dispatch:
+    inputs:
+      review_workflow:
+        description: Heavy PR-Agent caller workflow file to dispatch
+        required: false
+        type: string
+      review_provider:
+        description: Review provider selector override
+        required: false
+        type: string
+      pr_number:
+        description: Pull request number for an explicit manual route
+        required: false
+        type: string
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+# No router-level concurrency by design (issue #227): the actionable
+# /review filter lives in the job `if` gate below, which is evaluated only
+# after a workflow-level lock would already have queued this run. A per-PR
+# router lock would let a plain non-`/review` comment run queue ahead of an
+# immediately following owner `/review` dispatch for the same PR. Duplicate
+# useful dispatches coalesce via the operation-key active-run check in the
+# reusable router instead of native preemption (which cannot compare HEADs).
+
+jobs:
+  call:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       github.actor == github.repository_owner &&
+       contains(github.event.comment.body, '/review'))
+    uses: kodmial/continuum/.github/workflows/continuum-pr-agent-router.yml@main
+    secrets: inherit
+    with:
+      continuum_ref: main
+      review_workflow: "${{ inputs.review_workflow }}"
+      review_provider: "${{ inputs.review_provider }}"
+      pr_number: "${{ inputs.pr_number }}"
