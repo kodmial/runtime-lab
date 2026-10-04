@@ -1,0 +1,183 @@
+name: OpenCode fork sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_candidate_sha:
+        description: Exact 40-char upstream candidate SHA to evaluate (never 'latest')
+        required: false
+        type: string
+  schedule:
+    - cron: "17 4 * * 1"
+  pull_request:
+    paths:
+      - "automation/opencode-fork-maintenance.json"
+      - "automation/opencode_fork_maintenance.py"
+      - "automation/test_opencode_fork_maintenance.py"
+      - "automation/opencode-fork.baseline.json"
+      - "automation/opencode-lite.spec.json"
+      - "automation/opencode-bounds.spec.json"
+      - "automation/opencode-artifacts.spec.json"
+      - "automation/patches/issue-*.md"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: runtime-lab-opencode-fork-sync
+  cancel-in-progress: false
+
+jobs:
+  refresh-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Runtime Lab
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate fork-maintenance inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import json
+          from automation.opencode_fork_maintenance import (
+              check_consistent_with_baseline,
+              check_consistent_with_specs,
+              load_maintenance,
+              render_delta_inventory,
+          )
+          data = load_maintenance()
+          with open("automation/opencode-fork.baseline.json", encoding="utf-8") as handle:
+              baseline = json.load(handle)
+          check_consistent_with_baseline(data, baseline)
+          specs = {}
+          for name in (
+              "opencode-lite.spec.json",
+              "opencode-bounds.spec.json",
+              "opencode-artifacts.spec.json",
+          ):
+              with open("automation/%s" % name, encoding="utf-8") as handle:
+                  specs[name] = json.load(handle)
+          check_consistent_with_specs(
+              data,
+              specs["opencode-lite.spec.json"],
+              specs["opencode-bounds.spec.json"],
+              specs["opencode-artifacts.spec.json"],
+          )
+          print(render_delta_inventory(data))
+          PYEOF
+
+      - name: Focused coding-agent correctness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pytest \
+            automation/test_opencode_fork.py \
+            automation/test_opencode_fork_maintenance.py \
+            automation/test_opencode_lite.py \
+            automation/test_opencode_source_stripped.py \
+            automation/test_opencode_bounds.py \
+            automation/test_opencode_direct_headless.py \
+            automation/test_opencode_coding_qualify.py \
+            automation/test_opencode_lowmem_profile.py \
+            -q
+
+      - name: Lightweight artifact rebuild check
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          from automation.opencode_fork_maintenance import (
+              build_commands,
+              load_maintenance,
+          )
+          data = load_maintenance()
+          for cmd in build_commands(data):
+              print("rebuild step: %s" % cmd)
+          scripts = data["rebuild"]["build_scripts"]
+          assert "packages/opencode/script/build-coding.ts" in scripts
+          assert "packages/opencode/script/build-lite.ts" in scripts
+          assert "packages/opencode/script/build-direct.ts" in scripts
+          assert "packages/opencode/script/build.ts" in scripts
+          print("rebuild contract ok: %d build scripts" % len(scripts))
+          PYEOF
+          if command -v bun >/dev/null 2>&1; then
+            echo "bun available: resourced builders compile the exact fork ref per automation/build-opencode-artifact.sh"
+          else
+            echo "bun not installed: static import-graph validators above are the offline rebuild proof"
+          fi
+
+      - name: Memory smoke benchmark (hermetic)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 automation/memory_benchmark.py \
+            --run-id "fork-sync-${GITHUB_RUN_ID:-local}" \
+            --output /tmp/fork-sync-mem.json
+          python3 - <<'PYEOF'
+          import json
+          from automation.opencode_fork_maintenance import (
+              evaluate_sync_budget,
+              load_maintenance,
+          )
+          with open("/tmp/fork-sync-mem.json", encoding="utf-8") as handle:
+              result = json.load(handle)
+          peak = (result.get("budget") or {}).get("measured_peak_kb", 0) or 0
+          data = load_maintenance()
+          if peak > 0:
+              verdict = evaluate_sync_budget(int(peak) * 1024, data)
+              print("smoke peak kB=%d passes_limit=%s merge_blocked=%s" % (
+                  peak, verdict["passes_limit"], verdict["merge_blocked"]))
+              if verdict["merge_blocked"]:
+                  raise SystemExit(
+                      "refusing to auto-merge: smoke peak exceeds the hard limit")
+          else:
+              print("smoke produced no binary peak on this runner (binary absent); hermetic git/python probes recorded")
+          PYEOF
+
+      - name: Render sync procedure for candidate
+        if: ${{ inputs.upstream_candidate_sha != '' }}
+        shell: bash
+        env:
+          CANDIDATE: ${{ inputs.upstream_candidate_sha }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::upstream_candidate_sha must be an exact 40-char SHA (never 'latest')"
+            exit 1
+          fi
+          python3 - "$CANDIDATE" <<'PYEOF'
+          import sys
+          from automation.opencode_fork_maintenance import load_maintenance, sync_steps
+          data = load_maintenance()
+          for step in sync_steps(data, sys.argv[1]):
+              print(step)
+          PYEOF
+
+      - name: File actionable refresh task on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT || github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF' > /tmp/fork-refresh-failure.md
+          from automation.opencode_fork_maintenance import load_maintenance
+          data = load_maintenance()
+          print("Fork refresh check failed for `%s` over upstream `%s` base `%s`." % (
+              data["fork_repo"], data["upstream_repo"], data["upstream_base_commit"]))
+          print("Deltas under test: %s." % ", ".join(data["sync_order"]))
+          print("See the failed workflow run for the stage evidence; "
+                "re-run automation/opencode_fork_maintenance.py:sync_steps "
+                "for the candidate and update the delta inventory.")
+          PYEOF
+          gh issue create \
+            --repo kodmial/runtime-lab \
+            --title "P1: OpenCode fork refresh check failed (run $GITHUB_RUN_ID)" \
+            --label "priority:p1" \
+            --body-file /tmp/fork-refresh-failure.md
