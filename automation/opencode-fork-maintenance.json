@@ -1,0 +1,153 @@
+{
+  "archs": ["linux-x64", "linux-arm64"],
+  "baseline_file": "automation/opencode-fork.baseline.json",
+  "budgets": {
+    "hard_limit_bytes": 536870912,
+    "hard_limit_mib": 512,
+    "min_headroom_bytes": 33554432,
+    "note": "Do not auto-merge an upstream refresh whose lightweight artifact peak exceeds the hard limit. Peaks above the preferred target but within the limit are reviewable; peaks above the limit block the merge and must file an actionable Runtime Lab task.",
+    "target_bytes": 471859200,
+    "target_mib": 450
+  },
+  "correctness": {
+    "note": "Focused coding-agent correctness gate run after every upstream refresh: the offline representative task plus the pytest subset below. No live credentials required.",
+    "pytest_subset": [
+      "automation/test_opencode_fork.py",
+      "automation/test_opencode_fork_maintenance.py",
+      "automation/test_opencode_lite.py",
+      "automation/test_opencode_source_stripped.py",
+      "automation/test_opencode_bounds.py",
+      "automation/test_opencode_direct_headless.py",
+      "automation/test_opencode_coding_qualify.py",
+      "automation/test_opencode_lowmem_profile.py"
+    ],
+    "representative_task": "q1-small-edit (FOO_LIMIT search + edit 10->20 + build/test, same workload as the coding-qualify and lite contracts)"
+  },
+  "deltas": [
+    {
+      "branch": "coding-only-lite-issue-101",
+      "group": "additive",
+      "id": "D1-source-stripped",
+      "obsolete_when": "Upstream removes the pruned subsystems itself (no TUI/web/serve command table in src/index.ts, no Question/WebSearch/LSP/plan imports in tool/registry.ts, lazy bootstrap.ts). Then the coding-only entrypoint adds no compile-graph delta and the patch can be dropped.",
+      "patch_doc": "automation/patches/issue-101-fork-change.md",
+      "purpose": "Exclude TUI/web/serve/MCP/LSP/formatter/share/snapshot-watcher subsystems from the coding-only compile graph while the full build keeps working.",
+      "runtime_lab_issue": 101,
+      "status": "specified",
+      "touches": {
+        "added": [
+          "packages/opencode/src/cli/cmd/run-coding.ts",
+          "packages/opencode/src/lite/tools.ts",
+          "packages/opencode/src/lite/agent.ts",
+          "packages/opencode/src/project/bootstrap-coding.ts",
+          "packages/opencode/src/tool/registry-coding.ts",
+          "packages/opencode/src/server/routes/instance/httpapi/server-coding.ts",
+          "packages/opencode/src/coding-index.ts",
+          "packages/opencode/script/build-lite.ts",
+          "packages/opencode/script/build-coding.ts"
+        ],
+        "modified": ["packages/opencode/package.json"]
+      },
+      "upstream_probes": [
+        "packages/opencode/src/index.ts",
+        "packages/opencode/src/tool/registry.ts",
+        "packages/opencode/src/project/bootstrap.ts",
+        "packages/opencode/src/server/routes/instance/httpapi/server.ts",
+        "packages/opencode/src/effect/app-runtime.ts",
+        "packages/opencode/script/build.ts"
+      ],
+      "validator": "automation/opencode_source_stripped.py:validate_contract + automation/opencode_lite.py:validate_fork_tree"
+    },
+    {
+      "group": "in-place-bounds",
+      "id": "D2-bounded-output",
+      "obsolete_when": "Upstream bounds Task-tool subagent transcript injection itself (tool/task.ts routes renderOutput through Truncate with tail direction + retrieval hint) and routes remaining tool results through Truncate. Then the fork bound is upstream behavior and the patch can be dropped.",
+      "patch_doc": "automation/patches/issue-80-fork-change.md",
+      "purpose": "Bound Task-tool subagent transcript injection and remaining tool results through the existing Truncate service (tail direction + file-backed retrieval) so one verbose subagent cannot grow parent-session memory without a bound.",
+      "runtime_lab_issue": 80,
+      "status": "specified",
+      "touches": {
+        "added": [],
+        "modified": ["packages/opencode/src/tool/task.ts"]
+      },
+      "upstream_probes": [
+        "packages/opencode/src/tool/task.ts",
+        "packages/opencode/src/tool/shell.ts",
+        "packages/opencode/src/tool/truncate.ts"
+      ],
+      "validator": "automation/opencode_bounds.py:retention_points + fork regression tests in the patch doc (Change 3)"
+    },
+    {
+      "branch": "direct-headless-issue-89",
+      "group": "additive",
+      "id": "D3-direct-headless",
+      "obsolete_when": "Upstream removes the in-process HTTP hop itself (cli/cmd/run.ts no longer dispatches via Server.Default().app.fetch, no TCP/mDNS listen on the run path). Then the direct runner adds no plumbing delta and the patch can be dropped.",
+      "patch_doc": "automation/patches/issue-89-fork-change.md",
+      "purpose": "Bypass in-process HTTP/server/SDK plumbing on the headless run path (direct session/agent/provider/tool dispatch) while provider semantics stay unchanged.",
+      "runtime_lab_issue": 89,
+      "status": "specified",
+      "touches": {
+        "added": [
+          "packages/opencode/src/cli/cmd/run-direct.ts",
+          "packages/opencode/src/direct/direct-runner.ts",
+          "packages/opencode/src/project/bootstrap-direct.ts",
+          "packages/opencode/src/server/routes/instance/httpapi/server-direct.ts",
+          "packages/opencode/script/build-direct.ts"
+        ],
+        "modified": ["packages/opencode/package.json"]
+      },
+      "upstream_probes": [
+        "packages/opencode/src/cli/cmd/run.ts",
+        "packages/opencode/src/cli/effect-cmd.ts",
+        "packages/opencode/src/server/server.ts",
+        "packages/opencode/src/server/routes/instance/httpapi/server.ts",
+        "packages/opencode/src/effect/app-runtime.ts"
+      ],
+      "validator": "automation/opencode_direct_headless.py boundary checks"
+    }
+  ],
+  "fork_branch": "main",
+  "fork_repo": "kodmial/opencode",
+  "invariants": [
+    "Full build (packages/opencode/src/index.ts + packages/opencode/script/build.ts + scripts.build) stays usable; every delta is additive or scripts-only except the bounded-output in-place bound.",
+    "No custom direct provider/API client: all model access stays through the existing provider/session/agent loop.",
+    "Tracking stays in kodmial/runtime-lab; the fork carries no separate product backlog."
+  ],
+  "memory_smoke": {
+    "budget_gate": "evaluate_sync_budget: peak above the 512 MiB hard limit blocks the merge; peak above the 450 MiB target is reviewable but never silently merged as an improvement.",
+    "method": "python3 automation/memory_benchmark.py hermetic probes (--version peak tree + startup walls) plus Docker --memory=512m --memory-swap=512m real-agent trials where available; same telemetry vocabulary as automation/opencode_qualification.py, no second measurement stack.",
+    "note": "Offline CI runs the hermetic probe; resourced builders run the full real-agent trial against the same harness."
+  },
+  "pinned_opencode_version": "1.18.33",
+  "rebuild": {
+    "artifacts": [
+      ".opencode-artifacts/<artifact-id>/opencode + fingerprint.json per automation/opencode_artifacts.py"
+    ],
+    "build_scripts": [
+      "packages/opencode/script/build.ts",
+      "packages/opencode/script/build-lite.ts",
+      "packages/opencode/script/build-coding.ts",
+      "packages/opencode/script/build-direct.ts"
+    ],
+    "commands": [
+      "bun install --frozen-lockfile",
+      "bun run packages/opencode/script/build-coding.ts",
+      "bun run packages/opencode/script/build-lite.ts",
+      "bun run packages/opencode/script/build-direct.ts",
+      "bun run packages/opencode/script/build.ts"
+    ],
+    "note": "CI rebuilds the lightweight artifacts after every upstream refresh with the upstream-supported Bun compile path; a missing or checksum-mismatched artifact fails readiness and never falls back to the pinned baseline binary."
+  },
+  "refresh_failure": {
+    "labels": ["priority:p1"],
+    "note": "Any refresh failure (rebase conflict, rebuild failure, correctness failure, smoke over budget, obsolete-delta ambiguity) files an actionable Runtime Lab task via render_refresh_failure_task() instead of silently leaving the deployed fork stale. The task records fork SHA, upstream candidate SHA, failed stage, evidence, and the next retry step.",
+    "title_template": "P1: OpenCode fork refresh blocked at <stage> (fork <fork-sha12> vs upstream <upstream-sha12>)"
+  },
+  "schema": "runtime-lab-opencode-fork-maintenance/v1",
+  "sync_order": ["D1-source-stripped", "D3-direct-headless", "D2-bounded-output"],
+  "sync_procedure": "automation/opencode_fork_maintenance.py:sync_steps",
+  "upstream_base_commit": "75e1e7ae310dc36c86c920e8997d0e1181e24a88",
+  "upstream_default_branch": "dev",
+  "upstream_remote": "https://github.com/anomalyco/opencode.git",
+  "upstream_repo": "anomalyco/opencode",
+  "upstream_tag": "v1.18.33"
+}
