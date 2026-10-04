@@ -1,0 +1,63 @@
+name: PR-Agent canary (OpenCode backend)
+
+on:
+  workflow_dispatch:
+    inputs:
+      canary_enabled:
+        description: "Explicit opt-in for the disposable canary (true only for one run)"
+        required: false
+        type: string
+      base_ref:
+        description: "Branch the disposable canary PR is based on"
+        required: false
+        type: string
+      opencode_model:
+        description: "OpenCode provider/model the bridge infers with"
+        required: false
+        type: string
+      model:
+        description: "LiteLLM model id PR-Agent requests"
+        required: false
+        type: string
+      max_tokens:
+        description: "Token/output limit forwarded as the custom-model cap"
+        required: false
+        type: string
+      api_base:
+        description: "OpenAI-compatible backend base URL PR-Agent talks to"
+        required: false
+        type: string
+      bridge_port:
+        description: "Loopback port the compatibility bridge binds"
+        required: false
+        type: string
+      server_port:
+        description: "Loopback port opencode serve binds"
+        required: false
+        type: string
+      pr_agent_version:
+        description: "Pinned pr-agent PyPI release installed on the runner"
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-pr-agent-canary.yml@main
+    secrets: inherit
+    with:
+      continuum_ref: main
+      canary_enabled: "${{ inputs.canary_enabled }}"
+      base_ref: "${{ inputs.base_ref }}"
+      opencode_model: "${{ inputs.opencode_model }}"
+      model: "${{ inputs.model }}"
+      max_tokens: "${{ inputs.max_tokens }}"
+      api_base: "${{ inputs.api_base }}"
+      bridge_port: "${{ inputs.bridge_port }}"
+      server_port: "${{ inputs.server_port }}"
+      pr_agent_version: "${{ inputs.pr_agent_version }}"
