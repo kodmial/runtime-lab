@@ -1,0 +1,30 @@
+name: Cancel final superseded Render run
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel stale Render run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_RUN_ID: "37199884142"
+        run: |
+          set -euo pipefail
+          status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$TARGET_RUN_ID" --jq '.status')"
+          case "$status" in
+            queued|in_progress|pending|requested|waiting)
+              gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$TARGET_RUN_ID/cancel" >/dev/null
+              echo "Cancellation requested for run $TARGET_RUN_ID."
+              ;;
+            *)
+              echo "Run $TARGET_RUN_ID already terminal ($status)."
+              ;;
+          esac
