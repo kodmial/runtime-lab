@@ -35,11 +35,11 @@ on:
           - repair
 
 permissions:
-  actions: read
+  actions: write
   contents: write
   issues: write
   pull-requests: write
-  statuses: read
+  statuses: write
 
 # No caller-level concurrency by design (issue #227): the caller must never
 # serialize per PR before the reusable operation layer admits exact-HEAD
