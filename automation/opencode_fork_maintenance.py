@@ -367,7 +367,8 @@ def sync_steps(
         "# 1. record revisions (fail closed on mutable refs)",
         "test \"$(git rev-parse HEAD)\" = \"%s\" # fork HEAD under test"
         % current_fork,
-        "git remote get-url upstream || git remote add upstream %s" % remote,
+        "git remote add upstream %s 2>/dev/null || git remote set-url upstream %s # idempotent; corrects a stale pointer"
+        % (remote, remote),
         "git fetch upstream",
         "git cat-file -t %s # candidate exists" % candidate,
         "# 2. prove the recorded base is history (never rebase from scratch)",
@@ -376,7 +377,7 @@ def sync_steps(
         % (base, candidate, upstream, upstream, candidate),
         "# 3. evaluate on a throwaway branch (never mutate %s directly)"
         % branch,
-        "git checkout -b %s %s # exact upstream candidate, never a mutable pointer"
+        "git checkout -B %s %s # exact upstream candidate, never a mutable pointer (re-runnable)"
         % (eval_branch, candidate),
     ]
     for delta_id in order:
@@ -537,15 +538,39 @@ def _upstream_in_place_implements(delta: dict, contents: dict[str, str]) -> bool
     if delta_id == "D2-bounded-output":
         # Fork bound: task.ts routes renderOutput through Truncate.output()
         # with tail direction plus a file-backed retrieval hint, exactly as
-        # shell.ts does. Require all three signals together.
+        # shell.ts does. Require the structural signals together: a
+        # truncate import specifier, a Truncate.output() call, an explicit
+        # tail direction (direction: "tail"), and a retrieval hint. Bare
+        # substring tests are insufficient here ("tail" matches
+        # "detail"/"entail" and "Truncate"/"outputPath" match comments),
+        # so import-specifier plus call-expression matching is used.
         if not combined:
             return False
-        has_truncate = "Truncate" in combined
-        has_tail = "tail" in combined
-        has_retrieval = (
-            "outputPath" in combined or "Full output saved to" in combined
+        specifiers = re.findall(
+            r"""import\s+(?:[^'"]*?from\s+)?['"]([^'"]+)['"]""",
+            combined,
         )
-        return bool(has_truncate and has_tail and has_retrieval)
+        has_truncate_import = any(
+            re.search(r"truncate", spec, re.IGNORECASE) is not None
+            for spec in specifiers
+        )
+        has_truncate_call = (
+            re.search(r"Truncate\s*\.\s*output\s*\(", combined) is not None
+        )
+        has_tail_direction = (
+            re.search(r"""direction\s*:\s*['"]tail['"]""", combined)
+            is not None
+        )
+        has_retrieval = (
+            re.search(r"\boutputPath\b", combined) is not None
+            or "Full output saved to" in combined
+        )
+        return bool(
+            has_truncate_import
+            and has_truncate_call
+            and has_tail_direction
+            and has_retrieval
+        )
     if delta_id == "D1-source-stripped":
         # Obsolete when upstream removes the pruned subsystems itself:
         # no TUI/web/serve command table in src/index.ts, no
