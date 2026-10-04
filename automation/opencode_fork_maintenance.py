@@ -47,6 +47,26 @@ SCHEMA = "runtime-lab-opencode-fork-maintenance/v1"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+# Strict allowlist for the trusted upstream remote. Substring matching on
+# ``anomalyco/opencode`` would accept ``https://evil.com/anomalyco/opencode``
+# or a typo-squat host and then render ``git remote add upstream <evil-url>``.
+UPSTREAM_REMOTE_RE = re.compile(
+    r"^(?:https://github\.com/anomalyco/opencode(?:\.git)?/?"
+    r"|git@github\.com:anomalyco/opencode(?:\.git)?)$"
+)
+
+
+def _validate_upstream_remote(remote: object) -> str:
+    """Validate the upstream remote against the trusted-host allowlist."""
+    if not isinstance(remote, str) or not remote.strip():
+        raise ValueError("upstream_remote must be a non-empty string")
+    normalized = remote.strip()
+    if UPSTREAM_REMOTE_RE.match(normalized) is None:
+        raise ValueError(
+            "upstream_remote must point at github.com/anomalyco/opencode: %r"
+            % remote
+        )
+    return normalized
 
 REQUIRED_KEYS = frozenset(
     (
@@ -150,13 +170,7 @@ def validate_maintenance(data: dict) -> dict:
     branch = data.get("fork_branch")
     if not isinstance(branch, str) or not branch.strip():
         raise ValueError("fork_branch must be a non-empty string")
-    remote = data.get("upstream_remote")
-    if not isinstance(remote, str) or not remote.strip():
-        raise ValueError("upstream_remote must be a non-empty string")
-    if "anomalyco/opencode" not in remote:
-        raise ValueError(
-            "upstream_remote must point at anomalyco/opencode: %r" % remote
-        )
+    _validate_upstream_remote(data.get("upstream_remote"))
     base = data.get("upstream_base_commit")
     if not isinstance(base, str) or SHA_RE.match(base) is None:
         raise ValueError("invalid 40-char upstream_base_commit: %r" % base)
@@ -344,7 +358,7 @@ def sync_steps(
     if fork_sha is not None and SHA_RE.match(current_fork) is None:
         raise ValueError("fork_sha must be a 40-char SHA when supplied")
     upstream = maintenance["upstream_repo"]
-    remote = maintenance["upstream_remote"]
+    remote = _validate_upstream_remote(maintenance.get("upstream_remote"))
     branch = maintenance["fork_branch"]
     base = maintenance["upstream_base_commit"]
     eval_branch = "fork-sync/%s" % _short(candidate)
@@ -651,10 +665,12 @@ def detect_obsolete_deltas(
     or a mapping of path to file content from the candidate revision.
     Each delta is reported as ``active`` (all probes still present and
     no in-place upstream implementation detected), ``needs-review``
-    (some probes moved/renamed), or ``obsolete`` (no probe present, or
-    upstream already ships the fork behavior: it carries the fork-added
-    files or its in-place file contents implement the patch, so the
-    patch can be dropped).
+    (some probes moved/renamed, or upstream ships a fork-added path
+    whose contents were not compared), or ``obsolete`` (no probe
+    present, or upstream in-place file contents already implement the
+    patch, so the patch can be dropped). Path overlap on
+    ``touches.added`` alone never reports ``obsolete``: an upstream file
+    at the same path with different behavior must not read as droppable.
     """
     if isinstance(upstream_files, dict):
         paths = set(upstream_files.keys())
@@ -677,10 +693,10 @@ def detect_obsolete_deltas(
         added = [p for p in touches.get("added", []) if isinstance(p, str)]
         added_overlap = sorted(p for p in added if p in paths)
         if added_overlap:
-            status = "obsolete"
+            status = "needs-review"
             reason = (
-                "upstream already ships %d fork-added file(s) (%s) so %s "
-                "adds no delta and the patch can be dropped"
+                "upstream ships %d fork-added path(s) (%s) but file contents "
+                "were not compared, so %s needs manual review before dropping"
                 % (len(added_overlap), ", ".join(added_overlap), delta["id"])
             )
         elif len(present) == len(probes) and _upstream_in_place_implements(
