@@ -362,8 +362,8 @@ def sync_steps(
         % (base, candidate, upstream, upstream, candidate),
         "# 3. evaluate on a throwaway branch (never mutate %s directly)"
         % branch,
-        "git checkout -b %s" % eval_branch,
-        "git checkout %s # exact upstream candidate, never a mutable pointer" % candidate,
+        "git checkout -b %s %s # exact upstream candidate, never a mutable pointer"
+        % (eval_branch, candidate),
     ]
     for delta_id in order:
         delta = delta_by_id(maintenance, delta_id)
@@ -507,29 +507,138 @@ def _upstream_in_place_implements(delta: dict, contents: dict[str, str]) -> bool
 
     Path presence alone misses the case where upstream keeps the same
     files but independently implements the fork patch in place (e.g.
-    D2 bounds in ``tool/task.ts``). Only the delta's own
-    ``touches.modified`` files are inspected so the pre-existing
-    ``Truncate`` service (``tool/truncate.ts``) or the already-bounded
-    ``tool/shell.ts`` cannot cause a false positive.
+    D2 bounds in ``tool/task.ts``). Only the delta's own probe files
+    are inspected so the pre-existing ``Truncate`` service
+    (``tool/truncate.ts``) or the already-bounded ``tool/shell.ts``
+    cannot cause a false positive. Import-specifier matching (not bare
+    substring search) is used throughout so a comment such as "no
+    Question" never counts as the subsystem being present.
     """
     if not contents:
         return False
     touches = delta.get("touches", {}) or {}
     modified = [p for p in touches.get("modified", []) if isinstance(p, str)]
     combined = "\n".join(contents.get(p, "") for p in modified if p in contents)
-    if not combined:
-        return False
     delta_id = delta.get("id", "")
     if delta_id == "D2-bounded-output":
         # Fork bound: task.ts routes renderOutput through Truncate.output()
         # with tail direction plus a file-backed retrieval hint, exactly as
         # shell.ts does. Require all three signals together.
+        if not combined:
+            return False
         has_truncate = "Truncate" in combined
         has_tail = "tail" in combined
         has_retrieval = (
             "outputPath" in combined or "Full output saved to" in combined
         )
         return bool(has_truncate and has_tail and has_retrieval)
+    if delta_id == "D1-source-stripped":
+        # Obsolete when upstream removes the pruned subsystems itself:
+        # no TUI/web/serve command table in src/index.ts, no
+        # Question/WebSearch/LSP/plan imports in tool/registry.ts, lazy
+        # bootstrap.ts. Any one stripped probe proves the in-place
+        # behavior while probe files are still present.
+        registry = contents.get("packages/opencode/src/tool/registry.ts")
+        if registry is not None:
+            specifiers = re.findall(
+                r"""import\s+(?:[^'"]*?from\s+)?['"]([^'"]+)['"]""",
+                registry,
+            )
+            has_pruned_import = any(
+                re.search(p, spec, re.IGNORECASE) is not None
+                for spec in specifiers
+                for p in (
+                    r"question",
+                    r"websearch",
+                    r"lsp",
+                    r"/plan",
+                    r"planexit",
+                    r"plan-tool",
+                    r"codemode",
+                    r"code-mode",
+                )
+            )
+            has_pruned_symbol = (
+                re.search(
+                    r"QuestionTool|WebSearchTool|LspTool|Plan\w*Tool",
+                    registry,
+                )
+                is not None
+            )
+            if not has_pruned_import and not has_pruned_symbol:
+                return True
+        index = contents.get("packages/opencode/src/index.ts")
+        if index is not None:
+            specifiers = re.findall(
+                r"""import\s+(?:[^'"]*?from\s+)?['"]([^'"]+)['"]""",
+                index,
+            )
+            has_cmd_import = any(
+                re.search(p, spec, re.IGNORECASE) is not None
+                for spec in specifiers
+                for p in (
+                    r"cmd/tui",
+                    r"cmd/web",
+                    r"cmd/serve",
+                    r"cmd/acp",
+                    r"cmd/attach",
+                    r"@opencode-ai/tui",
+                    r"opentui",
+                    r"bonjour-service",
+                    r"@agentclientprotocol/sdk",
+                )
+            )
+            has_cmd_symbol = (
+                re.search(
+                    r"(Tui|Web|Serve|Acp)\w*Command",
+                    index,
+                )
+                is not None
+            )
+            if not has_cmd_import and not has_cmd_symbol:
+                return True
+        bootstrap = contents.get("packages/opencode/src/project/bootstrap.ts")
+        if bootstrap is not None:
+            specifiers = re.findall(
+                r"""import\s+(?:[^'"]*?from\s+)?['"]([^'"]+)['"]""",
+                bootstrap,
+            )
+            has_heavy_import = any(
+                re.search(p, spec, re.IGNORECASE) is not None
+                for spec in specifiers
+                for p in (
+                    r"@/lsp",
+                    r"@/share/share-next",
+                    r"share-next",
+                    r"/format",
+                    r"@/mcp",
+                    r"@modelcontextprotocol/sdk",
+                    r"@parcel/watcher",
+                    r"chokidar",
+                    r"bonjour-service",
+                )
+            )
+            if not has_heavy_import:
+                return True
+        return False
+    if delta_id == "D3-direct-headless":
+        # Obsolete when upstream removes the in-process HTTP hop itself:
+        # cli/cmd/run.ts no longer dispatches via
+        # Server.Default().app.fetch on the run path. Require the actual
+        # call expressions (not bare substrings) so a comment such as
+        # "no app.fetch here" never counts as the hop being present.
+        run = contents.get("packages/opencode/src/cli/cmd/run.ts")
+        if run is not None:
+            has_fetch_call = (
+                re.search(r"app\s*\.\s*fetch\s*\(", run) is not None
+            )
+            has_server_default = (
+                re.search(r"Server\s*\.\s*Default\s*\(", run) is not None
+            )
+            if not has_fetch_call and not has_server_default:
+                return True
+            return False
+        return False
     return False
 
 

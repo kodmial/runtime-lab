@@ -160,7 +160,7 @@ jobs:
           PYEOF
 
       - name: File actionable refresh task on failure
-        if: failure()
+        if: failure() && github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.TAP_PAT || github.token }}
         shell: bash
