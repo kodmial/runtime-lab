@@ -34,6 +34,7 @@ on:
           - resolve-conflict
           - ci-fix
           - issue
+          - qualification
       issue_number:
         description: "Issue number, for context in issue_comment runs"
         required: false
@@ -110,6 +111,18 @@ on:
         description: "Packaging repair in-flight lock label"
         required: false
         type: string
+      capability_number:
+        description: "Capability issue number for qualification mode"
+        required: false
+        type: string
+      qualification_number:
+        description: "Qualification issue number for qualification mode"
+        required: false
+        type: string
+      required_sha:
+        description: "Exact main SHA a qualification run must test"
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -145,3 +158,6 @@ jobs:
       pause_on_failure: "${{ inputs.pause_on_failure }}"
       ci_repair_label: "${{ inputs.ci_repair_label }}"
       packaging_repair_label: "${{ inputs.packaging_repair_label }}"
+      capability_number: "${{ inputs.capability_number }}"
+      qualification_number: "${{ inputs.qualification_number }}"
+      required_sha: "${{ inputs.required_sha }}"
