@@ -114,19 +114,44 @@ on:
     types: [completed]
 
 permissions:
+  actions: read
   contents: read
+  issues: read
+  pull-requests: read
 
 jobs:
   call:
-    # A manual owner `/oc` is in-flight work the scheduler must reserve. Gate the
-    # event trigger the way the engine's own `issue_comment` branch expects, so an
-    # unrelated comment costs a skipped run and not a full reconciliation.
+    # A child keeps local scheduling disabled, but issue events must reach
+    # the reusable scheduler so it can wake the verified parent immediately.
+    # Only issues and issue_comment are admitted for a child, matching the
+    # reusable wake-up job: child cron stays skipped so polling never burns
+    # private child runner minutes, and child push, pull_request_target,
+    # workflow_run, and workflow_dispatch stay cheap caller skips instead of
+    # empty reusable runs. Unrelated issue comments remain cheap skips.
+    # A manual owner `/oc` is in-flight work the scheduler must reserve, and
+    # trusted qualification result comments wake the scheduler immediately;
+    # cron remains the missed-event backstop.
+    # Child `issues` wakes are owner-gated and limited to opened/reopened/
+    # closed: an ungated issues trigger lets any user who can open, label, or
+    # close a child issue burn a TAP_PAT-authenticated parent dispatch per
+    # event, and bulk label churn fans out to N sequential parent dispatches.
+    # Non-owner or label-only child activity stays a cheap caller skip and is
+    # picked up by the parent's cron reconciliation instead.
     if: >-
-      vars.CONTINUUM_ROLE != 'child' &&
+      (vars.CONTINUUM_ROLE != 'child' || github.event_name == 'issues' || github.event_name == 'issue_comment') &&
+      (github.event_name != 'issues' || vars.CONTINUUM_ROLE != 'child' || (github.actor == github.repository_owner && (github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'closed'))) &&
       (github.event_name != 'issue_comment' ||
        (github.actor == github.repository_owner &&
         (contains(github.event.comment.body, '/oc') ||
-         contains(github.event.comment.body, '/opencode'))))
+         contains(github.event.comment.body, '/opencode'))) ||
+       ((github.actor == github.repository_owner ||
+         github.actor == 'github-actions[bot]' ||
+         github.event.comment.author_association == 'OWNER' ||
+         github.event.comment.author_association == 'MEMBER' ||
+         github.event.comment.author_association == 'COLLABORATOR') &&
+        (contains(github.event.comment.body, 'continuum-qualification-result') ||
+         contains(github.event.comment.body, 'continuum-docker-qualification-result') ||
+         contains(github.event.comment.body, 'continuum-render-qualification-result'))))
     uses: kodmial/continuum/.github/workflows/continuum-issue-scheduler.yml@main
     secrets: inherit
     with:
@@ -157,3 +182,8 @@ jobs:
       child_dispatch_workflow: "${{ inputs.child_dispatch_workflow }}"
       count_open_prs_as_wip: "${{ inputs.count_open_prs_as_wip }}"
       pause_on_failure: "${{ inputs.pause_on_failure }}"
+      # Event plumbing for the child wake-up gate. A called workflow always
+      # sees github.event_name as workflow_call with an empty github.event,
+      # so the caller forwards its own trigger name and issue number.
+      caller_event_name: "${{ github.event_name }}"
+      caller_issue_number: "${{ github.event.issue.number }}"
