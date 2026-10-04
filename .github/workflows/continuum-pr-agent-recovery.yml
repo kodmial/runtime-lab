@@ -2,6 +2,17 @@ name: PR-Agent recovery
 
 on:
   workflow_dispatch:
+    inputs:
+      target_child_id:
+        description: Opaque verified child id for delegated PR-Agent recovery
+        required: false
+        type: string
+      max_executions:
+        description: >-
+          Total transient executions per exact PR/HEAD/operation (1..10,
+          default 10). Empty falls back to vars.PR_AGENT_RECOVERY_MAX_EXECUTIONS.
+        required: false
+        type: string
   schedule:
     - cron: "*/10 * * * *"
   pull_request_target:
@@ -21,7 +32,20 @@ permissions:
 
 jobs:
   call:
+    # Automatic PR-Agent callers skip in verified child mode (issue #244):
+    # the parent is the only automatic execution plane for child PR-Agent,
+    # so schedule, pull_request_target, and workflow_run events stay cheap
+    # caller skips in a child. An explicit owner workflow_dispatch still
+    # reaches the reusable, which fail-safes there for a deterministic,
+    # mutually exclusive outcome. Local/non-child behavior is unchanged.
+    if: vars.CONTINUUM_ROLE != 'child' || github.event_name == 'workflow_dispatch'
     uses: kodmial/continuum/.github/workflows/continuum-pr-agent-recovery.yml@main
     secrets: inherit
     with:
       continuum_ref: main
+      # Bare passthrough: schedule, pull_request_target, and workflow_run
+      # carry no dispatch inputs, so those runs pass empty here and the
+      # reusable falls through to vars.CONTINUUM_PR_AGENT_TARGET_CHILD_ID
+      # (then to the execution repository).
+      target_child_id: "${{ inputs.target_child_id }}"
+      max_executions: "${{ inputs.max_executions }}"
