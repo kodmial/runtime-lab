@@ -1,0 +1,48 @@
+name: PR-Agent repair (OpenCode)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number carrying the current review result"
+        required: false
+        type: string
+      head_sha:
+        description: "Exact HEAD SHA the review evaluated"
+        required: false
+        type: string
+      review_json:
+        description: "Canonical upstream review JSON for the exact HEAD"
+        required: false
+        type: string
+      improve_jsonl:
+        description: "Runner-local push_outputs file payload for the exact HEAD"
+        required: false
+        type: string
+      retry_attempt:
+        description: "Bounded PR-Agent retry attempt number (0 = initial run)"
+        required: false
+        default: '0'
+        type: string
+      retry_workflow:
+        description: "Caller workflow filename used to restart the isolated PR-Agent stack"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-pr-agent-repair.yml@main
+    secrets: inherit
+    with:
+      continuum_ref: main
+      pr_number: "${{ inputs.pr_number }}"
+      head_sha: "${{ inputs.head_sha }}"
+      review_json: "${{ inputs.review_json }}"
+      improve_jsonl: "${{ inputs.improve_jsonl }}"
+      retry_attempt: "${{ inputs.retry_attempt }}"
+      retry_workflow: "${{ inputs.retry_workflow }}"
