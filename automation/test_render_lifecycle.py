@@ -51,6 +51,7 @@ from render_lifecycle import (  # noqa: E402
     RUNNER_HEALTH_PATH,
     RUNNER_JOB_STATUS_PATH_TEMPLATE,
     RUNNER_SUBMIT_JOB_PATH,
+    E2E_TASK_MEMORY_BUDGET,
     SMOKE_TASK_MEMORY_BUDGET,
     SUSPEND_FALLBACK_MAX_ATTEMPTS,
     SUSPEND_IS_PRIMARY_CLEANUP,
@@ -138,22 +139,30 @@ def test_agent_knowledge_handoff_is_stable_and_unique_per_run():
     assert "issue-9-run-abc-123.md" in task
 
 
-def test_smoke_task_carries_memory_budget_e2e_does_not():
+def test_smoke_task_carries_memory_budget_e2e_carries_e2e_budget():
     # Regression for run 36637940250 (repair issue #176): four
     # consecutive #58 smoke storms pinned the 512 MB worker at the
     # ceiling with the full qualified config-only profile wired, so the
     # reusable repair shrinks the smoke workload instead of wiring more
     # env/config flags. Both live dispatch paths (render-job.sh and
     # render_controller) build their payload via resolve_task_text.
+    # Repair issue #215 (run 37201361478) extends the same envelope to
+    # e2e: that e2e run storm-aborted identically at a base already
+    # carrying the smoke budget, proving the unbounded e2e workload is
+    # the remaining transcript source on the same 512 MB worker.
     assert "512 MB" in SMOKE_TASK_MEMORY_BUDGET
     assert "single most relevant test file once" in SMOKE_TASK_MEMORY_BUDGET
     assert "never run the full suite" in SMOKE_TASK_MEMORY_BUDGET
     smoke = resolve_task_text(58, "smoke", title="T", body="B", run_id="r")
     assert SMOKE_TASK_MEMORY_BUDGET in smoke
+    assert E2E_TASK_MEMORY_BUDGET not in smoke
     assert "Repository knowledge handoff (mandatory, bounded for the 512 MB worker)" in smoke
     e2e = resolve_task_text(58, "e2e", title="T", body="B", run_id="r")
     assert SMOKE_TASK_MEMORY_BUDGET not in e2e
-    assert "Repository knowledge handoff (mandatory):" in e2e
+    assert E2E_TASK_MEMORY_BUDGET in e2e
+    assert "512 MB" in E2E_TASK_MEMORY_BUDGET
+    assert "never run the full suite" in E2E_TASK_MEMORY_BUDGET
+    assert "Repository knowledge handoff (mandatory, bounded for the 512 MB worker)" in e2e
 
 
 def test_smoke_memory_budget_survives_body_truncation():
@@ -164,7 +173,7 @@ def test_smoke_memory_budget_survives_body_truncation():
     assert "Repository knowledge handoff (mandatory" in smoke
 
 
-def test_smoke_handoff_is_bounded_e2e_handoff_unchanged():
+def test_smoke_handoff_is_bounded_e2e_handoff_bounded_wider():
     # Regression for run 36645592095 (repair issue #188): the fifth
     # consecutive #58 smoke storm pinned the 512 MB worker at the ceiling
     # at a base already carrying the #176 budget, proving the budget
@@ -177,6 +186,12 @@ def test_smoke_handoff_is_bounded_e2e_handoff_unchanged():
     # full experiment records into a transcript the 512 MB worker must
     # hold. Both live dispatch paths build payloads via
     # resolve_task_text, so the mode-aware handoff covers every shape.
+    # Repair issue #215 (run 37201361478) bounds the e2e handoff the
+    # same way: that e2e run storm-aborted identically with four
+    # consecutive proven restarts pinned at the 512 MB ceiling, proving
+    # the e2e full-handoff exemption is the remaining unbounded read
+    # path. E2E keeps a slightly wider window (two topic notes) while
+    # staying bounded; the issue's own task scope is unchanged.
     smoke = resolve_task_text(58, "smoke", title="T", body="B", run_id="r")
     assert SMOKE_TASK_MEMORY_BUDGET in smoke
     assert "Repository knowledge handoff (mandatory, bounded for the 512 MB worker)" in smoke
@@ -189,10 +204,14 @@ def test_smoke_handoff_is_bounded_e2e_handoff_unchanged():
     assert "per the handoff block below" in SMOKE_TASK_MEMORY_BUDGET
     e2e = resolve_task_text(58, "e2e", title="T", body="B", run_id="r")
     assert SMOKE_TASK_MEMORY_BUDGET not in e2e
-    assert "Repository knowledge handoff (mandatory):" in e2e
-    assert "prior records under" in e2e
-    assert "at most ONE" not in e2e
-    # Mandatory protocol elements survive the bound on smoke.
+    assert E2E_TASK_MEMORY_BUDGET in e2e
+    assert "per the handoff block below" in E2E_TASK_MEMORY_BUDGET
+    assert "Repository knowledge handoff (mandatory, bounded for the 512 MB worker)" in e2e
+    assert "at most TWO most-relevant topic notes" in e2e
+    assert "knowledge_catalog.py query" in e2e
+    assert "This bound overrides any broader read scope above" in e2e
+    assert "prior records under" not in e2e
+    # Mandatory protocol elements survive the bound on both modes.
     for marker in ("automation/knowledge/PROTOCOL.md",
                    "Do not repeat a known failed experiment",
                    "issue-58-run-r.md"):
@@ -200,12 +219,29 @@ def test_smoke_handoff_is_bounded_e2e_handoff_unchanged():
         assert marker in e2e
 
 
-def test_handoff_mode_defaults_to_full_and_rejects_unknown():
+def test_handoff_mode_defaults_to_bounded_e2e_and_rejects_unknown():
     assert knowledge_handoff_instructions(9, "r") == knowledge_handoff_instructions(9, "r", "e2e")
-    assert "prior records under" in knowledge_handoff_instructions(9, "r")
+    assert "bounded for the 512 MB worker" in knowledge_handoff_instructions(9, "r")
+    assert "at most TWO" in knowledge_handoff_instructions(9, "r")
     assert "at most ONE" in knowledge_handoff_instructions(9, "r", "smoke")
     with pytest.raises(ValueError):
         knowledge_handoff_instructions(9, "r", "bogus-mode")
+
+
+def test_e2e_budget_bounds_transcript_while_keeping_wider_scope():
+    # Repair issue #215 (run 37201361478): the e2e workload must stay
+    # wider than smoke (its issues own their success criteria) while
+    # bounding transcript growth on the 512 MB worker.
+    assert "at most 10 repository files" in E2E_TASK_MEMORY_BUDGET
+    assert "at most 5 repository files" in SMOKE_TASK_MEMORY_BUDGET
+    assert "Keep the change focused" in E2E_TASK_MEMORY_BUDGET
+    assert "Make one small change only (one file, small diff)." in SMOKE_TASK_MEMORY_BUDGET
+    assert "never run the full suite" in E2E_TASK_MEMORY_BUDGET
+    # The failed e2e run's task shape (issue #6: small deterministic
+    # coding task) fits inside the e2e envelope.
+    e2e = resolve_task_text(6, "e2e", title="Prove the Render path", body="slugify utility", run_id="37201361478")
+    assert E2E_TASK_MEMORY_BUDGET in e2e
+    assert "issue-6-run-37201361478.md" in e2e
 
 
 def test_smoke_bounded_handoff_survives_body_truncation():

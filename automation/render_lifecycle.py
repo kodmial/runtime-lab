@@ -68,8 +68,16 @@ def knowledge_handoff_instructions(issue_number: int, run_id: object = "",
     The smoke variant therefore keeps every mandatory protocol element
     (protocol read, no-repeat rule, unique per-run record, promotion
     discipline) but bounds the reads: catalog-first discovery, at most
-    one topic note, full records only when directly on point. E2E mode
-    keeps the full handoff unchanged: its issues own their scope.
+    one topic note, full records only when directly on point. The e2e
+    variant is bounded the same way (repair issue #215, run 37201361478):
+    that e2e run storm-aborted with four consecutive proven worker
+    restarts while pinned at the 512 MB cgroup ceiling at a base already
+    carrying the smoke budget plus the smoke handoff bound, proving the
+    e2e exemption ("its issues own their scope") is the remaining
+    unbounded transcript path on the same 512 MB worker. E2E keeps a
+    slightly wider history window (at most two topic notes) and its own
+    workload budget (see ``E2E_TASK_MEMORY_BUDGET``); the issue's own
+    task scope is unchanged.
     """
     validate_execution_mode(execution_mode)
     record = experiment_record_path(issue_number, run_id)
@@ -86,15 +94,21 @@ def knowledge_handoff_instructions(issue_number: int, run_id: object = "",
             "5. Promote only validated reusable facts into the relevant topic note; preserve superseded history."
             % (KNOWLEDGE_PROTOCOL_PATH, record)
         )
-    return (
-        "Repository knowledge handoff (mandatory):\n"
-        "1. Read %s before changing code.\n"
-        "2. Read relevant topic notes under %s and prior records under %s for this issue/topic.\n"
-        "3. Do not repeat a known failed experiment unless a material premise changed; state that changed premise.\n"
-        "4. Before finishing, write exactly one run record at %s. Separate observations, interpretation, and decisions; include evidence/tests and unresolved questions; never include secrets.\n"
-        "5. Promote only validated reusable facts into the relevant topic note; preserve superseded history."
-        % (KNOWLEDGE_PROTOCOL_PATH, KNOWLEDGE_TOPICS_DIR, KNOWLEDGE_EXPERIMENTS_DIR, record)
-    )
+    if execution_mode == "e2e":
+        return (
+            "Repository knowledge handoff (mandatory, bounded for the 512 MB worker):\n"
+            "1. Read %s before changing code.\n"
+            "2. Discover history with the offline catalog first "
+            "(python automation/knowledge_catalog.py query --issue <N> / --topic <slug>); "
+            "read at most TWO most-relevant topic notes; open a full experiment record "
+            "only when directly on point. This bound overrides any broader read scope above.\n"
+            "3. Do not repeat a known failed experiment unless a material premise changed; state that changed premise.\n"
+            "4. Before finishing, write exactly one run record at %s. Separate observations, interpretation, and decisions; include evidence/tests and unresolved questions; never include secrets.\n"
+            "5. Promote only validated reusable facts into the relevant topic note; preserve superseded history."
+            % (KNOWLEDGE_PROTOCOL_PATH, record)
+        )
+    raise ValueError("execution_mode must be one of %s, got %r"
+                     % (sorted(EXECUTION_MODES), execution_mode))
 
 EXPERIMENT_RECORD_REQUIRED_SECTIONS = (
     "## Hypothesis / objective",
@@ -466,7 +480,9 @@ MAX_TASK_BODY_CHARS = 2000
 # smoke workload. The binding caps keep transcript/history growth (the
 # part of the footprint the task controls) small while preserving the
 # real coding loop (inspect, one small edit, focused test, report).
-# E2E mode is untouched: its issues own their success criteria.
+# E2E mode carries its own wider budget (see E2E_TASK_MEMORY_BUDGET,
+# repair issue #215): e2e issues keep their success criteria, but the
+# transcript envelope is bounded for the same 512 MB worker.
 # Issue #188 hardening: run 36645592095 stormed identically at the base
 # already carrying this budget, proving the budget alone insufficient
 # while the mandatory handoff block trailing it still ordered unbounded
@@ -480,6 +496,36 @@ SMOKE_TASK_MEMORY_BUDGET = (
     "1. Inspect at most 5 repository files; prefer targeted grep/glob over broad reads.\n"
     "2. Make one small change only (one file, small diff).\n"
     "3. Run the single most relevant test file once; never run the full suite.\n"
+    "4. Keep the final report concise (files changed, test result).\n"
+    "5. Knowledge handoff stays mandatory but bounded per the handoff block below, "
+    "which overrides any broader read scope above."
+)
+
+# E2E-mode memory budget (repair issue #215, run 37201361478): the
+# Render Free worker is 0.1 CPU / 512 MB (https://render.com/docs/free,
+# re-verified 2026-10-04: free plan is 0.1 CPU / 512 MB RAM with restarts
+# at any time; a larger worker requires a paid compute plan, which the
+# free-tier guard refuses, so the storm diagnostic's "larger worker"
+# branch is unavailable and only "shrink the workload" remains). That
+# e2e run storm-aborted exactly like the pre-#176/#188 smoke storms --
+# four consecutive proven worker restarts pinned at the 512 MB cgroup
+# ceiling with the full qualified config-only profile wired -- at a base
+# already carrying the smoke budget plus the smoke handoff bound, proving
+# the e2e path ("its issues own their scope") is the remaining unbounded
+# transcript source on the same worker: no file/edit/test caps and
+# unbounded topic/record reads. This envelope therefore bounds the e2e
+# workload while keeping e2e's wider scope relative to smoke (at most 10
+# files vs 5, a focused change vs one single-file change, relevant
+# test(s) vs the single most relevant test file). The binding caps keep
+# transcript/history growth (the part of the footprint the task controls)
+# small while preserving the real coding loop. Item 5 defers to the
+# bounded e2e handoff block (see knowledge_handoff_instructions) instead
+# of stating a divergent bound, mirroring the #188 smoke hardening.
+E2E_TASK_MEMORY_BUDGET = (
+    "Memory budget (binding, 512 MB worker):\n"
+    "1. Inspect at most 10 repository files; prefer targeted grep/glob over broad reads.\n"
+    "2. Keep the change focused (few files, small diff).\n"
+    "3. Run the most relevant test file(s) once; never run the full suite.\n"
     "4. Keep the final report concise (files changed, test result).\n"
     "5. Knowledge handoff stays mandatory but bounded per the handoff block below, "
     "which overrides any broader read scope above."
@@ -522,6 +568,8 @@ def resolve_task_text(issue_number: int, execution_mode: str,
         task = "Execute issue #%d in %s mode." % (issue_number, execution_mode)
     if execution_mode == "smoke":
         task = task + "\n\n" + SMOKE_TASK_MEMORY_BUDGET
+    elif execution_mode == "e2e":
+        task = task + "\n\n" + E2E_TASK_MEMORY_BUDGET
     return task + "\n\n" + knowledge_handoff_instructions(issue_number, run_id, execution_mode)
 
 def select_base_sha(*candidates: object) -> str:
