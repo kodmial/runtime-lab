@@ -1,0 +1,27 @@
+name: PR-Agent recovery
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/10 * * * *"
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+  workflow_run:
+    workflows:
+      - CI
+      - PR Agent (OpenCode backend)
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+  statuses: read
+
+jobs:
+  call:
+    uses: kodmial/continuum/.github/workflows/continuum-pr-agent-recovery.yml@main
+    secrets: inherit
+    with:
+      continuum_ref: main
