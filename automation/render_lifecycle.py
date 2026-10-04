@@ -2289,6 +2289,100 @@ def build_restart_storm_result(
     }
 
 
+def build_cancelled_result(
+    *,
+    job_id: object = "",
+    service_id: object = "",
+    poll_position: object = "",
+    resubmissions_used: object = 0,
+    issue_number: object = 0,
+    run_id: object = "",
+) -> dict[str, Any]:
+    """Build a machine-readable terminal record for external cancellation.
+
+    Repair for run 37199884142 (source issue #9, repair issue #214): that
+    smoke attempt provisioned exactly one free worker, reached a live
+    deploy, passed the runner health check, and submitted a runner job --
+    then GitHub cancelled the job step while ``render-job.sh`` was polling
+    (execute=cancelled, cleanup=success, deletion verified via HTTP 404).
+    The poll loop exited on the cancellation signal without writing
+    ``$RENDER_RESULT_FILE`` (and the EXIT-trap memory summary never
+    completed under the cancel), so the evidence artifact carried only 1
+    of 4 files (state only) and every downstream triage had to scrape log
+    text to tell an externally cancelled attempt apart from a worker or
+    lifecycle failure (the same log-only gap issues #125/#165/#190 closed
+    for the gate, hold, and storm paths). This helper is the single choke
+    point for the structured cancellation shape: ``render-job.sh`` writes
+    its output to ``$RENDER_RESULT_FILE`` from a TERM/INT trap (only when
+    no result was recorded yet) while keeping the cancellation exit path
+    unchanged.
+
+    The record mirrors the runner ``JobResult`` shape (``job_id`` of the
+    in-flight job, ``status="failed"``, ``success=False``, ``error``
+    carrying the cancellation diagnostic) so generic readers handle it,
+    plus ``cancelled`` markers no job result carries: ``cancelled=True``,
+    the in-flight ``service_id``, ``poll_position`` (e.g. ``"7/140"``),
+    and ``resubmissions_used``. Never raises: garbage input yields a
+    minimal fail-closed record.
+    """
+    try:
+        job = str(job_id or "").strip()
+    except Exception:
+        job = ""
+    try:
+        service = str(service_id or "").strip()
+    except Exception:
+        service = ""
+    try:
+        position = str(poll_position or "").strip()
+    except Exception:
+        position = ""
+    try:
+        resubmits = int(resubmissions_used)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        resubmits = 0
+    if resubmits < 0:
+        resubmits = 0
+    try:
+        issue = int(issue_number)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        issue = 0
+    try:
+        run_label = "" if run_id is None else str(run_id).strip()
+    except Exception:
+        run_label = ""
+    error = (
+        "Render execution cancelled externally while polling runner job %s"
+        " (service %s%s%s); mandatory cleanup still runs via the "
+        "always() cleanup step and the attempt must be retried or "
+        "triaged as cancelled, not as a worker failure."
+        % (
+            job or "unknown",
+            service or "unknown",
+            ("; poll %s" % position) if position else "",
+            ("; resubmissions used: %d" % resubmits) if resubmits else "",
+        )
+    )
+    return {
+        "job_id": job,
+        "status": "failed",
+        "success": False,
+        "summary": "",
+        "error": error,
+        "cancelled": True,
+        "service_id": service,
+        "poll_position": position,
+        "resubmissions_used": resubmits,
+        "issue_number": issue,
+        "run_id": run_label,
+        "metadata": {
+            "issue_number": issue,
+            "run_id": run_label,
+            "cancelled": True,
+        },
+    }
+
+
 def detect_worker_restart(prior_uptime: object,
                            current_uptime: object,
                            prior_instance_id: object = None,

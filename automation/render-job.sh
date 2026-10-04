@@ -640,6 +640,54 @@ PY
   fi
 }
 trap memory_sampler_stop_and_summarize EXIT
+# External-cancellation record (repair issue #214, run 37199884142): that
+# smoke attempt submitted a runner job and was then cancelled by GitHub
+# while polling (execute=cancelled, cleanup=success), leaving no
+# $RENDER_RESULT_FILE behind, so the artifact carried only the state file
+# and triage had to scrape log text. Persist the same diagnostic
+# machine-readably on TERM/INT (best effort: never masks the cancellation,
+# never clobbers an existing result) and then exits so a cancelled step
+# does not resume polling. Exiting triggers the EXIT trap above, which
+# still owns memory summarization. The EXIT trap line itself is unchanged.
+JOB_ID="${JOB_ID:-}"
+POLL_CURRENT_ITER=0
+render_job_write_cancelled_record() {
+  if [[ -n "${RENDER_RESULT_FILE:-}" && ! -s "${RENDER_RESULT_FILE:-}" ]]; then
+    local cancel_poll_pos=""
+    if [[ -n "${POLL_MAX_ATTEMPTS:-}" ]]; then
+      cancel_poll_pos="${POLL_CURRENT_ITER:-0}/${POLL_MAX_ATTEMPTS}"
+    fi
+    CANCEL_JOB_ID="${JOB_ID:-}" CANCEL_SERVICE_ID="${SERVICE_ID:-}" \
+    CANCEL_POLL_POS="$cancel_poll_pos" \
+    CANCEL_RESUBMITS="${POLL_RESUBMITS:-0}" \
+    python3 - "${RENDER_RESULT_FILE:-}" "$ISSUE_NUMBER" "${GITHUB_RUN_ID:-}" <<'PY' 2>/dev/null || true
+import json, os, sys
+sys.path.insert(0, "automation")
+try:
+    from render_lifecycle import build_cancelled_result
+    output_path = sys.argv[1] if len(sys.argv) > 1 else ""
+    try:
+        issue_number = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    except (TypeError, ValueError):
+        issue_number = 0
+    run_id = sys.argv[3] if len(sys.argv) > 3 else ""
+    record = build_cancelled_result(
+        job_id=os.environ.get("CANCEL_JOB_ID", ""),
+        service_id=os.environ.get("CANCEL_SERVICE_ID", ""),
+        poll_position=os.environ.get("CANCEL_POLL_POS", ""),
+        resubmissions_used=os.environ.get("CANCEL_RESUBMITS", "0"),
+        issue_number=issue_number,
+        run_id=run_id,
+    )
+    if output_path:
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, indent=2) + "\n")
+except Exception:
+    pass
+PY
+  fi
+}
+trap 'render_job_write_cancelled_record; exit 143' TERM INT
 rm -f "$RENDER_MEMORY_STOP_FILE" 2>/dev/null || true
 python3 automation/render_memory_sampler.py sample \
   --base-url "$SERVICE_URL" \
@@ -924,6 +972,7 @@ SUBMIT_UPTIME="$(jq -r '.uptime_seconds // empty' <<<"$SUBMIT_HEALTH_JSON" 2>/de
 SUBMIT_INSTANCE="$(jq -r '.instance_id // .runner_instance_id // empty' <<<"$SUBMIT_HEALTH_JSON" 2>/dev/null || true)"
 SUBMIT_WALL="$(date +%s 2>/dev/null || true)"
 for ((i = 1; i <= POLL_MAX_ATTEMPTS; i++)); do
+  POLL_CURRENT_ITER="$i"
   POLL_BODY_FILE="$(mktemp)"
   POLL_LAST_CODE="$(curl -sS -o "$POLL_BODY_FILE" -w '%{http_code}' --max-time 30 \
     "$SERVICE_URL/v1/jobs/$JOB_ID" -H "Accept: application/json" 2>/dev/null || true)"
