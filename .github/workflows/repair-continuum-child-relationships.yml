@@ -1,0 +1,75 @@
+name: Repair Continuum child relationship variables
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Continuum engine
+        uses: actions/checkout@v4
+        with:
+          repository: kodmial/continuum
+          ref: main
+          token: ${{ secrets.TAP_PAT }}
+          path: .continuum-engine
+
+      - name: Repair and verify delegated relationship variables
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT }}
+          CHILD_MAP: ${{ secrets.CONTINUUM_CHILD_REPOSITORIES }}
+        run: |
+          set -euo pipefail
+          export CONTINUUM_ENGINE_ROOT="$PWD/.continuum-engine"
+
+          set_var() {
+            local repo="$1" name="$2" value="$3"
+            if gh api "repos/$repo/actions/variables/$name" >/dev/null 2>&1; then
+              gh api --method PATCH "repos/$repo/actions/variables/$name" -f value="$value" >/dev/null 2>&1 ||
+                { echo "::error::Failed to update delegated relationship variable."; exit 1; }
+            else
+              gh api --method POST "repos/$repo/actions/variables" -f name="$name" -f value="$value" >/dev/null 2>&1 ||
+                { echo "::error::Failed to create delegated relationship variable."; exit 1; }
+            fi
+          }
+
+          parent_vars="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/variables?per_page=100" | jq -cs '{variables:[.[].variables[]?]}')"
+          children="$(jq -r '[.variables[]? | select(.name=="CONTINUUM_CHILDREN") | .value][0] // ""' <<<"$parent_vars")"
+          [[ -n "$children" ]] || { echo "::error::Parent CONTINUUM_CHILDREN is missing."; exit 1; }
+          [[ -n "$CHILD_MAP" ]] || { echo "::error::Delegated child repository map is missing."; exit 1; }
+
+          python3 - "$children" "$CHILD_MAP" <<'PY'
+import json, sys
+children=json.loads(sys.argv[1])
+mapping=json.loads(sys.argv[2])
+if not isinstance(children,list) or not children:
+    raise SystemExit("invalid parent child list")
+if not isinstance(mapping,dict) or set(mapping)!=set(children):
+    raise SystemExit("child map does not exactly match parent child ids")
+PY
+
+          set_var "$GITHUB_REPOSITORY" CONTINUUM_ROLE parent
+
+          count=0
+          while IFS= read -r child_id; do
+            [[ -n "$child_id" ]] || continue
+            child_repo="$(jq -r --arg id "$child_id" '.[$id]' <<<"$CHILD_MAP")"
+            [[ -n "$child_repo" && "$child_repo" != null ]] ||
+              { echo "::error::Delegated child mapping is incomplete."; exit 1; }
+
+            set_var "$child_repo" CONTINUUM_ROLE child
+            set_var "$child_repo" CONTINUUM_CHILD_ID "$child_id"
+            set_var "$child_repo" CONTINUUM_PARENT "$GITHUB_REPOSITORY"
+
+            PARENT_ROLE=parent PARENT_CHILDREN="$children" CHILD_REPOSITORIES="$CHILD_MAP"               bash "$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh"               verify "$child_id" "$child_repo" >/dev/null 2>&1 ||
+              { echo "::error::Delegated relationship verification failed after repair."; exit 1; }
+
+            count=$((count + 1))
+          done < <(jq -r '.[]' <<<"$children")
+
+          echo "Verified complete relationship variables for $count configured child relationship(s)."
