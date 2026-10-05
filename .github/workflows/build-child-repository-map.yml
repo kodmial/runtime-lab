@@ -1,0 +1,94 @@
+name: Build opaque child repository map
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-map:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Continuum verifier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: kodmial/continuum
+          ref: main
+          path: .continuum-engine
+          persist-credentials: false
+
+      - name: Build and store verified child map
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT }}
+        run: |
+          set -euo pipefail
+
+          parent_vars="$(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/variables?per_page=100" |
+              jq -cs '{variables:[.[].variables[]?]}'
+          )"
+          parent_role="$(jq -r '[.variables[] | select(.name=="CONTINUUM_ROLE") | .value][0] // ""' <<<"$parent_vars")"
+          children_json="$(jq -r '[.variables[] | select(.name=="CONTINUUM_CHILDREN") | .value][0] // ""' <<<"$parent_vars")"
+          [[ "$parent_role" == "parent" ]] || {
+            echo "::error::Parent role is not configured."
+            exit 2
+          }
+          jq -e 'type=="array" and length>0 and all(.[]; type=="string" and length>0)' <<<"$children_json" >/dev/null
+
+          map='{}'
+          page=1
+          while :; do
+            repos="$(gh api "/user/repos?affiliation=owner&per_page=100&page=$page" --jq '.[].full_name')"
+            [[ -n "$repos" ]] || break
+            while IFS= read -r repo; do
+              [[ -n "$repo" && "$repo" != "$GITHUB_REPOSITORY" ]] || continue
+              set +e
+              vars="$(
+                gh api --paginate "repos/$repo/actions/variables?per_page=100" 2>/dev/null |
+                  jq -cs '{variables:[.[].variables[]?]}'
+              )"
+              rc=$?
+              set -e
+              [[ "$rc" -eq 0 ]] || continue
+
+              role="$(jq -r '[.variables[] | select(.name=="CONTINUUM_ROLE") | .value][0] // ""' <<<"$vars")"
+              child_id="$(jq -r '[.variables[] | select(.name=="CONTINUUM_CHILD_ID") | .value][0] // ""' <<<"$vars")"
+              declared_parent="$(jq -r '[.variables[] | select(.name=="CONTINUUM_PARENT") | .value][0] // ""' <<<"$vars")"
+              [[ "$role" == "child" && "$declared_parent" == "$GITHUB_REPOSITORY" && -n "$child_id" ]] || continue
+              jq -e --arg id "$child_id" 'index($id) != null' <<<"$children_json" >/dev/null || continue
+              existing="$(jq -r --arg id "$child_id" '.[$id] // ""' <<<"$map")"
+              [[ -z "$existing" || "$existing" == "$repo" ]] || {
+                echo "::error::Duplicate repository binding for one opaque child id."
+                exit 2
+              }
+              map="$(jq -c --arg id "$child_id" --arg repo "$repo" '. + {($id):$repo}' <<<"$map")"
+            done <<<"$repos"
+            count="$(printf '%s\n' "$repos" | sed '/^$/d' | wc -l | tr -d ' ')"
+            [[ "$count" -lt 100 ]] && break
+            page=$((page + 1))
+          done
+
+          expected="$(jq 'length' <<<"$children_json")"
+          actual="$(jq 'length' <<<"$map")"
+          [[ "$actual" == "$expected" ]] || {
+            echo "::error::Verified child map is incomplete."
+            exit 2
+          }
+
+          export CONTINUUM_ENGINE_ROOT="$PWD/.continuum-engine"
+          resolver="$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh"
+          while IFS= read -r child_id; do
+            repo="$(jq -r --arg id "$child_id" '.[$id]' <<<"$map")"
+            PARENT_CONFIG=.continuum.yml CHILD_REPOSITORIES="$map"               bash "$resolver" verify "$child_id" "$repo" >/dev/null 2>&1 || {
+                echo "::error::Verified child map contains an invalid binding."
+                exit 2
+              }
+          done < <(jq -r '.[]' <<<"$children_json")
+
+          gh secret set CONTINUUM_CHILD_REPOSITORIES             --repo "$GITHUB_REPOSITORY"             --body "$map" >/dev/null
+          gh secret list --repo "$GITHUB_REPOSITORY" --json name             --jq '.[] | select(.name=="CONTINUUM_CHILD_REPOSITORIES") | .name' |
+            grep -Fxq CONTINUUM_CHILD_REPOSITORIES
+
+          echo "Stored a complete verified opaque child repository map."
