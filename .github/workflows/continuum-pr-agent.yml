@@ -12,6 +12,11 @@ on:
         description: Pull request number for a bounded PR-Agent retry
         required: false
         type: string
+      continuum_ref:
+        description: Continuum revision used by delegated retries
+        required: false
+        default: main
+        type: string
       target_child_id:
         description: Opaque verified child id for delegated PR-Agent execution
         required: false
@@ -58,7 +63,7 @@ jobs:
     uses: kodmial/continuum/.github/workflows/continuum-pr-agent.yml@main
     secrets: inherit
     with:
-      continuum_ref: main
+      continuum_ref: "${{ inputs.continuum_ref || 'main' }}"
       pr_number: "${{ inputs.pr_number }}"
       target_child_id: "${{ inputs.target_child_id }}"
       expected_head_sha: "${{ inputs.expected_head_sha }}"
