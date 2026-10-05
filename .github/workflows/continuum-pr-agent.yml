@@ -63,7 +63,7 @@ jobs:
     uses: kodmial/continuum/.github/workflows/continuum-pr-agent.yml@main
     secrets: inherit
     with:
-      continuum_ref: "${{ inputs.continuum_ref || 'main' }}"
+      continuum_ref: main
       pr_number: "${{ inputs.pr_number }}"
       target_child_id: "${{ inputs.target_child_id }}"
       expected_head_sha: "${{ inputs.expected_head_sha }}"
