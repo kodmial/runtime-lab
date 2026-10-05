@@ -43,15 +43,7 @@ jobs:
           [[ -n "$children" ]] || { echo "::error::Parent CONTINUUM_CHILDREN is missing."; exit 1; }
           [[ -n "$CHILD_MAP" ]] || { echo "::error::Delegated child repository map is missing."; exit 1; }
 
-          python3 - "$children" "$CHILD_MAP" <<'PY'
-import json, sys
-children=json.loads(sys.argv[1])
-mapping=json.loads(sys.argv[2])
-if not isinstance(children,list) or not children:
-    raise SystemExit("invalid parent child list")
-if not isinstance(mapping,dict) or set(mapping)!=set(children):
-    raise SystemExit("child map does not exactly match parent child ids")
-PY
+          python3 -c 'import json,sys; c=json.loads(sys.argv[1]); m=json.loads(sys.argv[2]); assert isinstance(c,list) and c and isinstance(m,dict) and set(m)==set(c)' "$children" "$CHILD_MAP"
 
           set_var "$GITHUB_REPOSITORY" CONTINUUM_ROLE parent
 
