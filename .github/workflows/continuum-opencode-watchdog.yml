@@ -10,7 +10,7 @@ on:
     types: [completed]
 
 permissions:
-  actions: read
+  actions: write
   contents: read
   issues: write
   pull-requests: read
