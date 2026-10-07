@@ -15,6 +15,10 @@ on:
         type: string
   schedule:
     - cron: "*/10 * * * *"
+  # Immediate control-plane wake: lets a Continuum/caller correction
+  # re-reconcile delegated PRs without waiting for the 10-minute safety net.
+  push:
+    branches: [main]
   pull_request_target:
     types: [opened, reopened, ready_for_review, synchronize]
   workflow_run:
