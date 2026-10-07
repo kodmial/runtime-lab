@@ -115,6 +115,7 @@ on:
       - SubTask
       - SubTask review
       - SubTask PR review
+      - PR Agent (OpenCode backend)
     types: [completed]
 
 permissions:
