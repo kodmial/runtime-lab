@@ -1,0 +1,83 @@
+name: Bootstrap opaque provider children
+
+on:
+  push:
+    paths:
+      - '.github/workflows/continuum-bootstrap-provider-children.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.TAP_PAT }}
+    steps:
+      - name: Configure verified children by opaque repository id
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::Parent runtime token is unavailable."
+            exit 1
+          fi
+
+          get_var() {
+            gh api "repos/$1/actions/variables/$2" --jq '.value' 2>/dev/null || true
+          }
+
+          upsert_var() {
+            local repo="$1" name="$2" value="$3"
+            if gh api "repos/$repo/actions/variables/$name" >/dev/null 2>&1; then
+              gh api --method PATCH "repos/$repo/actions/variables/$name"                 -f name="$name" -f value="$value" >/dev/null
+            else
+              gh api --method POST "repos/$repo/actions/variables"                 -f name="$name" -f value="$value" >/dev/null
+            fi
+          }
+
+          parent="$GITHUB_REPOSITORY"
+          upsert_var "$parent" CONTINUUM_ROLE parent
+
+          current_children="$(get_var "$parent" CONTINUUM_CHILDREN)"
+          [[ -n "$current_children" ]] || current_children='[]'
+          if ! jq -e 'type == "array" and all(.[]; type == "string")' <<<"$current_children" >/dev/null; then
+            echo "::error::Parent CONTINUUM_CHILDREN is invalid; refusing to overwrite it."
+            exit 1
+          fi
+
+          repo_ids=(
+            "1404510783"
+            "1404510659"
+            "1404510383"
+            "1404510526"
+          )
+          child_ids=(
+            "c-7a1e0c9d"
+            "c-b42f6e13"
+            "c-90d5a724"
+            "c-e31c8b56"
+          )
+
+          merged_children="$(
+            jq -cn               --argjson current "$current_children"               --arg a "${child_ids[0]}"               --arg b "${child_ids[1]}"               --arg c "${child_ids[2]}"               --arg d "${child_ids[3]}"               '$current + [$a,$b,$c,$d] | unique'
+          )"
+          upsert_var "$parent" CONTINUUM_CHILDREN "$merged_children"
+
+          for i in "${!repo_ids[@]}"; do
+            repo="$(gh api "repositories/${repo_ids[$i]}" --jq '.full_name')"
+            if [[ -z "$repo" ]]; then
+              echo "::error::A configured child repository id could not be resolved."
+              exit 1
+            fi
+            echo "::add-mask::$repo"
+            child_id="${child_ids[$i]}"
+            upsert_var "$repo" CONTINUUM_ROLE child
+            upsert_var "$repo" CONTINUUM_CHILD_ID "$child_id"
+            upsert_var "$repo" CONTINUUM_PARENT "$parent"
+            upsert_var "$repo" CONTINUUM_VALIDATION_SCRIPT "automation/continuum-child-ci.sh"
+          done
+
+          echo "Configured four verified opaque child bindings; concrete repository identities were masked."
