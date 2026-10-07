@@ -239,6 +239,26 @@ def test_refresh_failure_task_is_actionable():
         )
 
 
+def test_fork_sync_workflow_provisions_pytest_before_correctness_gate():
+    # Regression for runtime-lab#219 (run 37204786294): the refresh check
+    # failed at "Focused coding-agent correctness gate" with
+    # "No module named pytest" because ubuntu-latest does not preinstall
+    # it. The workflow must set up Python and install pytest first.
+    workflow = os.path.join(
+        REPO_ROOT, ".github", "workflows", "opencode-fork-sync.yml"
+    )
+    with open(workflow, encoding="utf-8") as handle:
+        text = handle.read()
+    assert "setup-python" in text
+    assert "pip install" in text and "pytest" in text
+    setup_pos = text.index("setup-python")
+    pip_pos = text.index("pip install")
+    gate_pos = text.index("Focused coding-agent correctness gate")
+    pytest_pos = text.index("python3 -m pytest")
+    assert setup_pos < gate_pos
+    assert pip_pos < pytest_pos
+
+
 def test_maintenance_json_referenced_specs_exist():
     data = _maintenance()
     for delta in data["deltas"]:
