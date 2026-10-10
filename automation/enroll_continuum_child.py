@@ -111,7 +111,8 @@ def enroll(issue, parent, get=api, new_id=None):
         raise EnrollmentError("Child has incompatible role.")
     if child_vars.get("CONTINUUM_PARENT", "") not in ("", parent):
         raise EnrollmentError("Child belongs to another parent.")
-    if child_vars.get("CONTINUUM_REVIEW_PROVIDER", "") not in ("", "pr-agent"):
+    # An owner-approved request may explicitly migrate the legacy CodeRabbit provider.
+    if child_vars.get("CONTINUUM_REVIEW_PROVIDER", "") not in ("", "pr-agent", "coderabbit"):
         raise EnrollmentError("Child has incompatible review provider.")
     file_info = get("-X", "GET", f"repos/{child}/contents/{path}")
     if file_info.get("type") != "file":
