@@ -91,7 +91,7 @@ def test_enrollment_preserves_existing_parent_children_and_configures_child(caps
         "CONTINUUM_REVIEW_PROVIDER": "pr-agent",
         "CONTINUUM_VALIDATION_SCRIPT": "automation/ci.sh",
     }
-    assert CHILD not in capsys.readouterr().out.splitlines()[-1]
+    assert capsys.readouterr().out == "::add-mask::" + CHILD + "\n"
 
 
 def test_replayed_enrollment_keeps_child_id_and_allow_list():
