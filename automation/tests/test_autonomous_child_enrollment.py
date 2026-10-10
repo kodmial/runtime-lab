@@ -138,7 +138,7 @@ def test_invalid_requests_fail_without_writing(change):
 @pytest.mark.parametrize("key,value", [
     ("CONTINUUM_ROLE", "parent"),
     ("CONTINUUM_PARENT", OTHER),
-    ("CONTINUUM_REVIEW_PROVIDER", "coderabbit"),
+    ("CONTINUUM_REVIEW_PROVIDER", "unknown"),
     ("CONTINUUM_CHILD_ID", "not valid id"),
 ])
 def test_incompatible_child_relationship_rejected(key, value):
@@ -182,3 +182,10 @@ def test_no_tracked_relation_literals():
     assert "repo_ids=(" not in source
     assert "kodmial/" not in source
     assert "CHILD_REPOSITORIES=" not in source
+
+
+def test_owner_approved_legacy_review_provider_transition():
+    f = Fake()
+    f.vars[CHILD]["CONTINUUM_REVIEW_PROVIDER"] = "coderabbit"
+    mod.enroll(issue(), PARENT, get=f, new_id=lambda: "new-opaque")
+    assert f.vars[CHILD]["CONTINUUM_REVIEW_PROVIDER"] == "pr-agent"
