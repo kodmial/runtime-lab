@@ -32,11 +32,15 @@ def vars_for(repo, get=api):
     for page in range(1, 51):
         data = get("-X", "GET", f"repos/{repo}/actions/variables",
                    "-f", "per_page=100", "-f", f"page={page}")
-        if not isinstance(data.get("variables"), list):
+        if not isinstance(data, dict) or not isinstance(data.get("variables"), list):
             raise EnrollmentError("Actions variables unavailable.")
-        for item in data["variables"]:
+        variables = data["variables"]
+        for item in variables:
+            if (not isinstance(item, dict) or not isinstance(item.get("name"), str)
+                    or not isinstance(item.get("value"), str)):
+                raise EnrollmentError("Actions variables unavailable.")
             found[item["name"]] = item["value"]
-        if len(data["variables"]) < 100:
+        if len(variables) < 100:
             return found
     raise EnrollmentError("Actions variables pagination exceeded.")
 
@@ -58,6 +62,8 @@ def valid_parent(values):
 
 
 def request_details(issue, parent):
+    if not isinstance(issue, dict):
+        raise EnrollmentError("Invalid issue type.")
     if issue.get("title") != TITLE or "pull_request" in issue:
         raise EnrollmentError("Invalid issue type.")
     body = issue.get("body", "")
@@ -105,30 +111,51 @@ def recheck_open_pull_requests(child, get=api):
         if prs is None:
             raise EnrollmentError("Open pull request discovery unavailable.")
         for pr in prs:
+            if not isinstance(pr, dict):
+                raise EnrollmentError("Open pull request discovery unavailable.")
+            pr_number = pr.get("number")
+            if type(pr_number) is not int:
+                raise EnrollmentError("Open pull request discovery unavailable.")
             head = pr.get("head") or {}
-            if pr.get("draft") or (head.get("repo") or {}).get("full_name") != child:
+            if not isinstance(head, dict):
+                raise EnrollmentError("Open pull request discovery unavailable.")
+            head_repo = head.get("repo") or {}
+            if not isinstance(head_repo, dict):
+                raise EnrollmentError("Open pull request discovery unavailable.")
+            if pr.get("draft") or head_repo.get("full_name") != child:
                 continue
             sha = head.get("sha", "")
-            if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
                 raise EnrollmentError("Pull request head identity is invalid.")
             result = get("-X", "GET", f"repos/{child}/actions/runs",
                          "-f", "event=pull_request", "-f", f"head_sha={sha}",
                          "-f", "per_page=100")
+            if not isinstance(result, dict):
+                raise EnrollmentError("Child CI-run discovery unavailable.")
             runs = result.get("workflow_runs")
             if not isinstance(runs, list):
                 raise EnrollmentError("Child CI-run discovery unavailable.")
             # GitHub lists newest runs first. Admission belongs to exactly
             # the PR's current commit; never touch an earlier head.
             for run in runs:
+                if not isinstance(run, dict):
+                    raise EnrollmentError("Child CI-run discovery unavailable.")
                 if run.get("name") != "CI":
                     continue
                 if run.get("head_sha") != sha:
                     continue
-                if not any(x.get("number") == pr["number"] for x in run.get("pull_requests", [])):
+                pull_refs = run.get("pull_requests") or []
+                if not isinstance(pull_refs, list):
+                    raise EnrollmentError("Child CI-run discovery unavailable.")
+                if not any(isinstance(x, dict) and x.get("number") == pr_number
+                           for x in pull_refs):
                     continue
                 if run.get("status") == "completed" and run.get("conclusion") == "failure":
+                    run_id = run.get("id")
+                    if type(run_id) is not int:
+                        raise EnrollmentError("Child CI-run discovery unavailable.")
                     get("-X", "POST",
-                        f"repos/{child}/actions/runs/{run['id']}/rerun-failed-jobs")
+                        f"repos/{child}/actions/runs/{run_id}/rerun-failed-jobs")
                     replayed += 1
                 break
         if len(prs) < 100:
@@ -137,8 +164,14 @@ def recheck_open_pull_requests(child, get=api):
 
 
 def enroll(issue, parent, get=api, new_id=None):
+    if not isinstance(issue, dict):
+        raise EnrollmentError("Invalid issue type.")
     owner = parent.split("/")[0]
-    if (issue.get("user") or {}).get("login", "").lower() != owner.lower():
+    user = issue.get("user") or {}
+    if not isinstance(user, dict):
+        raise EnrollmentError("Owner authorization required.")
+    login = user.get("login", "")
+    if not isinstance(login, str) or login.lower() != owner.lower():
         raise EnrollmentError("Owner authorization required.")
     url = issue.get("repository_url", "")
     prefix = "https://api.github.com/repos/"
@@ -162,7 +195,7 @@ def enroll(issue, parent, get=api, new_id=None):
     if child_vars.get("CONTINUUM_REVIEW_PROVIDER", "") not in ("", "pr-agent", "coderabbit"):
         raise EnrollmentError("Child has incompatible review provider.")
     file_info = get("-X", "GET", f"repos/{child}/contents/{path}")
-    if file_info.get("type") != "file":
+    if not isinstance(file_info, dict) or file_info.get("type") != "file":
         raise EnrollmentError("Child validation script is absent.")
     child_id = child_vars.get("CONTINUUM_CHILD_ID", "")
     if child_id:
@@ -189,7 +222,10 @@ def enroll(issue, parent, get=api, new_id=None):
                json.dumps(allowed + [child_id], separators=(",", ":")),
                parent_vars, get)
     recheck_open_pull_requests(child, get)
-    get("-X", "PATCH", f"repos/{child}/issues/{issue['number']}",
+    issue_number = issue.get("number")
+    if type(issue_number) is not int:
+        raise EnrollmentError("Invalid issue type.")
+    get("-X", "PATCH", f"repos/{child}/issues/{issue_number}",
         "-f", "state=closed")
 
 
@@ -200,15 +236,19 @@ def pending(owner, get=api):
         payload = get("-X", "GET", "search/issues",
                       "-f", f"q={query}", "-f", "per_page=100",
                       "-f", f"page={page}")
+        if not isinstance(payload, dict):
+            raise EnrollmentError("Enrollment discovery unavailable.")
         items = payload.get("items")
         if not isinstance(items, list):
             raise EnrollmentError("Enrollment discovery unavailable.")
         for issue in items:
+            if not isinstance(issue, dict):
+                continue
             if (issue.get("title") == TITLE and
                     str(issue.get("body", "")).startswith(MARKER)):
                 results.append(issue)
         if len(items) < 100:
-            return sorted(results, key=lambda x: x.get("url", ""))
+            return sorted(results, key=lambda x: str(x.get("url", "")))
     raise EnrollmentError("Enrollment discovery pagination exceeded.")
 
 
@@ -219,10 +259,23 @@ def main():
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", parent):
         raise EnrollmentError("Invalid parent runtime identity.")
     count = 0
+    failed = 0
     for issue in pending(parent.split("/")[0]):
-        enroll(issue, parent)
+        try:
+            enroll(issue, parent)
+        except EnrollmentError as exc:
+            failed += 1
+            if isinstance(issue, dict):
+                ident = issue.get("number", issue.get("url", "?"))
+            else:
+                ident = "?"
+            print(f"::error::{exc} (issue {ident})")
+            continue
         count += 1
     print(f"Enrollment reconciliation: {count} authorized private request(s).")
+    if failed:
+        raise EnrollmentError(
+            f"Enrollment reconciliation: {failed} request(s) failed.")
 
 
 if __name__ == "__main__":
