@@ -69,6 +69,8 @@ class Fake:
             repo = prefix[len("repos/"):-len("/actions/variables")]
             self.vars[repo][name] = fields["value"]
             return {}
+        if path.endswith("/pulls") and method == "GET":
+            return []
         if "/contents/" in path and method == "GET":
             return {"type": "file"}
         if "/issues/" in path and method == "PATCH":
@@ -189,3 +191,53 @@ def test_owner_approved_legacy_review_provider_transition():
     f.vars[CHILD]["CONTINUUM_REVIEW_PROVIDER"] = "coderabbit"
     mod.enroll(issue(), PARENT, get=f, new_id=lambda: "new-opaque")
     assert f.vars[CHILD]["CONTINUUM_REVIEW_PROVIDER"] == "pr-agent"
+
+
+def test_exact_head_failure_is_replayed_on_child_enrollment():
+    class WithPR(Fake):
+        def __call__(self, *args):
+            if args[1] == "GET" and args[2] == "repos/" + CHILD + "/pulls":
+                return [{
+                    "number": 27, "draft": False,
+                    "head": {"sha": "a" * 40, "repo": {"full_name": CHILD}},
+                }]
+            if args[1] == "GET" and args[2] == "repos/" + CHILD + "/actions/runs":
+                return {"workflow_runs": [{
+                    "id": 12345, "name": "CI", "head_sha": "a" * 40,
+                    "status": "completed", "conclusion": "failure",
+                    "pull_requests": [{"number": 27}],
+                }]}
+            if args[1] == "POST" and args[2] == "repos/" + CHILD + "/actions/runs/12345/rerun-failed-jobs":
+                self.operations.append(args)
+                return {}
+            return super().__call__(*args)
+
+    f = WithPR()
+    mod.enroll(issue(), PARENT, get=f, new_id=lambda: "new-opaque")
+    assert any(
+        args[1] == "POST" and args[2].endswith("/rerun-failed-jobs")
+        for args in f.operations
+    )
+
+
+def test_recheck_never_replays_stale_or_draft_head():
+    class Stale(Fake):
+        def __call__(self, *args):
+            if args[1] == "GET" and args[2] == "repos/" + CHILD + "/pulls":
+                return [
+                    {"number": 27, "draft": True, "head": {
+                        "sha": "a" * 40, "repo": {"full_name": CHILD}}},
+                    {"number": 28, "draft": False, "head": {
+                        "sha": "b" * 40, "repo": {"full_name": CHILD}}},
+                ]
+            if args[1] == "GET" and args[2] == "repos/" + CHILD + "/actions/runs":
+                return {"workflow_runs": [{
+                    "id": 888, "name": "CI", "head_sha": "a" * 40,
+                    "status": "completed", "conclusion": "failure",
+                    "pull_requests": [{"number": 28}],
+                }]}
+            return super().__call__(*args)
+
+    f = Stale()
+    assert mod.recheck_open_pull_requests(CHILD, get=f) == 0
+    assert not any(args[1] == "POST" for args in f.operations)
