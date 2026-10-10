@@ -1,0 +1,22 @@
+name: Verify configured provider children
+
+# Enrollment and roles are managed in GitHub Actions Variables, not YAML.
+# Manual/read-only: do not allocate runners or mutate existing bindings on push.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Verify bidirectional child bindings (read only)
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT }}
+        run: bash automation/verify-child-bindings.sh
