@@ -1,0 +1,32 @@
+name: Reconcile authorized Child enrollments
+
+# Private owner-authored issue requests configure Actions Variables; no tracked repo maps.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/child-enrollment.yml'
+      - 'automation/enroll_continuum_child.py'
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: continuum-child-enrollment
+  cancel-in-progress: false
+
+jobs:
+  enrollment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Apply only owner-authorized variable-based child enrollment
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT }}
+        run: python3 automation/enroll_continuum_child.py
