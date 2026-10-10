@@ -89,6 +89,53 @@ def upsert(repo, key, value, values, get=api):
     values[key] = value
 
 
+def recheck_open_pull_requests(child, get=api):
+    """Replay failed exact-HEAD child CI after moving execution to Parent.
+
+    Never mark CI as success. The shared CI job will re-evaluate the Child role
+    on replay and legitimately skip. Parent deterministic validation remains
+    mandatory and distinct from this admission signal.
+    """
+    replayed = 0
+    for page in range(1, 11):
+        data = get("-X", "GET", f"repos/{child}/pulls",
+                   "-f", "state=open", "-f", "per_page=100",
+                   "-f", f"page={page}")
+        prs = data if isinstance(data, list) else None
+        if prs is None:
+            raise EnrollmentError("Open pull request discovery unavailable.")
+        for pr in prs:
+            head = pr.get("head") or {}
+            if pr.get("draft") or (head.get("repo") or {}).get("full_name") != child:
+                continue
+            sha = head.get("sha", "")
+            if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                raise EnrollmentError("Pull request head identity is invalid.")
+            result = get("-X", "GET", f"repos/{child}/actions/runs",
+                         "-f", "event=pull_request", "-f", f"head_sha={sha}",
+                         "-f", "per_page=100")
+            runs = result.get("workflow_runs")
+            if not isinstance(runs, list):
+                raise EnrollmentError("Child CI-run discovery unavailable.")
+            # GitHub lists newest runs first. Admission belongs to exactly
+            # the PR's current commit; never touch an earlier head.
+            for run in runs:
+                if run.get("name") != "CI":
+                    continue
+                if run.get("head_sha") != sha:
+                    continue
+                if not any(x.get("number") == pr["number"] for x in run.get("pull_requests", [])):
+                    continue
+                if run.get("status") == "completed" and run.get("conclusion") == "failure":
+                    get("-X", "POST",
+                        f"repos/{child}/actions/runs/{run['id']}/rerun-failed-jobs")
+                    replayed += 1
+                break
+        if len(prs) < 100:
+            return replayed
+    raise EnrollmentError("Child pull request pagination exceeded.")
+
+
 def enroll(issue, parent, get=api, new_id=None):
     owner = parent.split("/")[0]
     if (issue.get("user") or {}).get("login", "").lower() != owner.lower():
@@ -141,6 +188,7 @@ def enroll(issue, parent, get=api, new_id=None):
         upsert(parent, "CONTINUUM_CHILDREN",
                json.dumps(allowed + [child_id], separators=(",", ":")),
                parent_vars, get)
+    recheck_open_pull_requests(child, get)
     get("-X", "PATCH", f"repos/{child}/issues/{issue['number']}",
         "-f", "state=closed")
 
