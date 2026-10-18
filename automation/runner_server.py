@@ -54,7 +54,7 @@ Lifecycle properties implemented here:
     otherwise, so GitHub can distinguish "deployed but not ready".
 
 Model/region policy (from #1, enforced here before starting any command):
-  - Default model is opencode/muse-spark-1.3-contributor-free, fallback is
+  - Default model is opencode/nemotron-3-ultra-free; fallback is
     opencode/space-bunny-free. The model that actually executed is recorded
     in job metadata and in the result (executed_model).
   - Muse jobs are valid only in oregon, ohio, virginia, singapore.
@@ -1635,7 +1635,7 @@ class JobManager:
                 repository_url=repository_url,
                 base_ref=base_ref,
                 base_sha=base_sha,
-                error="region %r is forbidden for Muse jobs; use one of %s (%s)"
+                error="region %r is forbidden for configured OpenCode jobs; use one of %s (%s)"
                 % (region, sorted(ALLOWED_WORKER_REGIONS), exc),
             )
             return record, True
@@ -2173,7 +2173,7 @@ class JobManager:
         # identity capture per attempt; ordinary mode keeps the generic
         # command-runner path unchanged.
         models_to_try = [requested_model]
-        if requested_model == PREFERRED_MODEL:
+        if requested_model == PREFERRED_MODEL and FALLBACK_MODEL != requested_model:
             models_to_try.append(FALLBACK_MODEL)
         executed_model = requested_model
         last_output = ""
