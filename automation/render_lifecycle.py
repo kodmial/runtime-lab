@@ -435,8 +435,8 @@ NON_US_FALLBACK_REGION = "singapore"
 ALLOWED_WORKER_REGIONS = frozenset({"oregon", "ohio", "virginia", "singapore"})
 FORBIDDEN_WORKER_REGIONS = frozenset({"frankfurt"})
 
-PREFERRED_MODEL = "opencode/muse-spark-1.3-contributor-free"
-FALLBACK_MODEL = "opencode/space-bunny-free"
+PREFERRED_MODEL = "opencode/nemotron-3-ultra-free"
+FALLBACK_MODEL = "opencode/nemotron-3-ultra-free"
 # Model fallback must happen inside the same worker attempt; provisioning a
 # second Render service merely to change models is forbidden.
 MODEL_FALLBACK_CREATES_NEW_SERVICE = False
