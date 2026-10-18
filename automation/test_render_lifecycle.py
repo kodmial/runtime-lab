@@ -404,8 +404,8 @@ def test_region_policy():
 
 
 def test_model_policy_stays_on_same_worker():
-    assert PREFERRED_MODEL == "opencode/muse-spark-1.3-contributor-free"
-    assert FALLBACK_MODEL == "opencode/space-bunny-free"
+    assert PREFERRED_MODEL == "opencode/nemotron-3-ultra-free"
+    assert FALLBACK_MODEL == "opencode/nemotron-3-ultra-free"
     assert MODEL_FALLBACK_CREATES_NEW_SERVICE is False
     assert select_model(False) == PREFERRED_MODEL
     assert select_model(True) == FALLBACK_MODEL
