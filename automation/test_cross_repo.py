@@ -215,7 +215,7 @@ def test_runner_accepts_opencode_payload(tmp_path):
         "repository_url": TARGET_OPENCODE_URL,
         "base_ref": "main",
         "base_sha": BASE_SHA,
-        "metadata": {"model": "opencode/muse-spark-1.3-contributor-free",
+        "metadata": {"model": "opencode/nemotron-3-ultra-free",
                      "region": "oregon"},
     }
     task, issue, region, model, timeout, url, ref, sha = \
@@ -309,7 +309,7 @@ def test_unapproved_dispatch_fails_before_worker_creation():
             title="t",
             body="<!-- runtime-lab-target: evil/fork -->",
             region="oregon",
-            model="opencode/muse-spark-1.3-contributor-free",
+            model="opencode/nemotron-3-ultra-free",
             owner_id="owner-1", run_id="run-1",
             render_client=_NoCreateClient(), runner_client=_Runner())
 
