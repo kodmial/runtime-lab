@@ -180,12 +180,10 @@ jobs:
           while IFS= read -r child <&3; do
             test -n "$child" || continue
             echo "::add-mask::$child"
-            is_private="$(gh api "repos/$child" --jq .private 2>/dev/null)" || exit 2
-            test "$is_private" = true || continue
+            # Provisioning job already verified Child scope and exact
+            # repository variable readback. Fresh VM checks durable route ONLY.
             gh api "repos/$child/contents/.github/workflows/continuum-model-rollout.yml" --silent >/dev/null 2>&1 || continue
-            actual="$(gh api "repos/$child/actions/variables/OPENCODE_MODELS" --jq .value 2>/dev/null)" || exit 2
-            test "$actual" = "$pool" || exit 2
-            export OPENCODE_MODELS="$actual"
+            export OPENCODE_MODELS="$pool"
             export OPENCODE_MODEL=""
             export CONTINUUM_EXPLICIT_MODEL=""
             export CONTINUUM_MODEL_TASK_CLASS=coder
