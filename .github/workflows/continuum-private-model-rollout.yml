@@ -1,6 +1,7 @@
 name: Qualify private Child models on Parent
 
 # Trusted parent-side rollout: private Child Actions cannot allocate runners.
+# Owner-approved private enrollment was reconciled via its idempotent workflow.
 # Never put Child IDs/repository names into this public workflow or run-name.
 on:
   push:
@@ -57,41 +58,6 @@ jobs:
               echo "::error::Authorized Parent/Child discovery failed"; exit 2;
             }
           jq -e 'type=="array"' "$RUNNER_TEMP/private-child-plan.json" >/dev/null
-          jq -r '.[].repository' "$RUNNER_TEMP/private-child-plan.json" > "$RUNNER_TEMP/authorized-private-repos"
-          # Also include closed owner-authored enrollment requests for this Parent.
-          # An approved request is explicit authorization even if the current
-          # Parent allowlist has drifted. Never expose identities in logs.
-          gh api -X GET search/issues \
-            -f q="\"Enroll Child\" in:title is:issue is:closed author:${GITHUB_REPOSITORY%%/*}" \
-            -f per_page=100 > "$RUNNER_TEMP/approved-enrollments.json" 2>/dev/null
-          python3 - "$RUNNER_TEMP/approved-enrollments.json" "$GITHUB_REPOSITORY" >> "$RUNNER_TEMP/authorized-private-repos" <<'PY'
-          import json, re, sys
-          data = json.load(open(sys.argv[1], encoding="utf-8"))
-          parent, owner = sys.argv[2], sys.argv[2].split("/")[0]
-          for issue in data.get("items", []):
-              if issue.get("title") != "[Continuum] Enroll Child (v1)":
-                  continue
-              if (issue.get("user") or {}).get("login", "").lower() != owner.lower():
-                  continue
-              raw = issue.get("body") or ""
-              marker = "<!-- continuum:enroll-child:v1 -->\n"
-              if not raw.startswith(marker):
-                  continue
-              try:
-                  spec = json.loads(raw[len(marker):])
-              except (ValueError, TypeError):
-                  continue
-              if spec.get("parent") != parent or spec.get("review_provider") != "pr-agent":
-                  continue
-              prefix = "https://api.github.com/repos/"
-              url = issue.get("repository_url", "")
-              if not url.startswith(prefix):
-                  continue
-              child = url[len(prefix):]
-              if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", child) and child.split("/")[0].lower() == owner.lower():
-                  print(child)
-          PY
-          sort -u "$RUNNER_TEMP/authorized-private-repos" -o "$RUNNER_TEMP/authorized-private-repos"
           count=0
           : > "$RUNNER_TEMP/private-child-receipts"
           while IFS= read -r child; do
@@ -152,7 +118,7 @@ jobs:
             printf '%s\n' "$selected" >> "$RUNNER_TEMP/private-child-receipts"
             count=$((count + 1))
             echo "A private Child: variable persisted, real file-tool task completed and state recorded."
-          done < "$RUNNER_TEMP/authorized-private-repos"
+          done < <(jq -r '[.[].repository] | unique | .[]' "$RUNNER_TEMP/private-child-plan.json")
           test "$count" -ge 2 || { echo "::error::Fewer than two enrolled private rollout targets discovered"; exit 2; }
           receipt="$(sha256sum "$RUNNER_TEMP/private-child-receipts" | cut -d' ' -f1)"
           printf 'count=%s\nreceipt=%s\n' "$count" "$receipt" >> "$GITHUB_OUTPUT"
@@ -188,41 +154,6 @@ jobs:
           set -euo pipefail
           pool="$(gh api "repos/$GITHUB_REPOSITORY/actions/variables/OPENCODE_MODELS" --jq .value 2>/dev/null)"
           bash "$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh" plan > "$RUNNER_TEMP/private-child-plan.json"
-          jq -r '.[].repository' "$RUNNER_TEMP/private-child-plan.json" > "$RUNNER_TEMP/authorized-private-repos"
-          # Also include closed owner-authored enrollment requests for this Parent.
-          # An approved request is explicit authorization even if the current
-          # Parent allowlist has drifted. Never expose identities in logs.
-          gh api -X GET search/issues \
-            -f q="\"Enroll Child\" in:title is:issue is:closed author:${GITHUB_REPOSITORY%%/*}" \
-            -f per_page=100 > "$RUNNER_TEMP/approved-enrollments.json" 2>/dev/null
-          python3 - "$RUNNER_TEMP/approved-enrollments.json" "$GITHUB_REPOSITORY" >> "$RUNNER_TEMP/authorized-private-repos" <<'PY'
-          import json, re, sys
-          data = json.load(open(sys.argv[1], encoding="utf-8"))
-          parent, owner = sys.argv[2], sys.argv[2].split("/")[0]
-          for issue in data.get("items", []):
-              if issue.get("title") != "[Continuum] Enroll Child (v1)":
-                  continue
-              if (issue.get("user") or {}).get("login", "").lower() != owner.lower():
-                  continue
-              raw = issue.get("body") or ""
-              marker = "<!-- continuum:enroll-child:v1 -->\n"
-              if not raw.startswith(marker):
-                  continue
-              try:
-                  spec = json.loads(raw[len(marker):])
-              except (ValueError, TypeError):
-                  continue
-              if spec.get("parent") != parent or spec.get("review_provider") != "pr-agent":
-                  continue
-              prefix = "https://api.github.com/repos/"
-              url = issue.get("repository_url", "")
-              if not url.startswith(prefix):
-                  continue
-              child = url[len(prefix):]
-              if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", child) and child.split("/")[0].lower() == owner.lower():
-                  print(child)
-          PY
-          sort -u "$RUNNER_TEMP/authorized-private-repos" -o "$RUNNER_TEMP/authorized-private-repos"
           count=0
           : > "$RUNNER_TEMP/private-child-receipts"
           while IFS= read -r child; do
@@ -246,7 +177,7 @@ jobs:
             }
             printf '%s\n' "$selected" >> "$RUNNER_TEMP/private-child-receipts"
             count=$((count + 1))
-          done < "$RUNNER_TEMP/authorized-private-repos"
+          done < <(jq -r '[.[].repository] | unique | .[]' "$RUNNER_TEMP/private-child-plan.json")
           actual_receipt="$(sha256sum "$RUNNER_TEMP/private-child-receipts" | cut -d' ' -f1)"
           test "$count" = "$EXPECTED_COUNT" && test "$actual_receipt" = "$EXPECTED_RECEIPT" || {
             echo "::error::Sticky model receipt mismatch across independent parent runners"; exit 2;
