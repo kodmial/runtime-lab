@@ -1,6 +1,7 @@
 name: Reconcile authorized Child enrollments
 
 # Private owner-authored issue requests configure Actions Variables; no tracked repo maps.
+# Owner-authorized enrollment reconciliation re-run after private Child rollout audit.
 on:
   push:
     branches: [main]
