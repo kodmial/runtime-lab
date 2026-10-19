@@ -42,16 +42,15 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.TAP_PAT }}
+          CONTINUUM_APPROVED_MODELS: ${{ vars.OPENCODE_MODELS }}
           CHILD_REPOSITORIES: ${{ secrets.CHILD_RUNTIME_REPOSITORIES }}
           CONTINUUM_ENGINE_ROOT: ${{ github.workspace }}/.continuum-engine
           CONTINUUM_EXPECTED_OPENCODE_VERSION: ${{ steps.toolchain.outputs.runtime-version }}
         run: |
           set -euo pipefail
           test -n "${GH_TOKEN:-}" || { echo "::error::Parent TAP_PAT is unavailable"; exit 2; }
-          pool="$(gh api "repos/$GITHUB_REPOSITORY/actions/variables/OPENCODE_MODELS" --jq .value 2>/dev/null)" || {
-            echo "::error::Parent approved model pool unavailable"; exit 2;
-          }
-          test -n "$pool"
+          pool="${CONTINUUM_APPROVED_MODELS:-}"
+          test -n "$pool" || { echo "::error::Parent OPENCODE_MODELS repository variable is empty"; exit 2; }
           # Continuum's own resolver validates parent/child relations; never log its plan.
           bash "$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh" plan \
             > "$RUNNER_TEMP/private-child-plan.json" || {
@@ -166,6 +165,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.TAP_PAT }}
+          CONTINUUM_APPROVED_MODELS: ${{ vars.OPENCODE_MODELS }}
           CHILD_REPOSITORIES: ${{ secrets.CHILD_RUNTIME_REPOSITORIES }}
           CONTINUUM_ENGINE_ROOT: ${{ github.workspace }}/.continuum-engine
           CONTINUUM_EXPECTED_OPENCODE_VERSION: ${{ steps.toolchain.outputs.runtime-version }}
@@ -173,7 +173,8 @@ jobs:
           EXPECTED_COUNT: ${{ needs.provision-and-prove.outputs.count }}
         run: |
           set -euo pipefail
-          pool="$(gh api "repos/$GITHUB_REPOSITORY/actions/variables/OPENCODE_MODELS" --jq .value 2>/dev/null)"
+          pool="${CONTINUUM_APPROVED_MODELS:-}"
+          test -n "$pool" || { echo "::error::Parent OPENCODE_MODELS repository variable is empty"; exit 2; }
           bash "$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh" plan > "$RUNNER_TEMP/private-child-plan.json"
           count=0
           : > "$RUNNER_TEMP/private-child-receipts"
