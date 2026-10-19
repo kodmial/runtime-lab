@@ -81,7 +81,7 @@ jobs:
           }
           count=0
           : > "$RUNNER_TEMP/private-child-receipts"
-          while IFS= read -r child; do
+          while IFS= read -r child <&3; do
             test -n "$child" || continue
             echo "::add-mask::$child"
             is_private="$(gh api "repos/$child" --jq .private 2>/dev/null)" || {
@@ -124,7 +124,7 @@ jobs:
               env -u GH_TOKEN -u GITHUB_TOKEN -u TAP_PAT \
                 opencode run --auto --model "$selected" \
                 'Create a file called acceptance-proof.txt with exactly ACCEPTANCE_OK and no other text.' \
-                >"$RUNNER_TEMP/continuum-private-agent-$$.log" 2>&1
+                </dev/null >"$RUNNER_TEMP/continuum-private-agent-$.log" 2>&1
               test -f acceptance-proof.txt
               test "$(cat acceptance-proof.txt)" = ACCEPTANCE_OK
             ) || {
@@ -139,7 +139,7 @@ jobs:
             printf '%s\n' "$selected" >> "$RUNNER_TEMP/private-child-receipts"
             count=$((count + 1))
             echo "A private Child: variable persisted, real file-tool task completed and state recorded."
-          done < <(jq -r '[.[].repository] | unique | .[]' "$RUNNER_TEMP/private-child-plan.json")
+          done 3< <(jq -r '[.[].repository] | unique | .[]' "$RUNNER_TEMP/private-child-plan.json")
           test "$count" -ge 2 || { echo "::error::Fewer than two enrolled private rollout targets discovered"; exit 2; }
           receipt="$(sha256sum "$RUNNER_TEMP/private-child-receipts" | cut -d' ' -f1)"
           printf 'count=%s\nreceipt=%s\n' "$count" "$receipt" >> "$GITHUB_OUTPUT"
@@ -177,7 +177,7 @@ jobs:
           bash "$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh" plan > "$RUNNER_TEMP/private-child-plan.json"
           count=0
           : > "$RUNNER_TEMP/private-child-receipts"
-          while IFS= read -r child; do
+          while IFS= read -r child <&3; do
             test -n "$child" || continue
             echo "::add-mask::$child"
             is_private="$(gh api "repos/$child" --jq .private 2>/dev/null)" || exit 2
@@ -198,7 +198,7 @@ jobs:
             }
             printf '%s\n' "$selected" >> "$RUNNER_TEMP/private-child-receipts"
             count=$((count + 1))
-          done < <(jq -r '[.[].repository] | unique | .[]' "$RUNNER_TEMP/private-child-plan.json")
+          done 3< <(jq -r '[.[].repository] | unique | .[]' "$RUNNER_TEMP/private-child-plan.json")
           actual_receipt="$(sha256sum "$RUNNER_TEMP/private-child-receipts" | cut -d' ' -f1)"
           test "$count" = "$EXPECTED_COUNT" && test "$actual_receipt" = "$EXPECTED_RECEIPT" || {
             echo "::error::Sticky model receipt mismatch across independent parent runners"; exit 2;
