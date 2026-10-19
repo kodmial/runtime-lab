@@ -58,6 +58,27 @@ jobs:
               echo "::error::Authorized Parent/Child discovery failed"; exit 2;
             }
           jq -e 'type=="array"' "$RUNNER_TEMP/private-child-plan.json" >/dev/null
+          # Fail early before consuming LLM quota if child enrollment is incomplete.
+          inventory_count="$(jq 'length' "$RUNNER_TEMP/private-child-plan.json")"
+          private_count=0
+          rollout_count=0
+          while IFS= read -r target; do
+            test -n "$target" || continue
+            echo "::add-mask::$target"
+            private="$(gh api "repos/$target" --jq .private 2>/dev/null)" || {
+              echo "::error::Child repository metadata unavailable"; exit 2;
+            }
+            if [[ "$private" == true ]]; then
+              private_count=$((private_count + 1))
+              if gh api "repos/$target/contents/.github/workflows/continuum-model-rollout.yml" --silent >/dev/null 2>&1; then
+                rollout_count=$((rollout_count + 1))
+              fi
+            fi
+          done < <(jq -r '.[].repository' "$RUNNER_TEMP/private-child-plan.json")
+          echo "Private model rollout admission: $inventory_count enrolled, $private_count private, $rollout_count installed markers."
+          test "$rollout_count" -ge 2 || {
+            echo "::error::Parent child inventory or rollout marker incomplete"; exit 2;
+          }
           count=0
           : > "$RUNNER_TEMP/private-child-receipts"
           while IFS= read -r child; do
