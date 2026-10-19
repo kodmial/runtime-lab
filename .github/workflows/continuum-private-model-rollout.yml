@@ -27,17 +27,30 @@ jobs:
       receipt: ${{ steps.run.outputs.receipt }}
       sealed: ${{ steps.run.outputs.sealed }}
     steps:
-      - name: Respect actual GitHub PAT API rate budget before private inventory
+      - name: Check GitHub PAT API budget before using private inventory
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.TAP_PAT }}
         run: |
           set -euo pipefail
           test -n "${GH_TOKEN:-}" || { echo "::error::Parent TAP_PAT missing"; exit 2; }
-          limits="$(gh api rate_limit --jq '.resources.core | [.remaining,.reset,.limit] | @tsv' 2>/dev/null)" || {
-            echo "::error::Could not read GitHub API rate status"; exit 2;
+          limits="$(gh api rate_limit --jq '.resources.core' 2>/dev/null)" || {
+            echo "::error::GitHub API rate status unavailable"; exit 2;
           }
-          IFS=
+          remaining="$(jq -r '.remaining' <<< "$limits")"
+          reset="$(jq -r '.reset' <<< "$limits")"
+          echo "GitHub API core request budget remaining: $remaining."
+          if [[ "$remaining" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]] && (( remaining < 80 )); then
+            seconds=$(( reset - $(date +%s) + 10 ))
+            (( seconds < 0 )) && seconds=0
+            if (( seconds > 1500 )); then
+              echo "::error::API reset beyond the bounded wait; no LLM job was started."
+              exit 75
+            fi
+            echo "Waiting for documented API reset."
+            sleep "$seconds"
+          fi
+      - name: Checkout canonical Continuum runtime and private child resolver
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: kodmial/continuum
