@@ -1,0 +1,157 @@
+name: Continuum approved model pool rollout
+
+# One-time migration and on-demand requalification. The immutable, owner-approved
+# deployment fixture is read from AA; production model IDs are NOT embedded here.
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/continuum-model-rollout.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      models: ${{ steps.policy.outputs.models }}
+    steps:
+      - name: Load immutable owner-approved deployment policy
+        id: policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --retry 2 \
+            'https://raw.githubusercontent.com/kodmial/aa/9fa32b11eafb5fece004fba9c3ac0d1b5a790722/tests/fixtures/aa-approved-models.json' \
+            -o "$RUNNER_TEMP/approved-models.json"
+          models="$(python3 - "$RUNNER_TEMP/approved-models.json" <<'PY'
+          import json, re, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          values = data["models"]
+          if not isinstance(values, list) or len(values) != 3 or len(set(values)) != 3:
+              raise SystemExit("Approved policy must contain exactly three distinct models")
+          if not all(isinstance(s, str) and re.fullmatch(r"opencode/[A-Za-z0-9._/-]+", s) for s in values):
+              raise SystemExit("Approved policy contains invalid model identifiers")
+          print(",".join(values))
+          PY
+          )"
+          printf 'models=%s\n' "$models" >> "$GITHUB_OUTPUT"
+      - name: Set and read back GitHub repository OPENCODE_MODELS
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT }}
+          MODELS: ${{ steps.policy.outputs.models }}
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN:-}" || { echo "::error::Existing TAP_PAT is required to administer GitHub Variables"; exit 2; }
+          test -n "$MODELS"
+          endpoint="repos/$GITHUB_REPOSITORY/actions/variables/OPENCODE_MODELS"
+          if gh api "$endpoint" --silent >/dev/null 2>&1; then
+            gh api -X PATCH "$endpoint" -f name=OPENCODE_MODELS -f value="$MODELS" --silent >/dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/actions/variables" -f name=OPENCODE_MODELS -f value="$MODELS" --silent >/dev/null
+          fi
+          actual="$(gh api "$endpoint" --jq .value)"
+          test "$actual" = "$MODELS" || { echo "::error::OPENCODE_MODELS readback does not match approved policy"; exit 1; }
+          echo "Verified owner-approved pool as a GitHub repository variable."
+
+  live-coding:
+    needs: provision
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    outputs:
+      model: ${{ steps.route.outputs.model }}
+    steps:
+      - name: Confirm variable was persisted by GitHub
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT }}
+          EXPECTED: ${{ needs.provision.outputs.models }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/actions/variables/OPENCODE_MODELS" --jq .value)"
+          test "$actual" = "$EXPECTED"
+      - name: Restore verified cached official OpenCode
+        id: toolchain
+        uses: kodmial/continuum/.github/actions/agent-toolchain@main
+        with:
+          components: opencode
+          opencode-version: ${{ vars.CONTINUUM_OPENCODE_VERSION || '' }}
+      - name: Select qualified route with canonical selector
+        id: route
+        uses: kodmial/continuum/.github/actions/model-route@main
+        with:
+          models: ${{ needs.provision.outputs.models }}
+          legacy-model: ${{ vars.OPENCODE_MODEL || '' }}
+          task-class: coder
+          profile: consumer-model-rollout
+          state-token: ${{ github.token }}
+          runtime-version: ${{ steps.toolchain.outputs.runtime-version }}
+      - name: Prove real agent can create a file, not just return HTTP 200
+        env:
+          SELECTED_MODEL: ${{ steps.route.outputs.model }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SELECTED_MODEL"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          cd "$work"
+          env -u GH_TOKEN -u GITHUB_TOKEN -u TAP_PAT \
+            opencode run --auto --model "$SELECTED_MODEL" \
+            'Create the file acceptance-proof.txt with exactly ACCEPTANCE_OK and no other text.' \
+            > "$RUNNER_TEMP/continuum-real-model-rollout.log" 2>&1 || {
+              echo "::error::Real approved OpenCode agent task failed; see job logs for failure attribution"
+              tail -n 45 "$RUNNER_TEMP/continuum-real-model-rollout.log" | sed -E 's/(gh[pousr]_[A-Za-z0-9_]+)/[REDACTED]/g'
+              exit 1
+            }
+          test -f acceptance-proof.txt
+          test "$(cat acceptance-proof.txt)" = ACCEPTANCE_OK
+          echo "Real OpenCode agent file-tool acceptance succeeded."
+      - name: Record ONLY completed real agent execution
+        uses: kodmial/continuum/.github/actions/model-route@main
+        with:
+          operation: record
+          models: ${{ needs.provision.outputs.models }}
+          selected-model: ${{ steps.route.outputs.model }}
+          task-class: coder
+          profile: consumer-model-rollout
+          state-token: ${{ github.token }}
+          runtime-version: ${{ steps.toolchain.outputs.runtime-version }}
+
+  fresh-runner:
+    needs: [provision, live-coding]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Restore verified OpenCode on independent runner
+        id: toolchain
+        uses: kodmial/continuum/.github/actions/agent-toolchain@main
+        with:
+          components: opencode
+          opencode-version: ${{ vars.CONTINUUM_OPENCODE_VERSION || '' }}
+      - name: Re-select from persisted real-success route
+        id: route
+        uses: kodmial/continuum/.github/actions/model-route@main
+        with:
+          models: ${{ needs.provision.outputs.models }}
+          legacy-model: ${{ vars.OPENCODE_MODEL || '' }}
+          task-class: coder
+          profile: consumer-model-rollout
+          state-token: ${{ github.token }}
+          runtime-version: ${{ steps.toolchain.outputs.runtime-version }}
+      - name: Verify sticky selection survived destruction of first runner
+        env:
+          EXPECTED: ${{ needs.live-coding.outputs.model }}
+          ACTUAL: ${{ steps.route.outputs.model }}
+        run: |
+          set -euo pipefail
+          test -n "$EXPECTED"
+          test "$EXPECTED" = "$ACTUAL"
+          echo "Approved route persisted across independent ephemeral runners."
