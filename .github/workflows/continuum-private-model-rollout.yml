@@ -6,7 +6,9 @@ name: Qualify private Child models on Parent
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/continuum-private-model-rollout.yml']
+    paths:
+      - '.github/workflows/continuum-private-model-rollout.yml'
+      - 'automation/private_model_receipt.py'
   workflow_dispatch:
 
 permissions:
@@ -23,6 +25,7 @@ jobs:
     outputs:
       count: ${{ steps.run.outputs.count }}
       receipt: ${{ steps.run.outputs.receipt }}
+      sealed: ${{ steps.run.outputs.sealed }}
     steps:
       - name: Checkout canonical Continuum runtime and private child resolver
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -30,6 +33,12 @@ jobs:
           repository: kodmial/continuum
           ref: main
           path: .continuum-engine
+          persist-credentials: false
+      - name: Checkout audited Parent receipt helper
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: .parent-rollout
           persist-credentials: false
       - name: Restore verified cached official OpenCode
         id: toolchain
@@ -80,6 +89,7 @@ jobs:
           }
           count=0
           : > "$RUNNER_TEMP/private-child-receipts"
+          : > "$RUNNER_TEMP/private-child-targets.jsonl"
           while IFS= read -r child <&3; do
             test -n "$child" || continue
             echo "::add-mask::$child"
@@ -136,70 +146,52 @@ jobs:
               echo "::error::Child durable state attestation failed"; exit 2;
             }
             printf '%s\n' "$selected" >> "$RUNNER_TEMP/private-child-receipts"
+            jq -cn --arg repository "$child" --arg model "$selected" \
+              '{repository:$repository,model:$model}' >> "$RUNNER_TEMP/private-child-targets.jsonl"
             count=$((count + 1))
             echo "A private Child: variable persisted, real file-tool task completed and state recorded."
           done 3< <(jq -r '[.[].repository] | unique | .[]' "$RUNNER_TEMP/private-child-plan.json")
           test "$count" -ge 2 || { echo "::error::Fewer than two enrolled private rollout targets discovered"; exit 2; }
           receipt="$(sha256sum "$RUNNER_TEMP/private-child-receipts" | cut -d' ' -f1)"
-          printf 'count=%s\nreceipt=%s\n' "$count" "$receipt" >> "$GITHUB_OUTPUT"
+          sealed="$(python3 .parent-rollout/automation/private_model_receipt.py seal "$RUNNER_TEMP/private-child-targets.jsonl")"
+          printf 'count=%s\nreceipt=%s\nsealed=%s\n' "$count" "$receipt" "$sealed" >> "$GITHUB_OUTPUT"
           echo "Parent completed qualified private Child model rollout for $count registered target(s)."
 
   fresh-runner:
     needs: provision-and-prove
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 25
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout canonical Continuum state implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: kodmial/continuum
           ref: main
           path: .continuum-engine
           persist-credentials: false
-      - name: Restore verified cached OpenCode
+      - name: Checkout exact Parent receipt verification code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: .parent-rollout
+          persist-credentials: false
+      - name: Restore verified cached OpenCode binary for provenance
         id: toolchain
         uses: kodmial/continuum/.github/actions/agent-toolchain@main
         with:
           components: opencode
           opencode-version: ${{ vars.CONTINUUM_OPENCODE_VERSION || '' }}
-      - name: Verify private Child sticky routes survived runner destruction
+      - name: Verify exact persisted private Child real-success receipts
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.TAP_PAT }}
           CONTINUUM_APPROVED_MODELS: ${{ vars.OPENCODE_MODELS }}
-          CHILD_REPOSITORIES: ${{ secrets.CHILD_RUNTIME_REPOSITORIES }}
+          CONTINUUM_SEALED_RECEIPT: ${{ needs.provision-and-prove.outputs.sealed }}
           CONTINUUM_ENGINE_ROOT: ${{ github.workspace }}/.continuum-engine
           CONTINUUM_EXPECTED_OPENCODE_VERSION: ${{ steps.toolchain.outputs.runtime-version }}
-          EXPECTED_RECEIPT: ${{ needs.provision-and-prove.outputs.receipt }}
-          EXPECTED_COUNT: ${{ needs.provision-and-prove.outputs.count }}
         run: |
           set -euo pipefail
-          pool="${CONTINUUM_APPROVED_MODELS:-}"
-          test -n "$pool" || { echo "::error::Parent OPENCODE_MODELS repository variable is empty"; exit 2; }
-          bash "$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh" plan > "$RUNNER_TEMP/private-child-plan.json"
-          count=0
-          : > "$RUNNER_TEMP/private-child-receipts"
-          while IFS= read -r child <&3; do
-            test -n "$child" || continue
-            echo "::add-mask::$child"
-            # Provisioning job already verified Child scope and exact
-            # repository variable readback. Fresh VM checks durable route ONLY.
-            gh api "repos/$child/contents/.github/workflows/continuum-model-rollout.yml" --silent >/dev/null 2>&1 || continue
-            export OPENCODE_MODELS="$pool"
-            export OPENCODE_MODEL=""
-            export CONTINUUM_EXPLICIT_MODEL=""
-            export CONTINUUM_MODEL_TASK_CLASS=coder
-            export CONTINUUM_MODEL_PROFILE=consumer-model-rollout
-            export CONTINUUM_MODEL_STATE_REPOSITORY="$child"
-            export CONTINUUM_MODEL_STATE_TOKEN="$GH_TOKEN"
-            export CONTINUUM_MODEL_CREDENTIAL_SCOPE=anonymous
-            selected="$(python3 "$CONTINUUM_ENGINE_ROOT/src/continuum/model_routing.py" select)" || {
-              echo "::error::Private Child route unavailable on fresh runner"; exit 2;
-            }
-            printf '%s\n' "$selected" >> "$RUNNER_TEMP/private-child-receipts"
-            count=$((count + 1))
-          done 3< <(jq -r '[.[].repository] | unique | .[]' "$RUNNER_TEMP/private-child-plan.json")
-          actual_receipt="$(sha256sum "$RUNNER_TEMP/private-child-receipts" | cut -d' ' -f1)"
-          test "$count" = "$EXPECTED_COUNT" && test "$actual_receipt" = "$EXPECTED_RECEIPT" || {
-            echo "::error::Sticky model receipt mismatch across independent parent runners"; exit 2;
-          }
-          echo "Private Child pool and durable sticky route verified on fresh public runner."
+          # No discovery, no variables API, no state mutation and no new LLM call.
+          python3 .parent-rollout/automation/private_model_receipt.py verify
