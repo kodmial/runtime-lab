@@ -1,0 +1,184 @@
+name: Qualify private Child models on Parent
+
+# Trusted parent-side rollout: private Child Actions cannot allocate runners.
+# Never put Child IDs/repository names into this public workflow or run-name.
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/continuum-private-model-rollout.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: continuum-private-model-rollout
+  cancel-in-progress: false
+
+jobs:
+  provision-and-prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      count: ${{ steps.run.outputs.count }}
+      receipt: ${{ steps.run.outputs.receipt }}
+    steps:
+      - name: Checkout canonical Continuum runtime and private child resolver
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: kodmial/continuum
+          ref: main
+          path: .continuum-engine
+          persist-credentials: false
+      - name: Restore verified cached official OpenCode
+        id: toolchain
+        uses: kodmial/continuum/.github/actions/agent-toolchain@main
+        with:
+          components: opencode
+          opencode-version: ${{ vars.CONTINUUM_OPENCODE_VERSION || '' }}
+      - name: Provision and qualify registered private Children without revealing names
+        id: run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT }}
+          CHILD_REPOSITORIES: ${{ secrets.CHILD_RUNTIME_REPOSITORIES }}
+          CONTINUUM_ENGINE_ROOT: ${{ github.workspace }}/.continuum-engine
+          CONTINUUM_EXPECTED_OPENCODE_VERSION: ${{ steps.toolchain.outputs.runtime-version }}
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN:-}" || { echo "::error::Parent TAP_PAT is unavailable"; exit 2; }
+          pool="$(gh api "repos/$GITHUB_REPOSITORY/actions/variables/OPENCODE_MODELS" --jq .value 2>/dev/null)" || {
+            echo "::error::Parent approved model pool unavailable"; exit 2;
+          }
+          test -n "$pool"
+          # Continuum's own resolver validates parent/child relations; never log its plan.
+          bash "$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh" plan \
+            > "$RUNNER_TEMP/private-child-plan.json" || {
+              echo "::error::Authorized Parent/Child discovery failed"; exit 2;
+            }
+          jq -e 'type=="array"' "$RUNNER_TEMP/private-child-plan.json" >/dev/null
+          count=0
+          : > "$RUNNER_TEMP/private-child-receipts"
+          while IFS= read -r child; do
+            test -n "$child" || continue
+            echo "::add-mask::$child"
+            is_private="$(gh api "repos/$child" --jq .private 2>/dev/null)" || {
+              echo "::error::Private child repository metadata unavailable"; exit 2;
+            }
+            test "$is_private" = true || continue
+            # Qualify only consumers explicitly enrolled into this rollout.
+            if ! gh api "repos/$child/contents/.github/workflows/continuum-model-rollout.yml" --silent >/dev/null 2>&1; then
+              continue
+            fi
+            endpoint="repos/$child/actions/variables/OPENCODE_MODELS"
+            if gh api "$endpoint" --silent >/dev/null 2>&1; then
+              gh api -X PATCH "$endpoint" -f name=OPENCODE_MODELS -f value="$pool" --silent >/dev/null 2>&1 || {
+                echo "::error::Child variable update denied"; exit 2;
+              }
+            else
+              gh api -X POST "repos/$child/actions/variables" -f name=OPENCODE_MODELS -f value="$pool" --silent >/dev/null 2>&1 || {
+                echo "::error::Child variable creation denied"; exit 2;
+              }
+            fi
+            actual="$(gh api "$endpoint" --jq .value 2>/dev/null)" || {
+              echo "::error::Child variable readback failed"; exit 2;
+            }
+            test "$actual" = "$pool" || { echo "::error::Child model policy mismatch"; exit 2; }
+            export OPENCODE_MODELS="$pool"
+            export OPENCODE_MODEL=""
+            export CONTINUUM_EXPLICIT_MODEL=""
+            export CONTINUUM_MODEL_TASK_CLASS=coder
+            export CONTINUUM_MODEL_PROFILE=consumer-model-rollout
+            export CONTINUUM_MODEL_STATE_REPOSITORY="$child"
+            export CONTINUUM_MODEL_STATE_TOKEN="$GH_TOKEN"
+            export CONTINUUM_MODEL_CREDENTIAL_SCOPE=anonymous
+            selected="$(python3 "$CONTINUUM_ENGINE_ROOT/src/continuum/model_routing.py" select)" || {
+              echo "::error::Child route qualification failed"; exit 2;
+            }
+            : "${selected:?Qualified model was empty}"
+            work="$(mktemp -d)"
+            (
+              cd "$work"
+              env -u GH_TOKEN -u GITHUB_TOKEN -u TAP_PAT \
+                opencode run --auto --model "$selected" \
+                'Create a file called acceptance-proof.txt with exactly ACCEPTANCE_OK and no other text.' \
+                >"$RUNNER_TEMP/continuum-private-agent-$$.log" 2>&1
+              test -f acceptance-proof.txt
+              test "$(cat acceptance-proof.txt)" = ACCEPTANCE_OK
+            ) || {
+              rm -rf "$work"
+              echo "::error::Private Child real LLM file-tool test failed"; exit 2;
+            }
+            rm -rf "$work"
+            export CONTINUUM_SELECTED_MODEL="$selected"
+            python3 "$CONTINUUM_ENGINE_ROOT/src/continuum/model_routing.py" record || {
+              echo "::error::Child durable state attestation failed"; exit 2;
+            }
+            printf '%s\n' "$selected" >> "$RUNNER_TEMP/private-child-receipts"
+            count=$((count + 1))
+            echo "A private Child: variable persisted, real file-tool task completed and state recorded."
+          done < <(jq -r '[.[].repository] | unique | .[]' "$RUNNER_TEMP/private-child-plan.json")
+          test "$count" -ge 2 || { echo "::error::Fewer than two enrolled private rollout targets discovered"; exit 2; }
+          receipt="$(sha256sum "$RUNNER_TEMP/private-child-receipts" | cut -d' ' -f1)"
+          printf 'count=%s\nreceipt=%s\n' "$count" "$receipt" >> "$GITHUB_OUTPUT"
+          echo "Parent completed qualified private Child model rollout for $count registered target(s)."
+
+  fresh-runner:
+    needs: provision-and-prove
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: kodmial/continuum
+          ref: main
+          path: .continuum-engine
+          persist-credentials: false
+      - name: Restore verified cached OpenCode
+        id: toolchain
+        uses: kodmial/continuum/.github/actions/agent-toolchain@main
+        with:
+          components: opencode
+          opencode-version: ${{ vars.CONTINUUM_OPENCODE_VERSION || '' }}
+      - name: Verify private Child sticky routes survived runner destruction
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PAT }}
+          CHILD_REPOSITORIES: ${{ secrets.CHILD_RUNTIME_REPOSITORIES }}
+          CONTINUUM_ENGINE_ROOT: ${{ github.workspace }}/.continuum-engine
+          CONTINUUM_EXPECTED_OPENCODE_VERSION: ${{ steps.toolchain.outputs.runtime-version }}
+          EXPECTED_RECEIPT: ${{ needs.provision-and-prove.outputs.receipt }}
+          EXPECTED_COUNT: ${{ needs.provision-and-prove.outputs.count }}
+        run: |
+          set -euo pipefail
+          pool="$(gh api "repos/$GITHUB_REPOSITORY/actions/variables/OPENCODE_MODELS" --jq .value 2>/dev/null)"
+          bash "$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh" plan > "$RUNNER_TEMP/private-child-plan.json"
+          count=0
+          : > "$RUNNER_TEMP/private-child-receipts"
+          while IFS= read -r child; do
+            test -n "$child" || continue
+            echo "::add-mask::$child"
+            is_private="$(gh api "repos/$child" --jq .private 2>/dev/null)" || exit 2
+            test "$is_private" = true || continue
+            gh api "repos/$child/contents/.github/workflows/continuum-model-rollout.yml" --silent >/dev/null 2>&1 || continue
+            actual="$(gh api "repos/$child/actions/variables/OPENCODE_MODELS" --jq .value 2>/dev/null)" || exit 2
+            test "$actual" = "$pool" || exit 2
+            export OPENCODE_MODELS="$actual"
+            export OPENCODE_MODEL=""
+            export CONTINUUM_EXPLICIT_MODEL=""
+            export CONTINUUM_MODEL_TASK_CLASS=coder
+            export CONTINUUM_MODEL_PROFILE=consumer-model-rollout
+            export CONTINUUM_MODEL_STATE_REPOSITORY="$child"
+            export CONTINUUM_MODEL_STATE_TOKEN="$GH_TOKEN"
+            export CONTINUUM_MODEL_CREDENTIAL_SCOPE=anonymous
+            selected="$(python3 "$CONTINUUM_ENGINE_ROOT/src/continuum/model_routing.py" select)" || {
+              echo "::error::Private Child route unavailable on fresh runner"; exit 2;
+            }
+            printf '%s\n' "$selected" >> "$RUNNER_TEMP/private-child-receipts"
+            count=$((count + 1))
+          done < <(jq -r '[.[].repository] | unique | .[]' "$RUNNER_TEMP/private-child-plan.json")
+          actual_receipt="$(sha256sum "$RUNNER_TEMP/private-child-receipts" | cut -d' ' -f1)"
+          test "$count" = "$EXPECTED_COUNT" && test "$actual_receipt" = "$EXPECTED_RECEIPT" || {
+            echo "::error::Sticky model receipt mismatch across independent parent runners"; exit 2;
+          }
+          echo "Private Child pool and durable sticky route verified on fresh public runner."
