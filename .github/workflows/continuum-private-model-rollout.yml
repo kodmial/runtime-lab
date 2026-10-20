@@ -61,8 +61,6 @@ jobs:
           GH_TOKEN: ${{ secrets.TAP_PAT }}
           CONTINUUM_APPROVED_MODELS: ${{ vars.OPENCODE_MODELS }}
           CHILD_REPOSITORIES: ${{ secrets.CHILD_RUNTIME_REPOSITORIES }}
-          PARENT_ROLE: ${{ vars.CONTINUUM_ROLE }}
-          PARENT_CHILDREN: ${{ vars.CONTINUUM_CHILDREN }}
           CONTINUUM_ENGINE_ROOT: ${{ github.workspace }}/.continuum-engine
           CONTINUUM_EXPECTED_OPENCODE_VERSION: ${{ steps.toolchain.outputs.runtime-version }}
         run: |
@@ -70,6 +68,22 @@ jobs:
           test -n "${GH_TOKEN:-}" || { echo "::error::Parent TAP_PAT is unavailable"; exit 2; }
           pool="${CONTINUUM_APPROVED_MODELS:-}"
           test -n "$pool" || { echo "::error::Parent OPENCODE_MODELS repository variable is empty"; exit 2; }
+          # Build the authorized child map from one repository inventory plus
+          # one variables read per private repository. Private identities stay
+          # in the runner temp file and are never printed, masked in env, or
+          # promoted to job outputs. If the map cannot be proven complete, the
+          # canonical resolver below remains the fallback.
+          if [[ -z "${CHILD_REPOSITORIES:-}" ]]; then
+            map_rc=0
+            python3 .parent-rollout/automation/private_model_api.py child-map \
+              > "$RUNNER_TEMP/private-child-map.json" || map_rc=$?
+            if (( map_rc == 0 )); then
+              CHILD_REPOSITORIES="$(cat "$RUNNER_TEMP/private-child-map.json")"
+              export CHILD_REPOSITORIES
+            elif (( map_rc != 3 )); then
+              echo "::error::Authorized Parent/Child mapping failed"; exit 2;
+            fi
+          fi
           # Continuum's own resolver validates parent/child relations; never log its plan.
           bash "$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh" plan \
             > "$RUNNER_TEMP/private-child-plan.json" || {
@@ -185,4 +199,7 @@ jobs:
         run: |
           set -euo pipefail
           # No discovery, no variables API, no state mutation and no new LLM call.
+          # Recovery: rerun only this failed job; the sealed handoff is bound to
+          # the trusted run (not the attempt), so no paid/free model request or
+          # state write is repeated when provision-and-prove already succeeded.
           python3 .parent-rollout/automation/private_model_receipt.py verify

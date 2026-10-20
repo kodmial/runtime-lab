@@ -265,6 +265,99 @@ def ensure_variable(client: GitHubClient, repository: str, pool: str) -> None:
         raise GitHubApiError("Child model policy mismatch")
 
 
+def repository_variables(client: GitHubClient, repository: str) -> dict[str, str]:
+    repo = _repository_argument(repository)
+    values: dict[str, str] = {}
+    page = 1
+    while True:
+        data = client.request(
+            "GET",
+            "repos/%s/actions/variables?per_page=100&page=%d" % (repo, page),
+        )
+        entries = (data or {}).get("variables")
+        if not isinstance(entries, list):
+            raise GitHubApiError("Repository variables payload is invalid")
+        for entry in entries:
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str):
+                values[entry["name"]] = str(entry.get("value", ""))
+        try:
+            total = int((data or {}).get("total_count", len(entries)))
+        except (TypeError, ValueError):
+            raise GitHubApiError("Repository variables payload is invalid") from None
+        if len(entries) < 100 or page * 100 >= total:
+            return values
+        page += 1
+
+
+def _owner_repositories(client: GitHubClient) -> list[dict]:
+    repositories: list[dict] = []
+    page = 1
+    while True:
+        data = client.request(
+            "GET", "user/repos?affiliation=owner&per_page=100&page=%d" % page
+        )
+        if not isinstance(data, list):
+            raise GitHubApiError("Repository inventory payload is invalid")
+        repositories.extend(item for item in data if isinstance(item, dict))
+        if len(data) < 100:
+            return repositories
+        page += 1
+
+
+def child_repository_map(
+    client: GitHubClient, parent: str
+) -> dict[str, str] | None:
+    """Map authorized child IDs to private repositories without logging names.
+
+    Returns None when the authorized inventory cannot be proven from installed
+    repository variables alone, so the caller can fall back to canonical
+    Continuum resolution rather than guessing or weakening admission.
+    """
+    parent = _repository_argument(parent)
+    parent_values = repository_variables(client, parent)
+    if parent_values.get("CONTINUUM_ROLE") != "parent":
+        raise GitHubApiError("Parent role is not reconciled")
+    try:
+        allowed = json.loads(parent_values.get("CONTINUUM_CHILDREN", ""))
+    except (TypeError, ValueError):
+        raise GitHubApiError("Parent child allowlist is invalid") from None
+    if (
+        not isinstance(allowed, list)
+        or not allowed
+        or any(not isinstance(item, str) or not item for item in allowed)
+        or len(set(allowed)) != len(allowed)
+    ):
+        raise GitHubApiError("Parent child allowlist is invalid")
+    owner = parent.split("/")[0].lower()
+    mapping: dict[str, str] = {}
+    seen: set[str] = set()
+    for item in _owner_repositories(client):
+        repository = item.get("full_name")
+        if (
+            not isinstance(repository, str)
+            or item.get("private") is not True
+            or repository.lower() == parent.lower()
+            or repository.split("/")[0].lower() != owner
+        ):
+            continue
+        values = repository_variables(client, repository)
+        if (
+            values.get("CONTINUUM_ROLE") != "child"
+            or values.get("CONTINUUM_PARENT", "").lower() != parent.lower()
+        ):
+            continue
+        child_id = values.get("CONTINUUM_CHILD_ID", "")
+        if child_id not in allowed:
+            continue
+        if child_id in mapping or repository.lower() in seen:
+            raise GitHubApiError("Child relationship is ambiguous")
+        mapping[child_id] = repository
+        seen.add(repository.lower())
+    if set(mapping) != set(allowed):
+        return None
+    return mapping
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="operation", required=True)
@@ -283,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
     variable_parser.add_argument("repository")
     variable_parser.add_argument("pool")
 
+    subparsers.add_parser("child-map")
+
     args = parser.parse_args(argv)
     try:
         client = client_from_env()
@@ -299,6 +394,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if has_marker(client, args.repository) else 1
         if args.operation == "ensure-variable":
             ensure_variable(client, args.repository, args.pool)
+            return 0
+        if args.operation == "child-map":
+            parent = os.environ.get("GITHUB_REPOSITORY", "")
+            mapping = child_repository_map(client, parent)
+            if mapping is None:
+                print(
+                    "Authorized child map is incomplete; using canonical resolution.",
+                    file=sys.stderr,
+                )
+                return 3
+            print(json.dumps(mapping, sort_keys=True, separators=(",", ":")))
             return 0
     except GitHubApiError as error:
         status = "unavailable" if error.status is None else str(error.status)

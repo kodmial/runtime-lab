@@ -65,7 +65,9 @@ class WorkflowValidationTests(unittest.TestCase):
         )
         self.assertIn("delegation_repository.sh", scripts)
         self.assertIn("private_model_api.py rate-budget", scripts)
+        self.assertIn("private_model_api.py child-map", scripts)
         self.assertIn("private_model_api.py ensure-variable", scripts)
+        self.assertIn("private-child-map.json", scripts)
         self.assertIn("model_routing.py\" select", scripts)
         self.assertIn("opencode run", scripts)
         self.assertIn("model_routing.py\" record", scripts)
@@ -73,6 +75,13 @@ class WorkflowValidationTests(unittest.TestCase):
         self.assertIn("env -i", scripts)
         self.assertIn("CI=true", scripts)
         self.assertNotIn("receipt=", scripts)
+
+    def test_private_child_ids_are_not_placed_in_workflow_environment(self):
+        text, _ = self.load()
+        self.assertNotIn("PARENT_CHILDREN", text)
+        self.assertNotIn("PARENT_ROLE", text)
+        self.assertNotIn("vars.CONTINUUM_CHILDREN", text)
+        self.assertNotIn("vars.CONTINUUM_ROLE", text)
 
     def test_fresh_runner_is_read_only_and_does_not_rediscover(self):
         _, data = self.load()
@@ -85,6 +94,7 @@ class WorkflowValidationTests(unittest.TestCase):
         for forbidden in (
             "delegation_repository.sh",
             "private_model_api.py",
+            "private-child-map",
             "model_routing.py",
             "opencode run",
             "actions/variables",

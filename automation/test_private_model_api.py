@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 import unittest
@@ -10,9 +11,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from private_model_api import (  # noqa: E402
     GitHubApiError,
     GitHubClient,
+    child_repository_map,
     ensure_variable,
     has_marker,
     metadata,
+    repository_variables,
     retry_delay,
 )
 
@@ -196,6 +199,174 @@ class VariableTests(unittest.TestCase):
         client = GitHubClient("token", request_fn=recorder)
         with self.assertRaises(GitHubApiError):
             ensure_variable(client, "example/private", "a/b")
+
+
+class DiscoveryTests(unittest.TestCase):
+    def variables(self, values):
+        return response(
+            200,
+            json.dumps(
+                {"total_count": len(values), "variables": values}
+            ).encode(),
+        )
+
+    def test_repository_variables_are_paginated(self):
+        first = [
+            {"name": "VAR_%03d" % index, "value": "x"} for index in range(100)
+        ]
+        recorder = Recorder(
+            [
+                response(
+                    200,
+                    json.dumps(
+                        {"total_count": 101, "variables": first}
+                    ).encode(),
+                ),
+                response(
+                    200,
+                    json.dumps(
+                        {
+                            "total_count": 101,
+                            "variables": [{"name": "LAST", "value": "y"}],
+                        }
+                    ).encode(),
+                ),
+            ]
+        )
+        client = GitHubClient("token", request_fn=recorder)
+        values = repository_variables(client, "example/private")
+        self.assertEqual(values["VAR_000"], "x")
+        self.assertEqual(values["LAST"], "y")
+        self.assertIn("page=2", recorder.calls[1][1])
+
+    def test_child_map_uses_one_inventory_and_only_private_children(self):
+        parent = "example/parent"
+        children = ["child-a", "child-b"]
+        recorder = Recorder(
+            [
+                self.variables(
+                    [
+                        {"name": "CONTINUUM_ROLE", "value": "parent"},
+                        {
+                            "name": "CONTINUUM_CHILDREN",
+                            "value": json.dumps(children),
+                        },
+                    ]
+                ),
+                response(
+                    200,
+                    json.dumps(
+                        [
+                            {
+                                "full_name": parent,
+                                "private": False,
+                            },
+                            {
+                                "full_name": "example/child-one",
+                                "private": True,
+                            },
+                            {
+                                "full_name": "example/public-child",
+                                "private": False,
+                            },
+                            {
+                                "full_name": "example/child-two",
+                                "private": True,
+                            },
+                        ]
+                    ).encode(),
+                ),
+                self.variables(
+                    [
+                        {"name": "CONTINUUM_ROLE", "value": "child"},
+                        {
+                            "name": "CONTINUUM_CHILD_ID",
+                            "value": "child-a",
+                        },
+                        {
+                            "name": "CONTINUUM_PARENT",
+                            "value": parent,
+                        },
+                    ]
+                ),
+                self.variables(
+                    [
+                        {"name": "CONTINUUM_ROLE", "value": "child"},
+                        {
+                            "name": "CONTINUUM_CHILD_ID",
+                            "value": "child-b",
+                        },
+                        {
+                            "name": "CONTINUUM_PARENT",
+                            "value": parent,
+                        },
+                    ]
+                ),
+            ]
+        )
+        client = GitHubClient("token", request_fn=recorder)
+        mapping = child_repository_map(client, parent)
+        self.assertEqual(
+            mapping,
+            {
+                "child-a": "example/child-one",
+                "child-b": "example/child-two",
+            },
+        )
+        self.assertEqual(len(recorder.calls), 4)
+
+    def test_incomplete_child_map_falls_back_without_guessing(self):
+        recorder = Recorder(
+            [
+                self.variables(
+                    [
+                        {"name": "CONTINUUM_ROLE", "value": "parent"},
+                        {
+                            "name": "CONTINUUM_CHILDREN",
+                            "value": json.dumps(["child-a", "child-b"]),
+                        },
+                    ]
+                ),
+                response(
+                    200,
+                    json.dumps(
+                        [
+                            {
+                                "full_name": "example/child-one",
+                                "private": True,
+                            }
+                        ]
+                    ).encode(),
+                ),
+                self.variables(
+                    [
+                        {"name": "CONTINUUM_ROLE", "value": "child"},
+                        {
+                            "name": "CONTINUUM_CHILD_ID",
+                            "value": "child-a",
+                        },
+                        {
+                            "name": "CONTINUUM_PARENT",
+                            "value": "example/parent",
+                        },
+                    ]
+                ),
+            ]
+        )
+        client = GitHubClient("token", request_fn=recorder)
+        self.assertIsNone(child_repository_map(client, "example/parent"))
+
+    def test_non_parent_role_is_rejected(self):
+        recorder = Recorder(
+            [
+                self.variables(
+                    [{"name": "CONTINUUM_ROLE", "value": "child"}]
+                )
+            ]
+        )
+        client = GitHubClient("token", request_fn=recorder)
+        with self.assertRaises(GitHubApiError):
+            child_repository_map(client, "example/parent")
 
 
 if __name__ == "__main__":
