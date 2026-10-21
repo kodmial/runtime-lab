@@ -139,7 +139,7 @@ def validate(value, pool, environ=None):
     if value["pool_hash"] != hashlib.sha256(pool.encode()).hexdigest():
         fail("Approved model pool changed")
     targets = value["targets"]
-    if not isinstance(targets, list) or not 2 <= len(targets) <= 20:
+    if not isinstance(targets, list) or len(targets) != 2:
         fail("Unexpected target count")
     approved = _approved_models(pool)
     seen = set()

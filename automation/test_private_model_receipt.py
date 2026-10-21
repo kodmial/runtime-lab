@@ -124,6 +124,18 @@ class ReceiptValidationTests(unittest.TestCase):
     def test_earlier_attempt_is_allowed_for_failed_only_rerun(self):
         receipt.validate(value_for("1"), "approved/model", environment("2"))
 
+    def test_target_count_must_be_exactly_two(self):
+        extra = value_for()
+        extra["targets"].append(
+            {"repository": "kodmial/private-three", "model": "approved/model"}
+        )
+        with self.assertRaises(RuntimeError):
+            receipt.validate(extra, "approved/model", environment())
+        missing = value_for()
+        missing["targets"] = missing["targets"][:1]
+        with self.assertRaises(RuntimeError):
+            receipt.validate(missing, "approved/model", environment())
+
     def test_non_approved_model_is_rejected(self):
         value = value_for()
         value["targets"][0]["model"] = "other/model"

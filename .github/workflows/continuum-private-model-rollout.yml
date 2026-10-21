@@ -157,7 +157,7 @@ jobs:
             count=$((count + 1))
             echo "A private Child: policy persisted, real file-tool task completed and state recorded."
           done 3< <(jq -r '[.[].repository] | unique | .[]' "$RUNNER_TEMP/private-child-plan.json")
-          test "$count" -ge 2 || { echo "::error::Fewer than two enrolled private rollout targets discovered"; exit 2; }
+          test "$count" -eq 2 || { echo "::error::Expected exactly two enrolled private rollout targets"; exit 2; }
           sealed="$(python3 .parent-rollout/automation/private_model_receipt.py seal "$RUNNER_TEMP/private-child-targets.jsonl")"
           printf 'count=%s\nsealed=%s\n' "$count" "$sealed" >> "$GITHUB_OUTPUT"
           echo "Parent completed qualified private Child model rollout for $count registered target(s)."

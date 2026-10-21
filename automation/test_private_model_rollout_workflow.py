@@ -72,6 +72,7 @@ class WorkflowValidationTests(unittest.TestCase):
         self.assertIn("opencode run", scripts)
         self.assertIn("model_routing.py\" record", scripts)
         self.assertIn("private_model_receipt.py seal", scripts)
+        self.assertIn('test "$count" -eq 2', scripts)
         self.assertIn("env -i", scripts)
         self.assertIn("CI=true", scripts)
         self.assertNotIn("receipt=", scripts)
