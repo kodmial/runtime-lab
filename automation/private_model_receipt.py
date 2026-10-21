@@ -187,11 +187,28 @@ def routing_module():
     return module
 
 
-def _transient_status(error):
-    text = str(error)
+_TRANSIENT_STATUS_ATTRIBUTES = ("status", "status_code", "http_status", "code")
+_UNCLASSIFIED = object()
+
+
+def _exception_chain(error):
+    seen = set()
+    current = error
+    while isinstance(current, BaseException) and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = (
+            current.__cause__
+            if current.__cause__ is not None
+            else current.__context__
+        )
+
+
+def _status_from_exception(exc):
+    text = str(exc)
     candidates = []
-    for name in ("status", "status_code", "http_status", "code"):
-        value = getattr(error, name, None)
+    for name in _TRANSIENT_STATUS_ATTRIBUTES:
+        value = getattr(exc, name, None)
         if isinstance(value, bool):
             continue
         if isinstance(value, int):
@@ -210,9 +227,26 @@ def _transient_status(error):
             return status
         if 100 <= status <= 599:
             return None
-    lowered = text.lower()
-    if any(marker in lowered for marker in TRANSIENT_MARKERS):
-        return 0
+    return _UNCLASSIFIED
+
+
+def _transient_status(error):
+    """Classify a routing error: transient status, 0 marker-only, None permanent.
+
+    The routing module's RouteError format is production-dependent: the status
+    may ride a numeric attribute, appear in any exception message, or survive
+    only on the wrapped transport error (``__cause__``/``__context__``). Proven
+    numeric evidence anywhere in that chain wins over transient-sounding
+    wording, so a permanent 4xx can never be smuggled past a transient marker;
+    message markers are the last-resort classification.
+    """
+    for exc in _exception_chain(error):
+        status = _status_from_exception(exc)
+        if status is not _UNCLASSIFIED:
+            return status
+    for exc in _exception_chain(error):
+        if any(marker in str(exc).lower() for marker in TRANSIENT_MARKERS):
+            return 0
     return None
 
 

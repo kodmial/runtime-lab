@@ -68,6 +68,16 @@ class WorkflowValidationTests(unittest.TestCase):
         self.assertIn("private_model_api.py child-map", scripts)
         self.assertIn("private_model_api.py ensure-variable", scripts)
         self.assertIn("private-child-map.json", scripts)
+        self.assertIn('--plan "$RUNNER_TEMP/private-child-plan.json"', scripts)
+        plan_at = scripts.index(
+            'bash "$CONTINUUM_ENGINE_ROOT/.github/scripts/'
+            'delegation_repository.sh" plan'
+        )
+        child_map_at = scripts.index("private_model_api.py child-map")
+        # The resolver's plan is produced first so the variables-admission
+        # proof is bounded by its authorized inventory instead of scanning
+        # every private repository owned by the account.
+        self.assertLess(plan_at, child_map_at)
         self.assertIn("model_routing.py\" select", scripts)
         self.assertIn("opencode run", scripts)
         self.assertIn("model_routing.py\" record", scripts)

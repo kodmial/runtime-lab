@@ -73,15 +73,22 @@ jobs:
           [[ "$expected_targets" =~ ^[1-9][0-9]*$ ]] || {
             echo "::error::CONTINUUM_PRIVATE_ROLLOUT_TARGETS must be a positive integer"; exit 2;
           }
-          # Build the authorized child map from one repository inventory plus
-          # one variables read per private repository, stopping once every
-          # allowlisted Child is mapped. Private identities stay in the runner
-          # temp file and are never printed, masked in env, or promoted to job
-          # outputs. An incomplete map fails closed instead of using the secret
-          # inventory fallback.
+          # Continuum's own resolver validates parent/child relations; never
+          # log its plan. Its authorized inventory also bounds the admission
+          # proof below: when no curated secret exists, only plan-named
+          # repositories consume Variables API reads, instead of one read per
+          # private repository owned by the account. Private identities stay
+          # in the runner temp files and are never printed, masked in env, or
+          # promoted to job outputs. A map that cannot prove the plan fails
+          # closed instead of weakening admission or trusting a bare secret.
+          bash "$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh" plan \
+            > "$RUNNER_TEMP/private-child-plan.json" || {
+              echo "::error::Authorized Parent/Child discovery failed"; exit 2;
+            }
           if [[ -z "${CHILD_REPOSITORIES:-}" ]]; then
             map_rc=0
             python3 .parent-rollout/automation/private_model_api.py child-map \
+              --plan "$RUNNER_TEMP/private-child-plan.json" \
               > "$RUNNER_TEMP/private-child-map.json" || map_rc=$?
             if (( map_rc == 0 )); then
               CHILD_REPOSITORIES="$(cat "$RUNNER_TEMP/private-child-map.json")"
@@ -90,11 +97,6 @@ jobs:
               echo "::error::Authorized Parent/Child mapping failed or incomplete (rc=$map_rc); refusing to fall back to secret"; exit 2;
             fi
           fi
-          # Continuum's own resolver validates parent/child relations; never log its plan.
-          bash "$CONTINUUM_ENGINE_ROOT/.github/scripts/delegation_repository.sh" plan \
-            > "$RUNNER_TEMP/private-child-plan.json" || {
-              echo "::error::Authorized Parent/Child discovery failed"; exit 2;
-            }
           jq -e 'type=="array"' "$RUNNER_TEMP/private-child-plan.json" >/dev/null
           count=0
           : > "$RUNNER_TEMP/private-child-targets.jsonl"

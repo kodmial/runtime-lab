@@ -211,6 +211,34 @@ class TransientStatusTests(unittest.TestCase):
             )
         )
 
+    def test_wrapped_cause_status_is_classified(self):
+        wrapped = RuntimeError("GitHub transport down")
+        wrapped.code = 503
+        error = RouteError("GitHub model state write failed")
+        error.__cause__ = wrapped
+        self.assertEqual(receipt._transient_status(error), 503)
+
+    def test_wrapped_context_status_is_classified(self):
+        wrapped = RuntimeError("GitHub transport down")
+        wrapped.status = 502
+        error = RouteError("GitHub model state write failed")
+        error.__context__ = wrapped
+        self.assertEqual(receipt._transient_status(error), 502)
+
+    def test_permanent_wrapped_status_beats_transient_marker(self):
+        wrapped = RuntimeError("denied")
+        wrapped.code = 403
+        error = RouteError("GitHub model state temporarily unavailable")
+        error.__cause__ = wrapped
+        self.assertIsNone(receipt._transient_status(error))
+
+    def test_transient_429_waits_for_reset_message_without_digits(self):
+        error = RouteError("GitHub model state write failed")
+        wrapped = RuntimeError("GitHub API retry budget exhausted")
+        wrapped.status = 429
+        error.__cause__ = wrapped
+        self.assertEqual(receipt._transient_status(error), 429)
+
 
 class ReceiptVerificationTests(unittest.TestCase):
     def setUp(self):

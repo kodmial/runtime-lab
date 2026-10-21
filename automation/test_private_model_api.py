@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -11,6 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from private_model_api import (  # noqa: E402
     GitHubApiError,
     GitHubClient,
+    _plan_repositories,
     child_repository_map,
     ensure_variable,
     has_marker,
@@ -450,6 +452,112 @@ class DiscoveryTests(unittest.TestCase):
         client = GitHubClient("token", request_fn=recorder)
         with self.assertRaises(GitHubApiError):
             child_repository_map(client, "example/parent")
+
+
+class PlanBoundedDiscoveryTests(unittest.TestCase):
+    def variables(self, values):
+        return response(
+            200,
+            json.dumps(
+                {"total_count": len(values), "variables": values}
+            ).encode(),
+        )
+
+    def parent_response(self, parent):
+        return self.variables(
+            [
+                {"name": "CONTINUUM_ROLE", "value": "parent"},
+                {
+                    "name": "CONTINUUM_CHILDREN",
+                    "value": json.dumps(["child-a", "child-b"]),
+                },
+            ]
+        )
+
+    def test_child_map_skips_owner_inventory_when_resolver_plan_is_given(self):
+        parent = "example/parent"
+        plan = [
+            "example/child-one",
+            "EXAMPLE/CHILD-ONE",
+            parent,
+            "other/foreign",
+            "example/child-two",
+        ]
+        recorder = Recorder(
+            [
+                self.parent_response(parent),
+                self.variables(
+                    [
+                        {"name": "CONTINUUM_ROLE", "value": "child"},
+                        {"name": "CONTINUUM_CHILD_ID", "value": "child-a"},
+                        {"name": "CONTINUUM_PARENT", "value": parent},
+                    ]
+                ),
+                self.variables(
+                    [
+                        {"name": "CONTINUUM_ROLE", "value": "child"},
+                        {"name": "CONTINUUM_CHILD_ID", "value": "child-b"},
+                        {"name": "CONTINUUM_PARENT", "value": parent},
+                    ]
+                ),
+            ]
+        )
+        client = GitHubClient("token", request_fn=recorder)
+        mapping = child_repository_map(client, parent, plan=plan)
+        self.assertEqual(
+            mapping,
+            {
+                "child-a": "example/child-one",
+                "child-b": "example/child-two",
+            },
+        )
+        self.assertEqual(len(recorder.calls), 3)
+        self.assertFalse(any("user/repos" in call[1] for call in recorder.calls))
+        self.assertEqual(recorder.responses, [])
+
+    def test_child_map_plan_missing_children_returns_none(self):
+        parent = "example/parent"
+        plan = ["example/child-one", "example/unrelated"]
+        recorder = Recorder(
+            [
+                self.parent_response(parent),
+                self.variables(
+                    [
+                        {"name": "CONTINUUM_ROLE", "value": "child"},
+                        {"name": "CONTINUUM_CHILD_ID", "value": "child-a"},
+                        {"name": "CONTINUUM_PARENT", "value": parent},
+                    ]
+                ),
+                self.variables(
+                    [
+                        {"name": "CONTINUUM_ROLE", "value": "parent"},
+                        {"name": "CONTINUUM_CHILDREN", "value": "[]"},
+                    ]
+                ),
+            ]
+        )
+        client = GitHubClient("token", request_fn=recorder)
+        self.assertIsNone(child_repository_map(client, parent, plan=plan))
+        self.assertEqual(len(recorder.calls), 3)
+
+    def test_plan_repositories_rejects_non_plan_payloads(self):
+        with tempfile.TemporaryDirectory() as work:
+            path = pathlib.Path(work) / "plan.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {"repository": "example/child-one"},
+                        {"repository": "example/child-two"},
+                    ]
+                )
+            )
+            self.assertEqual(
+                _plan_repositories(str(path)),
+                ["example/child-one", "example/child-two"],
+            )
+            path.write_text(json.dumps({"repositories": []}))
+            with self.assertRaises(GitHubApiError):
+                _plan_repositories(str(path))
 
 
 if __name__ == "__main__":

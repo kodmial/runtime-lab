@@ -308,14 +308,39 @@ def _owner_repositories(client: GitHubClient):
         page += 1
 
 
+def _plan_repositories(path: str) -> list[str]:
+    """Read repository names from the canonical resolver plan, never logging them."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        raise GitHubApiError("Canonical resolver plan is invalid") from None
+    if not isinstance(data, list) or any(
+        not isinstance(item, dict) or not isinstance(item.get("repository"), str)
+        for item in data
+    ):
+        raise GitHubApiError("Canonical resolver plan is invalid")
+    return [item["repository"] for item in data]
+
+
 def child_repository_map(
-    client: GitHubClient, parent: str
+    client: GitHubClient,
+    parent: str,
+    *,
+    plan: list[str] | None = None,
 ) -> dict[str, str] | None:
     """Map authorized child IDs to private repositories without logging names.
 
+    ``plan`` optionally names the authorized repositories already proven by the
+    canonical Continuum resolver (``delegation_repository.sh plan``). When it
+    is given, the owner-wide repository scan is skipped entirely and only
+    resolver-named repositories consume Variables reads, so the admission proof
+    costs one variables read per authorized candidate instead of one per
+    private repository owned by the same account.
+
     Returns None when the authorized inventory cannot be proven from installed
-    repository variables alone, so the caller can fall back to canonical
-    Continuum resolution rather than guessing or weakening admission.
+    repository variables alone; the caller must fail closed rather than
+    guessing or weakening admission.
     """
     parent = _repository_argument(parent)
     parent_values = repository_variables(client, parent)
@@ -334,17 +359,35 @@ def child_repository_map(
         raise GitHubApiError("Parent child allowlist is invalid")
     owner = parent.split("/")[0].lower()
     allowed_ids = set(allowed)
+
+    def candidates():
+        if plan is None:
+            for item in _owner_repositories(client):
+                repository = item.get("full_name")
+                if (
+                    not isinstance(repository, str)
+                    or item.get("private") is not True
+                    or repository.lower() == parent.lower()
+                    or repository.split("/")[0].lower() != owner
+                ):
+                    continue
+                yield repository
+            return
+        emitted: set[str] = set()
+        for name in plan:
+            if not isinstance(name, str):
+                continue
+            key = name.lower()
+            if key in emitted:
+                continue
+            emitted.add(key)
+            if name.lower() == parent.lower() or name.split("/")[0].lower() != owner:
+                continue
+            yield name
+
     mapping: dict[str, str] = {}
     seen: set[str] = set()
-    for item in _owner_repositories(client):
-        repository = item.get("full_name")
-        if (
-            not isinstance(repository, str)
-            or item.get("private") is not True
-            or repository.lower() == parent.lower()
-            or repository.split("/")[0].lower() != owner
-        ):
-            continue
+    for repository in candidates():
         values = repository_variables(client, repository)
         if (
             values.get("CONTINUUM_ROLE") != "child"
@@ -385,7 +428,15 @@ def main(argv: list[str] | None = None) -> int:
     variable_parser.add_argument("repository")
     variable_parser.add_argument("pool")
 
-    subparsers.add_parser("child-map")
+    child_map_parser = subparsers.add_parser("child-map")
+    child_map_parser.add_argument(
+        "--plan",
+        metavar="PATH",
+        help=(
+            "Canonical Continuum resolver plan JSON; only its repositories "
+            "are checked instead of scanning the owner-wide inventory."
+        ),
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -406,10 +457,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.operation == "child-map":
             parent = os.environ.get("GITHUB_REPOSITORY", "")
-            mapping = child_repository_map(client, parent)
+            plan = _plan_repositories(args.plan) if args.plan else None
+            mapping = child_repository_map(client, parent, plan=plan)
             if mapping is None:
                 print(
-                    "Authorized child map is incomplete; using canonical resolution.",
+                    "Authorized child map is incomplete; failing closed.",
                     file=sys.stderr,
                 )
                 return 3
