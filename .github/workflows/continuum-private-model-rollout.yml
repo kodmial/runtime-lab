@@ -60,6 +60,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TAP_PAT }}
           CONTINUUM_APPROVED_MODELS: ${{ vars.OPENCODE_MODELS }}
+          CONTINUUM_EXPECTED_TARGETS: ${{ vars.CONTINUUM_PRIVATE_ROLLOUT_TARGETS || '2' }}
           CHILD_REPOSITORIES: ${{ secrets.CHILD_RUNTIME_REPOSITORIES }}
           CONTINUUM_ENGINE_ROOT: ${{ github.workspace }}/.continuum-engine
           CONTINUUM_EXPECTED_OPENCODE_VERSION: ${{ steps.toolchain.outputs.runtime-version }}
@@ -68,11 +69,16 @@ jobs:
           test -n "${GH_TOKEN:-}" || { echo "::error::Parent TAP_PAT is unavailable"; exit 2; }
           pool="${CONTINUUM_APPROVED_MODELS:-}"
           test -n "$pool" || { echo "::error::Parent OPENCODE_MODELS repository variable is empty"; exit 2; }
+          expected_targets="${CONTINUUM_EXPECTED_TARGETS:-2}"
+          [[ "$expected_targets" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::CONTINUUM_PRIVATE_ROLLOUT_TARGETS must be a positive integer"; exit 2;
+          }
           # Build the authorized child map from one repository inventory plus
-          # one variables read per private repository. Private identities stay
-          # in the runner temp file and are never printed, masked in env, or
-          # promoted to job outputs. If the map cannot be proven complete, the
-          # canonical resolver below remains the fallback.
+          # one variables read per private repository, stopping once every
+          # allowlisted Child is mapped. Private identities stay in the runner
+          # temp file and are never printed, masked in env, or promoted to job
+          # outputs. An incomplete map fails closed instead of using the secret
+          # inventory fallback.
           if [[ -z "${CHILD_REPOSITORIES:-}" ]]; then
             map_rc=0
             python3 .parent-rollout/automation/private_model_api.py child-map \
@@ -80,8 +86,8 @@ jobs:
             if (( map_rc == 0 )); then
               CHILD_REPOSITORIES="$(cat "$RUNNER_TEMP/private-child-map.json")"
               export CHILD_REPOSITORIES
-            elif (( map_rc != 3 )); then
-              echo "::error::Authorized Parent/Child mapping failed"; exit 2;
+            else
+              echo "::error::Authorized Parent/Child mapping failed or incomplete (rc=$map_rc); refusing to fall back to secret"; exit 2;
             fi
           fi
           # Continuum's own resolver validates parent/child relations; never log its plan.
@@ -138,6 +144,10 @@ jobs:
                 TZ="${TZ:-UTC}" \
                 TERM="${TERM:-dumb}" \
                 CI=true \
+                OPENCODE_MODELS="$OPENCODE_MODELS" \
+                CONTINUUM_MODEL_CREDENTIAL_SCOPE="$CONTINUUM_MODEL_CREDENTIAL_SCOPE" \
+                CONTINUUM_MODEL_PROFILE="$CONTINUUM_MODEL_PROFILE" \
+                CONTINUUM_MODEL_TASK_CLASS="$CONTINUUM_MODEL_TASK_CLASS" \
                 opencode run --auto --model "$selected" \
                 'Create a file called acceptance-proof.txt with exactly ACCEPTANCE_OK and no other text.' \
                 </dev/null >"$RUNNER_TEMP/continuum-private-agent.log" 2>&1
@@ -157,7 +167,7 @@ jobs:
             count=$((count + 1))
             echo "A private Child: policy persisted, real file-tool task completed and state recorded."
           done 3< <(jq -r '[.[].repository] | unique | .[]' "$RUNNER_TEMP/private-child-plan.json")
-          test "$count" -eq 2 || { echo "::error::Expected exactly two enrolled private rollout targets"; exit 2; }
+          test "$count" -eq "$expected_targets" || { echo "::error::Expected exactly $expected_targets enrolled private rollout target(s)"; exit 2; }
           sealed="$(python3 .parent-rollout/automation/private_model_receipt.py seal "$RUNNER_TEMP/private-child-targets.jsonl")"
           printf 'count=%s\nsealed=%s\n' "$count" "$sealed" >> "$GITHUB_OUTPUT"
           echo "Parent completed qualified private Child model rollout for $count registered target(s)."
@@ -193,6 +203,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TAP_PAT }}
           CONTINUUM_APPROVED_MODELS: ${{ vars.OPENCODE_MODELS }}
+          CONTINUUM_EXPECTED_TARGETS: ${{ vars.CONTINUUM_PRIVATE_ROLLOUT_TARGETS || '2' }}
           CONTINUUM_SEALED_RECEIPT: ${{ needs.provision-and-prove.outputs.sealed }}
           CONTINUUM_ENGINE_ROOT: ${{ github.workspace }}/.continuum-engine
           CONTINUUM_EXPECTED_OPENCODE_VERSION: ${{ steps.toolchain.outputs.runtime-version }}

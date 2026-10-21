@@ -30,7 +30,16 @@ except ImportError:  # pragma: no cover - only used if helpers are split
 RECEIPT_VERSION = 1
 MAX_EXECUTION_AGE = 6 * 60 * 60
 MAX_TRANSIENT_WAIT = 120
-TRANSIENT_STATUS = re.compile(r"failed \((\d{3})\)")
+TRANSIENT_STATUS = re.compile(
+    r"(?:failed|status(?:\s+code)?|http(?:\s+status)?|code)\D{0,8}(\d{3})\b",
+    re.IGNORECASE,
+)
+TRANSIENT_CODE = re.compile(r"\b(429|5[0-9]{2})\b")
+TRANSIENT_MARKERS = (
+    "backend unavailable",
+    "temporarily unavailable",
+    "service unavailable",
+)
 
 
 def fail(message):
@@ -139,7 +148,10 @@ def validate(value, pool, environ=None):
     if value["pool_hash"] != hashlib.sha256(pool.encode()).hexdigest():
         fail("Approved model pool changed")
     targets = value["targets"]
-    if not isinstance(targets, list) or len(targets) != 2:
+    expected_targets = str(environ.get("CONTINUUM_EXPECTED_TARGETS", "2"))
+    if not re.fullmatch(r"[1-9][0-9]{0,2}", expected_targets):
+        fail("Trusted private target count is invalid")
+    if not isinstance(targets, list) or len(targets) != int(expected_targets):
         fail("Unexpected target count")
     approved = _approved_models(pool)
     seen = set()
@@ -177,11 +189,29 @@ def routing_module():
 
 def _transient_status(error):
     text = str(error)
+    candidates = []
+    for name in ("status", "status_code", "http_status", "code"):
+        value = getattr(error, name, None)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            candidates.append(value)
+        elif isinstance(value, str) and value.isdigit():
+            candidates.append(int(value))
     match = TRANSIENT_STATUS.search(text)
     if match:
-        status = int(match.group(1))
-        return status if status == 429 or 500 <= status <= 599 else None
-    if "backend unavailable" in text:
+        candidates.append(int(match.group(1)))
+    else:
+        match = TRANSIENT_CODE.search(text)
+        if match:
+            candidates.append(int(match.group(1)))
+    for status in candidates:
+        if status == 429 or 500 <= status <= 599:
+            return status
+        if 100 <= status <= 599:
+            return None
+    lowered = text.lower()
+    if any(marker in lowered for marker in TRANSIENT_MARKERS):
         return 0
     return None
 

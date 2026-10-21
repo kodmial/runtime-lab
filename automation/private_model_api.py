@@ -280,8 +280,11 @@ def repository_variables(client: GitHubClient, repository: str) -> dict[str, str
         for entry in entries:
             if isinstance(entry, dict) and isinstance(entry.get("name"), str):
                 values[entry["name"]] = str(entry.get("value", ""))
+        total_count = (data or {}).get("total_count")
+        if total_count is None:
+            raise GitHubApiError("Repository variables payload missing total_count")
         try:
-            total = int((data or {}).get("total_count", len(entries)))
+            total = int(total_count)
         except (TypeError, ValueError):
             raise GitHubApiError("Repository variables payload is invalid") from None
         if len(entries) < 100 or page * 100 >= total:
@@ -289,8 +292,7 @@ def repository_variables(client: GitHubClient, repository: str) -> dict[str, str
         page += 1
 
 
-def _owner_repositories(client: GitHubClient) -> list[dict]:
-    repositories: list[dict] = []
+def _owner_repositories(client: GitHubClient):
     page = 1
     while True:
         data = client.request(
@@ -298,9 +300,11 @@ def _owner_repositories(client: GitHubClient) -> list[dict]:
         )
         if not isinstance(data, list):
             raise GitHubApiError("Repository inventory payload is invalid")
-        repositories.extend(item for item in data if isinstance(item, dict))
+        for item in data:
+            if isinstance(item, dict):
+                yield item
         if len(data) < 100:
-            return repositories
+            return
         page += 1
 
 
@@ -329,6 +333,7 @@ def child_repository_map(
     ):
         raise GitHubApiError("Parent child allowlist is invalid")
     owner = parent.split("/")[0].lower()
+    allowed_ids = set(allowed)
     mapping: dict[str, str] = {}
     seen: set[str] = set()
     for item in _owner_repositories(client):
@@ -353,7 +358,11 @@ def child_repository_map(
             raise GitHubApiError("Child relationship is ambiguous")
         mapping[child_id] = repository
         seen.add(repository.lower())
-    if set(mapping) != set(allowed):
+        if set(mapping) == allowed_ids:
+            # The parent allowlist is authoritative; stop spending Variables
+            # API reads once every authorized Child has a unique repository.
+            break
+    if set(mapping) != allowed_ids:
         return None
     return mapping
 

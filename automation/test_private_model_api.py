@@ -239,6 +239,89 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(values["LAST"], "y")
         self.assertIn("page=2", recorder.calls[1][1])
 
+    def test_repository_variables_requires_total_count(self):
+        first = [
+            {"name": "VAR_%03d" % index, "value": "x"} for index in range(100)
+        ]
+        recorder = Recorder(
+            [response(200, json.dumps({"variables": first}).encode())]
+        )
+        client = GitHubClient("token", request_fn=recorder)
+        with self.assertRaises(GitHubApiError):
+            repository_variables(client, "example/private")
+
+    def test_child_map_stops_after_all_allowed_children_are_mapped(self):
+        parent = "example/parent"
+        recorder = Recorder(
+            [
+                self.variables(
+                    [
+                        {"name": "CONTINUUM_ROLE", "value": "parent"},
+                        {
+                            "name": "CONTINUUM_CHILDREN",
+                            "value": json.dumps(["child-a", "child-b"]),
+                        },
+                    ]
+                ),
+                response(
+                    200,
+                    json.dumps(
+                        [
+                            {
+                                "full_name": "example/child-one",
+                                "private": True,
+                            },
+                            {
+                                "full_name": "example/child-two",
+                                "private": True,
+                            },
+                            {
+                                "full_name": "example/unrelated",
+                                "private": True,
+                            },
+                        ]
+                    ).encode(),
+                ),
+                self.variables(
+                    [
+                        {"name": "CONTINUUM_ROLE", "value": "child"},
+                        {
+                            "name": "CONTINUUM_CHILD_ID",
+                            "value": "child-a",
+                        },
+                        {
+                            "name": "CONTINUUM_PARENT",
+                            "value": parent,
+                        },
+                    ]
+                ),
+                self.variables(
+                    [
+                        {"name": "CONTINUUM_ROLE", "value": "child"},
+                        {
+                            "name": "CONTINUUM_CHILD_ID",
+                            "value": "child-b",
+                        },
+                        {
+                            "name": "CONTINUUM_PARENT",
+                            "value": parent,
+                        },
+                    ]
+                ),
+            ]
+        )
+        client = GitHubClient("token", request_fn=recorder)
+        mapping = child_repository_map(client, parent)
+        self.assertEqual(
+            mapping,
+            {
+                "child-a": "example/child-one",
+                "child-b": "example/child-two",
+            },
+        )
+        self.assertEqual(len(recorder.calls), 4)
+        self.assertEqual(recorder.responses, [])
+
     def test_child_map_uses_one_inventory_and_only_private_children(self):
         parent = "example/parent"
         children = ["child-a", "child-b"]

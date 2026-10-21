@@ -124,7 +124,7 @@ class ReceiptValidationTests(unittest.TestCase):
     def test_earlier_attempt_is_allowed_for_failed_only_rerun(self):
         receipt.validate(value_for("1"), "approved/model", environment("2"))
 
-    def test_target_count_must_be_exactly_two(self):
+    def test_target_count_must_be_exactly_two_by_default(self):
         extra = value_for()
         extra["targets"].append(
             {"repository": "kodmial/private-three", "model": "approved/model"}
@@ -135,6 +135,16 @@ class ReceiptValidationTests(unittest.TestCase):
         missing["targets"] = missing["targets"][:1]
         with self.assertRaises(RuntimeError):
             receipt.validate(missing, "approved/model", environment())
+
+    def test_expected_target_count_is_configurable(self):
+        extra = value_for()
+        extra["targets"].append(
+            {"repository": "kodmial/private-three", "model": "approved/model"}
+        )
+        env = environment()
+        env["CONTINUUM_EXPECTED_TARGETS"] = "3"
+        targets = receipt.validate(extra, "approved/model", env)
+        self.assertEqual(len(targets), 3)
 
     def test_non_approved_model_is_rejected(self):
         value = value_for()
@@ -162,6 +172,44 @@ class ReceiptValidationTests(unittest.TestCase):
         self.assertNotIn("private", sealed)
         with mock.patch.dict(os.environ, environment("2"), clear=False):
             self.assertEqual(receipt.unseal(sealed), b"private marker")
+
+
+class TransientStatusTests(unittest.TestCase):
+    def test_production_route_error_formats_are_classified(self):
+        self.assertEqual(
+            receipt._transient_status(
+                RouteError("GitHub model state GET failed (429)")
+            ),
+            429,
+        )
+        self.assertEqual(
+            receipt._transient_status(
+                RouteError("GitHub model state GET failed (503)")
+            ),
+            503,
+        )
+        self.assertEqual(
+            receipt._transient_status(
+                RouteError("GitHub model state backend unavailable")
+            ),
+            0,
+        )
+
+    def test_structured_status_and_standalone_code_are_classified(self):
+        class StatusError(RouteError):
+            status = 502
+
+        self.assertEqual(receipt._transient_status(StatusError("failed")), 502)
+        self.assertEqual(
+            receipt._transient_status(RouteError("HTTP 429 rate limited")), 429
+        )
+
+    def test_permanent_status_is_not_transient(self):
+        self.assertIsNone(
+            receipt._transient_status(
+                RouteError("GitHub model state GET failed (403)")
+            )
+        )
 
 
 class ReceiptVerificationTests(unittest.TestCase):

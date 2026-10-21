@@ -72,9 +72,13 @@ class WorkflowValidationTests(unittest.TestCase):
         self.assertIn("opencode run", scripts)
         self.assertIn("model_routing.py\" record", scripts)
         self.assertIn("private_model_receipt.py seal", scripts)
-        self.assertIn('test "$count" -eq 2', scripts)
+        self.assertIn('test "$count" -eq "$expected_targets"', scripts)
+        self.assertIn("CONTINUUM_PRIVATE_ROLLOUT_TARGETS", scripts)
+        self.assertIn("refusing to fall back to secret", scripts)
         self.assertIn("env -i", scripts)
         self.assertIn("CI=true", scripts)
+        self.assertIn('OPENCODE_MODELS="$OPENCODE_MODELS"', scripts)
+        self.assertNotIn('CONTINUUM_MODEL_STATE_TOKEN="$CONTINUUM_MODEL_STATE_TOKEN"', scripts)
         self.assertNotIn("receipt=", scripts)
 
     def test_private_child_ids_are_not_placed_in_workflow_environment(self):
