@@ -159,10 +159,10 @@ jobs:
     secrets: inherit
     with:
       continuum_ref: main
-      # Every knob below is forwarded as a bare `inputs.*` passthrough, never a
-      # literal. An empty passthrough is what lets the engine fall back to the
-      # consumer's `vars.AUTOMATION_*` value; pinning a literal here would
-      # override that repository variable for every installed caller.
+      # Knobs retain their input/variable precedence. This Parent explicitly
+      # defaults ready_label to automation:ready to prevent legacy unapproved
+      # local issues from occupying WIP ahead of authorized Child tasks.
+      # An explicit input or AUTOMATION_READY_LABEL variable still overrides.
       wip_limit: "${{ inputs.wip_limit }}"
       lease_minutes: "${{ inputs.lease_minutes }}"
       max_dispatch_attempts: "${{ inputs.max_dispatch_attempts }}"
@@ -174,7 +174,7 @@ jobs:
       post_pause_comment: "${{ inputs.post_pause_comment }}"
       reset_markers: "${{ inputs.reset_markers }}"
       require_priority_label: "${{ inputs.require_priority_label }}"
-      ready_label: "${{ inputs.ready_label }}"
+      ready_label: "${{ inputs.ready_label || vars.AUTOMATION_READY_LABEL || 'automation:ready' }}"
       command_grace_minutes: "${{ inputs.command_grace_minutes }}"
       child_owned_marker: "${{ inputs.child_owned_marker }}"
       legacy_child_owned_marker: "${{ inputs.legacy_child_owned_marker }}"
