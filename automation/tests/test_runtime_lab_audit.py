@@ -180,29 +180,25 @@ def test_live_control_plane_uses_temporary_actions_backend():
     assert config["execution_backend"] == "actions"
 
 
-def test_live_scheduler_permits_six_concurrent_issues():
-    """The scheduler's WIP budget is Continuum's; the caller must not narrow it.
+def test_live_scheduler_defaults_to_four_parent_wip_slots():
+    """The Parent owns four shared WIP slots across its own issues and Child work.
 
-    ``WIP_LIMIT: '6'`` and ``MAX_DISPATCH_ATTEMPTS: '4'`` live in
-    Continuum's reusable ``continuum-issue-scheduler.yml`` since fbf4b79, so
-    this repository can no longer read the number off a workflow file. What it
-    still owns -- and what would silently throttle the fleet to a single
-    issue -- is the caller: it must delegate to the scheduler and forward both
-    knobs as bare passthroughs, so the engine default and the consumer's
-    ``vars.AUTOMATION_*`` override both stay reachable, and it must not pin a
-    literal WIP limit that would override those variables for every caller.
+    The shared Continuum engine falls back to WIP=2, and the repository may
+    retain a stale AUTOMATION_WIP_LIMIT=2 variable. This Parent must pass its
+    own default 4 to the reusable scheduler, while preserving a one-off
+    workflow_dispatch override. Other scheduler settings remain passthroughs.
+    No global Continuum default or Child scheduling behavior is modified.
     """
     text = _read_workflow("continuum-issue-scheduler.yml")
     stub = _stub("continuum-issue-scheduler")
     assert stub.delegates_to("continuum-issue-scheduler.yml", "main")
     assert stub.secrets_inherit
-    for knob in ("wip_limit", "lease_minutes", "max_dispatch_attempts"):
+    assert "wip_limit" in stub.declared_inputs
+    assert stub.forwarded["wip_limit"] == "${{ inputs.wip_limit || '4' }}"
+    for knob in ("lease_minutes", "max_dispatch_attempts"):
         assert knob in stub.declared_inputs, knob
-        assert stub.forwards_bare(knob), (
-            "%s must stay a bare passthrough so Continuum's own default and the "
-            "consumer's vars.AUTOMATION_* override remain reachable" % knob
-        )
-    # A reintroduced literal budget is the regression this guards.
+        assert stub.forwards_bare(knob), knob
+    # No inline engine code or separate WIP_LIMIT environment binding here.
     assert scheduler_wip_default(text) is None
     assert scheduler_max_attempts_default(text) is None
 

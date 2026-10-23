@@ -159,11 +159,12 @@ jobs:
     secrets: inherit
     with:
       continuum_ref: main
-      # Knobs retain their input/variable precedence. This Parent explicitly
-      # defaults ready_label to automation:ready to prevent legacy unapproved
-      # local issues from occupying WIP ahead of authorized Child tasks.
-      # An explicit input or AUTOMATION_READY_LABEL variable still overrides.
-      wip_limit: "${{ inputs.wip_limit }}"
+      # Parent-wide WIP covers both local and delegated Child implementation
+      # work. Default to 4 instead of the engine's 2 (or a stale repository
+      # AUTOMATION_WIP_LIMIT=2). A manual dispatch can still override the limit.
+      # The ready_label default below prevents unapproved legacy local issues
+      # from consuming those slots; explicit input/variable overrides remain.
+      wip_limit: "${{ inputs.wip_limit || '4' }}"
       lease_minutes: "${{ inputs.lease_minutes }}"
       max_dispatch_attempts: "${{ inputs.max_dispatch_attempts }}"
       dispatch_marker: "${{ inputs.dispatch_marker }}"
