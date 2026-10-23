@@ -183,18 +183,20 @@ def test_live_control_plane_uses_temporary_actions_backend():
 def test_live_scheduler_defaults_to_four_parent_wip_slots():
     """The Parent owns four shared WIP slots across its own issues and Child work.
 
-    The shared Continuum engine falls back to WIP=2, and the repository may
-    retain a stale AUTOMATION_WIP_LIMIT=2 variable. This Parent must pass its
-    own default 4 to the reusable scheduler, while preserving a one-off
-    workflow_dispatch override. Other scheduler settings remain passthroughs.
-    No global Continuum default or Child scheduling behavior is modified.
+    The shared Continuum engine defaults to WIP=2. In this Parent, a
+    manual workflow_dispatch input overrides the GitHub Actions repository
+    variable AUTOMATION_WIP_LIMIT; if neither is set the fallback is 4.
+    Other scheduler settings remain passthroughs. No global Continuum
+    default or Child scheduling behavior is modified.
     """
     text = _read_workflow("continuum-issue-scheduler.yml")
     stub = _stub("continuum-issue-scheduler")
     assert stub.delegates_to("continuum-issue-scheduler.yml", "main")
     assert stub.secrets_inherit
     assert "wip_limit" in stub.declared_inputs
-    assert stub.forwarded["wip_limit"] == "${{ inputs.wip_limit || '4' }}"
+    assert stub.forwarded["wip_limit"] == (
+        "${{ inputs.wip_limit || vars.AUTOMATION_WIP_LIMIT || '4' }}"
+    )
     for knob in ("lease_minutes", "max_dispatch_attempts"):
         assert knob in stub.declared_inputs, knob
         assert stub.forwards_bare(knob), knob
