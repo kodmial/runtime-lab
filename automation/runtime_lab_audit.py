@@ -77,7 +77,7 @@ def scheduler_wip_default(text: str) -> str | None:
     # is a separate reusable-workflow input and must not be mistaken for
     # an inline engine environment override.
     match = re.search(
-        r"(?m)^\\s*WIP_LIMIT:\\s*.*AUTOMATION_WIP_LIMIT\\s*\\|\\|\\s*['\\"]([^'\\"]+)['\\"]",
+        r"(?m)^\s*WIP_LIMIT:\s*.*AUTOMATION_WIP_LIMIT\s*\|\|\s*['\"]([^'\"]+)['\"]",
         text,
     )
     if match:
