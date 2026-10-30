@@ -159,12 +159,11 @@ jobs:
     secrets: inherit
     with:
       continuum_ref: main
-      # Parent-wide WIP covers both local and delegated Child implementation
-      # work. Default to 4 instead of the engine's 2 (or a stale repository
-      # AUTOMATION_WIP_LIMIT=2). A manual dispatch can still override the limit.
-      # The ready_label default below prevents unapproved legacy local issues
-      # from consuming those slots; explicit input/variable overrides remain.
-      wip_limit: "${{ inputs.wip_limit || '4' }}"
+      # Parent-wide WIP covers local and delegated Child work. Manual input
+      # overrides the Actions repository variable AUTOMATION_WIP_LIMIT; only
+      # when neither is set do we default to 4 (not Continuum's default 2).
+      # Keep repository-variable policy authoritative and configurable.
+      wip_limit: "${{ inputs.wip_limit || vars.AUTOMATION_WIP_LIMIT || '4' }}"
       lease_minutes: "${{ inputs.lease_minutes }}"
       max_dispatch_attempts: "${{ inputs.max_dispatch_attempts }}"
       dispatch_marker: "${{ inputs.dispatch_marker }}"
