@@ -72,8 +72,13 @@ def scheduler_wip_default(text: str) -> str | None:
     as the hardcoded ``WIP_LIMIT: '6'`` env form (with the
     ``positiveInt('WIP_LIMIT', 6)`` fallback as secondary evidence).
     """
+    # Match the WIP_LIMIT environment binding only. A caller input such as
+    # "wip_limit: inputs.wip_limit || vars.AUTOMATION_WIP_LIMIT || '4'"
+    # is a separate reusable-workflow input and must not be mistaken for
+    # an inline engine environment override.
     match = re.search(
-        r"AUTOMATION_WIP_LIMIT\s*\|\|\s*['\"]([^'\"]+)['\"]", text
+        r"(?m)^\\s*WIP_LIMIT:\\s*.*AUTOMATION_WIP_LIMIT\\s*\\|\\|\\s*['\\"]([^'\\"]+)['\\"]",
+        text,
     )
     if match:
         return match.group(1)
