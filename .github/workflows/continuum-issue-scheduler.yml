@@ -1,8 +1,15 @@
 name: Issue scheduler
+run-name: >-
+  Issue scheduler ${{ github.event.inputs.periodic_wake == 'true' && '[continuum-periodic]' || github.event_name }}
 
 on:
   workflow_dispatch:
     inputs:
+      periodic_wake:
+        description: "External periodic signal; only the periodic pass is deduplicated"
+        required: false
+        type: string
+        default: "false"
       wip_limit:
         description: "Concurrent in-progress issues"
         required: false
@@ -158,6 +165,7 @@ jobs:
     uses: kodmial/continuum/.github/workflows/continuum-issue-scheduler.yml@main
     secrets: inherit
     with:
+      periodic_wake: "${{ inputs.periodic_wake }}"
       continuum_ref: main
       # Parent-wide WIP covers local and delegated Child work. Manual input
       # overrides the Actions repository variable AUTOMATION_WIP_LIMIT; only
