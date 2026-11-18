@@ -213,8 +213,10 @@ jobs:
       # literal. An empty passthrough is what lets the engine fall back to the
       # consumer's `vars.AUTOMATION_*` value; pinning a literal here would
       # override that repository variable for every installed caller.
-      # Parent-wide WIP policy: explicit dispatch > repo variable > four slots.
-      wip_limit: "${{ inputs.wip_limit || vars.AUTOMATION_WIP_LIMIT || '4' }}"
+      # Parent-wide capacity is four slots. A stale AUTOMATION_WIP_LIMIT=2
+      # must not silently reduce the approved capacity; explicit manual input
+      # may still override this for a one-off controlled run.
+      wip_limit: "${{ inputs.wip_limit || '4' }}"
       lease_minutes: "${{ inputs.lease_minutes }}"
       max_dispatch_attempts: "${{ inputs.max_dispatch_attempts }}"
       dispatch_marker: "${{ inputs.dispatch_marker }}"
