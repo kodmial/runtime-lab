@@ -45,7 +45,11 @@ set -euo pipefail
 RENDER_STATE_FILE="${RENDER_STATE_FILE:-/tmp/runtime-lab-render-state.json}"
 RENDER_RESULT_FILE="${RENDER_RESULT_FILE:-/tmp/runtime-lab-render-result.json}"
 RENDER_REGION="${RENDER_REGION:-oregon}"
-OPENCODE_MODEL="${OPENCODE_MODEL:-opencode/muse-spark-1.3-contributor-free}"
+OPENCODE_MODEL="${OPENCODE_MODEL:-opencode/nemotron-3-ultra-free}"
+# Migrate only the retired model; preserve every other explicit provider selection.
+if [[ "$OPENCODE_MODEL" == "opencode/muse-spark-1.3-contributor-free" ]]; then
+  OPENCODE_MODEL="opencode/nemotron-3-ultra-free"
+fi
 # Cross-repository execution target (issue #85): explicit allow-listed
 # "owner/repo" (default: kodmial/runtime-lab self-target). The worker
 # clones the target repo; issue/task text stays sourced from this repo.
@@ -898,7 +902,7 @@ echo "Submitted runner job $JOB_ID."
 # transient host restarts keep budget-limited recovery). A submit-time /health snapshot (uptime_seconds) is compared with
 # the loss-time reading via detect_worker_restart() so the diagnostic
 # states whether a restart was actually observed.
-FALLBACK_MODEL="opencode/space-bunny-free"
+FALLBACK_MODEL="opencode/nemotron-3-ultra-free"
 TRIED_FALLBACK="no"
 POLL_UNKNOWN_COUNT=0
 POLL_EMPTY_COUNT=0

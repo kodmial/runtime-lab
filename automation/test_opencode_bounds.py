@@ -120,7 +120,7 @@ def test_assert_fresh_session_rejects_resume():
 
 def test_build_bounded_command_uses_runner_semantics():
     cmd = b.build_bounded_command if hasattr(b, "build_bounded_command") else b.build_bounded_opencode_command
-    out = cmd("opencode/muse-spark-1.3-contributor-free", "do a small edit")
+    out = cmd("opencode/nemotron-3-ultra-free", "do a small edit")
     assert out[:4] == ["opencode", "run", "--auto", "--model"]
     with pytest.raises(ValueError):
         cmd("no-such-model", "task")

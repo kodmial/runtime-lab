@@ -625,32 +625,27 @@ def test_timeout_is_timed_out(tmp_path):
     assert "timed out" in final.error
 
 
-def test_model_fallback_retries_once_in_same_worker(tmp_path):
+def test_unverified_duplicate_fallback_is_never_retried(tmp_path):
+    # Only Nemotron passed an actual synthetic inference canary. Until a
+    # distinct route is independently validated, do not call the identical
+    # preferred model a second time and pretend it is a fallback.
     src = _fixture_src(str(tmp_path))
     seen_models = []
 
-    def flaky(cmd, cwd, timeout):
+    def unavailable(cmd, cwd, timeout):
         model = cmd[cmd.index("--model") + 1]
         seen_models.append(model)
-        if model == PREFERRED_MODEL:
-            return CommandResult(1, "", "model 'muse-spark' not found / unavailable")
-        with open(os.path.join(cwd, "fixed.txt"), "w") as handle:
-            handle.write("fallback fixed it\n")
-        return CommandResult(0, "done via fallback", "")
+        return CommandResult(1, "", "model is unavailable")
 
     runner = ScriptRunner(fixture_src=src)
-    runner.on_opencode = flaky
-    runner.status_stdout = "?? fixed.txt\n"
+    runner.on_opencode = unavailable
     manager = _manager(tmp_path, runner)
     record, _ = manager.submit(_payload())
     final = _wait_terminal(manager, record.job_id)
-    assert final.status == "succeeded"
-    assert final.executed_model == FALLBACK_MODEL
-    assert seen_models == [PREFERRED_MODEL, FALLBACK_MODEL]
-    assert runner.opencode_calls == 2
-    # Same worker/process: both attempts live in one manager, no new service.
-    assert manager.get(record.job_id) is not None
-    assert FALLBACK_MODEL in final.summary
+    assert final.status == "failed"
+    assert final.executed_model == PREFERRED_MODEL
+    assert seen_models == [PREFERRED_MODEL]
+    assert runner.opencode_calls == 1
 
 
 def test_no_fallback_for_unrelated_errors(tmp_path):
