@@ -7,12 +7,21 @@ on:
         description: "Pull request number carrying the current review result"
         required: false
         type: string
+      mode:
+        description: "repair (review findings) or conflict (resolve merge conflicts)"
+        required: false
+        default: repair
+        type: string
       target_child_id:
         description: "Opaque verified child id for delegated PR-Agent execution"
         required: false
         type: string
       head_sha:
         description: "Exact HEAD SHA the review evaluated"
+        required: false
+        type: string
+      repair_batch_comment_id:
+        description: "Target-repository comment id carrying the private exact-HEAD repair batch"
         required: false
         type: string
       review_json:
@@ -40,13 +49,18 @@ permissions:
 
 jobs:
   call:
+    # Conflict repair needs no review provider; the review-finding repair
+    # path remains gated on PR-Agent.
+    if: inputs.mode == 'conflict' || (vars.CONTINUUM_REVIEW_PROVIDER || 'none') == 'pr-agent'
     uses: kodmial/continuum/.github/workflows/continuum-pr-agent-repair.yml@main
     secrets: inherit
     with:
       continuum_ref: main
       pr_number: "${{ inputs.pr_number }}"
+      mode: "${{ inputs.mode }}"
       target_child_id: "${{ inputs.target_child_id }}"
       head_sha: "${{ inputs.head_sha }}"
+      repair_batch_comment_id: "${{ inputs.repair_batch_comment_id }}"
       review_json: "${{ inputs.review_json }}"
       improve_jsonl: "${{ inputs.improve_jsonl }}"
       retry_attempt: "${{ inputs.retry_attempt }}"

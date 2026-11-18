@@ -3,14 +3,41 @@ name: Retry unresolved CodeRabbit findings
 on:
   pull_request_review_comment:
     types: [created]
+  # Optional knob, declared here for the same reason the repair stub declares
+  # its own: a stub may only forward an input it declares, and it is empty by
+  # default so the engine falls through to the consumer's `vars.` value rather
+  # than pinning one on every installed caller.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: >-
+          Pull request to reconcile when a latest-state caller wakes the
+          batcher. Required by the engine's workflow_dispatch admission.
+        required: false
+        default: ''
+        type: string
+      opencode_workflow:
+        description: >-
+          OpenCode caller workflow that receives the batched repair. Empty
+          keeps the legacy default.
+        required: false
+        default: ''
+        type: string
 
 permissions:
-  contents: write
-  pull-requests: write
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: read
 
 jobs:
   call:
+    if: >-
+      vars.CONTINUUM_ROLE != 'child' &&
+      (vars.CONTINUUM_REVIEW_PROVIDER || 'none') == 'coderabbit'
     uses: kodmial/continuum/.github/workflows/continuum-coderabbit-unresolved.yml@main
     secrets: inherit
     with:
       continuum_ref: main
+      pr_number: "${{ inputs.pr_number }}"
+      opencode_workflow: "${{ inputs.opencode_workflow }}"

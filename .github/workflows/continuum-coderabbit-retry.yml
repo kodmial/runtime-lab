@@ -5,9 +5,9 @@ on:
   issue_comment:
     types: [created, edited]
 
-  # A completed CodeRabbit review consumes the shared included-review quota.
+  # A completed CodeRabbit review counts as the review for that push.
   # Wake the controller so it can move the next queued PR behind the global
-  # cooldown instead of immediately burning another retry.
+  # cooldown instead of immediately issuing another retry.
   pull_request_review:
     types: [submitted]
 
@@ -17,27 +17,20 @@ on:
   pull_request_review_comment:
     types: [created, edited]
 
-  # Bounded repository-local safety net for deferred quota waits. The
-  # controller is non-blocking and exits immediately when nothing is due, so
-  # a scheduled safety-net tick costs no review slot. Once a durable dueAt
-  # passes without any review/comment/status event, the next tick reconciles
-  # the queue. Offset :03 avoids the busy :00 boundary and the
-  # auto-merge/scheduler slots.
+  # Provider-owned safety net: CodeRabbit recovery must not depend on any
+  # PR-Agent workflow or generic merge-controller completion.
   schedule:
-    - cron: '3,13,23,33,43,53 * * * *'
+    - cron: "3,13,23,33,43,53 * * * *"
 
-  # Redundant liveness wakes. GitHub may delay or drop an individual scheduled
-  # event under load. Wake only after controllers that run on a stable PR HEAD:
-  # direct main-push / issue-scheduler wakes can race auto-merge's update-branch
-  # synchronization and make CodeRabbit abort with "Head commit changed".
-  workflow_run:
-    workflows:
-      - PR-Agent recovery
-      - Auto-merge reviewed pull requests
-    types: [completed]
-
-  # Manual/safety-net reconciliation.
+  # Manual/safety-net reconciliation. The PR identity is a wake hint because
+  # the controller itself stays global.
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request that woke the controller"
+        required: false
+        default: ''
+        type: string
 
 permissions:
   # Keep the caller compatible with already-open PR branches. The review
@@ -51,7 +44,27 @@ permissions:
 
 jobs:
   call:
+    # Private Child repositories do not run local PR lifecycle controllers.
+    # Non-CodeRabbit consumers do not run this controller either.
+    # Only the provider's real quota response is actionable on issue_comment.
+    # Filter before the reusable engine's shared concurrency admission:
+    # OpenCode live-event edits must not evict pending CodeRabbit wakes.
+    if: >-
+      vars.CONTINUUM_ROLE != 'child' &&
+      (vars.CONTINUUM_REVIEW_PROVIDER || 'none') == 'coderabbit' &&
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.pull_request != null &&
+        github.event.comment.user.login == 'coderabbitai[bot]' &&
+        (contains(github.event.comment.body, 'Review rate limited') ||
+         contains(github.event.comment.body, 'Review limit reached')))) &&
+      (github.event_name != 'pull_request_review' ||
+       (github.event.review.user.login == 'coderabbitai[bot]' &&
+        github.event.pull_request.state == 'open')) &&
+      (github.event_name != 'pull_request_review_comment' ||
+       (startsWith(github.event.comment.user.login, 'coderabbitai') &&
+        github.event.pull_request.state == 'open'))
     uses: kodmial/continuum/.github/workflows/continuum-coderabbit-retry.yml@main
     secrets: inherit
     with:
       continuum_ref: main
+      pr_number: "${{ inputs.pr_number }}"

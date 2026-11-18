@@ -8,6 +8,11 @@ on:
   workflow_run:
     workflows: ["OpenCode agent"]
     types: [completed]
+  # Bounded catch-up timer (kodmial/continuum#350): GitHub cron is not exact
+  # and workflow_run delivery can be late or lost. This scheduled pass reuses
+  # the same watchdog recovery code; it is not a second controller.
+  schedule:
+    - cron: "*/15 * * * *"
 
 permissions:
   actions: write

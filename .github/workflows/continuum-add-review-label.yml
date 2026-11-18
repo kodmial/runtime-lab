@@ -4,6 +4,33 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+  # Optional knobs, declared here for the same reason the repair stub declares
+  # its own: a stub may only forward an input it declares, and each is empty by
+  # default so the engine falls through to the consumer's `vars.` value rather
+  # than pinning one on every installed caller.
+  workflow_dispatch:
+    inputs:
+      coderabbit_retry_workflow:
+        description: >-
+          Workflow dispatched to queue the current head for CodeRabbit review.
+          Empty keeps the legacy default.
+        required: false
+        default: ''
+        type: string
+      auto_merge_workflow:
+        description: >-
+          Workflow dispatched to reconcile auto-merge after a successful CI
+          run. Empty keeps the legacy default.
+        required: false
+        default: ''
+        type: string
+      head_sha:
+        description: >-
+          Commit to reconcile when this stub is run manually. The workflow_run
+          trigger supplies it automatically; a manual run must pass it.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   actions: write
@@ -15,10 +42,12 @@ jobs:
   call:
     uses: kodmial/continuum/.github/workflows/continuum-add-review-label.yml@main
     secrets: inherit
-    # `require_coderabbit` is deliberately NOT pinned here. CodeRabbit is an
-    # optional integration whose enabling value lives in the consumer's
-    # `vars.CONTINUUM_REQUIRE_CODERABBIT`; passing a literal here would make
-    # the installed caller override that variable and silently re-enable
-    # CodeRabbit for a repository that never asked for it.
+    # `review_provider` is deliberately not pinned here. The reusable
+    # engine resolves the optional provider from the consumer's
+    # `vars.CONTINUUM_REVIEW_PROVIDER` (default `none`); pinning a value here
+    # would override the consumer's provider policy.
     with:
       continuum_ref: main
+      coderabbit_retry_workflow: "${{ inputs.coderabbit_retry_workflow }}"
+      auto_merge_workflow: "${{ inputs.auto_merge_workflow }}"
+      head_sha: "${{ inputs.head_sha }}"

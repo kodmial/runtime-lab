@@ -43,11 +43,12 @@ permissions:
 jobs:
   call:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issue_comment' &&
-       github.event.issue.pull_request &&
-       github.actor == github.repository_owner &&
-       contains(github.event.comment.body, '/review'))
+      (inputs.review_provider || vars.CONTINUUM_REVIEW_PROVIDER || 'none') == 'pr-agent' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        github.actor == github.repository_owner &&
+        contains(github.event.comment.body, '/review')))
     uses: kodmial/continuum/.github/workflows/continuum-pr-agent-router.yml@main
     secrets: inherit
     with:

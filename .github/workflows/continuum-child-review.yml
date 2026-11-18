@@ -16,6 +16,11 @@ on:
         description: Child pull request number
         required: true
         type: string
+      image_digest:
+        description: Per-profile prepared-image digest for this review's runtime profile (falls back to vars.CONTINUUM_IMAGE_DIGEST when empty)
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -27,7 +32,9 @@ jobs:
       child_id: ${{ inputs.child_id }}
       task_number: ${{ inputs.task_number }}
       pr_number: ${{ inputs.pr_number }}
+      # No explicit model pin: use trusted OPENCODE_MODELS pool with legacy OPENCODE_MODEL fallback.
       max_review_passes: 3
+      image_digest: ${{ inputs.image_digest || '' }}
       engine_ref: main
     secrets:
       CHILD_RUNTIME_TOKEN: ${{ secrets.TAP_PAT }}

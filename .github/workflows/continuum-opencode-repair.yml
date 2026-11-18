@@ -4,8 +4,18 @@ on:
   # This trusted metadata workflow never checks out or executes PR code.
   pull_request_target:
     types: [opened, reopened, synchronize]
+  # Wake on every completed workflow run because the approved repair set is a
+  # repository variable that this event filter cannot read. GitHub still
+  # creates this controller run for every completion, so the broad trigger is
+  # unavoidable; the `call` job's admission below skips the runner before any
+  # git/API work for an unapproved name. The reusable controller remains the
+  # authoritative exact allow-list. The negative pattern excludes this caller's
+  # own `name:` so a completion of this controller can never feed itself. A
+  # rename of this workflow must update the exclusion with it.
   workflow_run:
-    workflows: ["CI"]
+    workflows:
+      - "*"
+      - "!OpenCode repair controller"
     types: [completed]
   # A consumer whose CI lives in a repository Continuum cannot watch with
   # `workflow_run` reports its result here. All four are required: a result
@@ -34,7 +44,7 @@ on:
       # each is empty by default so the engine falls through to the consumer's
       # `vars.` value rather than pinning one on every installed caller.
       ci_repair_label:
-        description: "Label holding the one-attempt-per-head CI repair lock"
+        description: "Presentation label for an automatic CI repair attempt (not admission state)"
         required: false
         type: string
       head_ref_pattern:
@@ -49,11 +59,37 @@ on:
         description: "Workflow a ci-fix is dispatched to"
         required: false
         type: string
+      ci_repair_workflows:
+        description: "Comma- or newline-separated exact workflow names allowed to dispatch a repair"
+        required: false
+        type: string
 
 permissions: {}
 
 jobs:
   call:
+    # GitHub cannot interpolate a repository variable into the `workflow_run`
+    # event filter, so the run is still created. This admission prevents the
+    # expensive reusable controller job from starting for a completion that
+    # the configured allow-list cannot admit. `contains` is a conservative
+    # superset of the controller's exact, comma/newline-aware match: every
+    # exact approved name is a substring, so this can never skip an approved
+    # completion, while an unrelated completion is skipped before any runner
+    # or API usage. The reusable controller still enforces the exact list.
+    #
+    # Both non-workflow_run paths (pull_request_target branch sync and the
+    # workflow_dispatch CI report) always pass. An empty variable keeps the
+    # controller's CI default. `ci_repair_workflows` is declared as an optional
+    # workflow_dispatch input above and forwarded in `with` below, so this
+    # branch is a real caller-side override; on the other events it is empty
+    # and the `vars.` fallback applies.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.name != 'OpenCode repair controller' &&
+       contains(
+         inputs.ci_repair_workflows || vars.CONTINUUM_CI_REPAIR_WORKFLOWS || 'CI',
+         github.event.workflow_run.name
+       ))
     uses: kodmial/continuum/.github/workflows/continuum-opencode-repair.yml@main
     secrets: inherit
     with:
@@ -69,3 +105,4 @@ jobs:
       head_ref_pattern: "${{ inputs.head_ref_pattern }}"
       auto_merge_workflow: "${{ inputs.auto_merge_workflow }}"
       opencode_workflow: "${{ inputs.opencode_workflow }}"
+      ci_repair_workflows: "${{ inputs.ci_repair_workflows }}"

@@ -2,10 +2,16 @@ name: Auto-merge reviewed pull requests
 
 on:
   # Successful PR CI explicitly dispatches this reconciler from
-  # mark-ready-for-coderabbit. CodeRabbit status/review and main pushes are
-  # additional event-driven wake-ups; no critical transition depends on cron.
+  # mark-ready-for-coderabbit. CodeRabbit status/review, finding-verdict
+  # comments, and main pushes are additional event-driven wake-ups; no critical
+  # transition depends on cron.
   pull_request_review:
     types: [submitted, dismissed]
+  # A CodeRabbit finding verification (including semantic RESOLVED/UNRESOLVED)
+  # is a lifecycle transition. Reconcile immediately instead of waiting for an
+  # unrelated event or the safety-net cron.
+  pull_request_review_comment:
+    types: [created, edited]
   status:
   push:
     branches: [main]
@@ -26,6 +32,24 @@ on:
         description: Git ref the post-merge wake-ups are dispatched at
         required: false
         type: string
+      # Optional knobs, declared here for the same reason the repair stub
+      # declares its own: a stub may only forward an input it declares, and
+      # each is empty by default so the engine falls through to the consumer's
+      # `vars.` value rather than pinning one on every installed caller.
+      coderabbit_retry_workflow:
+        description: >-
+          Workflow dispatched when a current head still needs its CodeRabbit
+          review. Empty keeps the legacy default.
+        required: false
+        default: ''
+        type: string
+      coderabbit_unresolved_workflow:
+        description: >-
+          Workflow dispatched to reconcile a CodeRabbit unresolved-thread
+          verdict. Empty keeps the legacy default.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   actions: write
@@ -42,3 +66,5 @@ jobs:
       continuum_ref: main
       post_merge_wakeups: "${{ inputs.post_merge_wakeups }}"
       post_merge_wakeup_ref: "${{ inputs.post_merge_wakeup_ref }}"
+      coderabbit_retry_workflow: "${{ inputs.coderabbit_retry_workflow }}"
+      coderabbit_unresolved_workflow: "${{ inputs.coderabbit_unresolved_workflow }}"

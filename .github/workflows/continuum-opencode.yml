@@ -5,11 +5,22 @@ name: OpenCode agent
 # and an `issue`-mode dispatch therefore report the issue number; the repair
 # modes report the pull request number.
 run-name: >-
-  ${{ github.event_name == 'issue_comment' &&
+  ${{ github.event_name == 'workflow_dispatch' &&
+      inputs.recovery_identity &&
+      format('OpenCode 429 recovery {0} gen {1}',
+        fromJSON(inputs.recovery_identity).recovery_operation_id,
+        fromJSON(inputs.recovery_identity).recovery_generation) ||
+      github.event_name == 'issue_comment' &&
       format('OpenCode issue #{0}', github.event.issue.number) ||
       github.event_name == 'workflow_dispatch' &&
       inputs.mode == 'issue' &&
       format('OpenCode issue #{0}', inputs.issue_number) ||
+      github.event_name == 'workflow_dispatch' &&
+      inputs.mode == 'ci-fix' &&
+      inputs.ci_repair_identity &&
+      fromJSON(inputs.ci_repair_identity).ci_attempt_id &&
+      format('OpenCode repair PR #{0} [ci-attempt:{1}]',
+        inputs.pr_number, fromJSON(inputs.ci_repair_identity).ci_attempt_id) ||
       github.event_name == 'workflow_dispatch' &&
       format('OpenCode repair PR #{0}', inputs.pr_number) ||
       github.event_name == 'pull_request_review_comment' &&
@@ -51,8 +62,16 @@ on:
         description: "Source CodeRabbit review id"
         required: false
         type: string
+      unresolved_items_json:
+        description: "Optional exact CodeRabbit UNRESOLVED batch supplied by the provider adapter"
+        required: false
+        type: string
       run_id:
         description: "Source failed workflow run id"
+        required: false
+        type: string
+      ci_repair_identity:
+        description: "Optional JSON carrying the exact-HEAD CI-repair attempt id and head SHA"
         required: false
         type: string
       ci_workflow_id:
@@ -104,7 +123,7 @@ on:
         required: false
         type: string
       ci_repair_label:
-        description: "CI repair in-flight lock label"
+        description: "Presentation label for an automatic CI repair attempt (not admission state)"
         required: false
         type: string
       packaging_repair_label:
@@ -121,6 +140,16 @@ on:
         type: string
       required_sha:
         description: "Exact main SHA a qualification run must test"
+        required: false
+        type: string
+      recovery_identity:
+        description: >-
+          Packed 429 recovery identity JSON for a fresh-VM resumption
+          (operation id + checkpoint ref/SHA + stage + generation). Empty
+          means this is not a 429 resumption. One packed input (instead of
+          one per recovery field) keeps this workflow_dispatch at or below
+          the 25-input limit; the call below unpacks it into the reusable
+          workflow's explicit recovery inputs.
         required: false
         type: string
 
@@ -141,7 +170,10 @@ jobs:
       pr_number: "${{ inputs.pr_number }}"
       head_ref: "${{ inputs.head_ref }}"
       review_id: "${{ inputs.review_id }}"
+      unresolved_items_json: "${{ inputs.unresolved_items_json }}"
       run_id: "${{ inputs.run_id }}"
+      ci_attempt_id: "${{ inputs.ci_repair_identity && fromJSON(inputs.ci_repair_identity).ci_attempt_id || '' }}"
+      ci_head_sha: "${{ inputs.ci_repair_identity && fromJSON(inputs.ci_repair_identity).ci_head_sha || '' }}"
       ci_workflow_id: "${{ inputs.ci_workflow_id }}"
       base_ref: "${{ inputs.base_ref }}"
       knowledge_protocol_path: "${{ inputs.knowledge_protocol_path }}"
@@ -161,3 +193,14 @@ jobs:
       capability_number: "${{ inputs.capability_number }}"
       qualification_number: "${{ inputs.qualification_number }}"
       required_sha: "${{ inputs.required_sha }}"
+      # kodmial/continuum#290: the watchdog packs the explicit 429 recovery
+      # identity (operation id + checkpoint ref/SHA + stage + generation)
+      # into the single recovery_identity dispatch input above, and the stub
+      # unpacks it here into the reusable workflow's explicit recovery
+      # inputs. The empty-string guard short-circuits before fromJSON so a
+      # plain (non-resumption) run passes empty recovery inputs through.
+      recovery_operation_id: "${{ inputs.recovery_identity && fromJSON(inputs.recovery_identity).recovery_operation_id || '' }}"
+      recovery_checkpoint_ref: "${{ inputs.recovery_identity && fromJSON(inputs.recovery_identity).recovery_checkpoint_ref || '' }}"
+      recovery_checkpoint_sha: "${{ inputs.recovery_identity && fromJSON(inputs.recovery_identity).recovery_checkpoint_sha || '' }}"
+      recovery_stage: "${{ inputs.recovery_identity && fromJSON(inputs.recovery_identity).recovery_stage || '' }}"
+      recovery_generation: "${{ inputs.recovery_identity && fromJSON(inputs.recovery_identity).recovery_generation || '' }}"

@@ -38,7 +38,9 @@ jobs:
     # caller skips in a child. An explicit owner workflow_dispatch still
     # reaches the reusable, which fail-safes there for a deterministic,
     # mutually exclusive outcome. Local/non-child behavior is unchanged.
-    if: vars.CONTINUUM_ROLE != 'child' || github.event_name == 'workflow_dispatch'
+    if: >-
+      (vars.CONTINUUM_REVIEW_PROVIDER || 'none') == 'pr-agent' &&
+      (vars.CONTINUUM_ROLE != 'child' || github.event_name == 'workflow_dispatch')
     uses: kodmial/continuum/.github/workflows/continuum-pr-agent-recovery.yml@main
     secrets: inherit
     with:

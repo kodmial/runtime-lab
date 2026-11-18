@@ -15,6 +15,18 @@ on:
         description: "Exact HEAD SHA the review evaluated"
         required: false
         type: string
+      ci_run_id:
+        description: "Immutable CI workflow run id verified on the exact HEAD at admission"
+        required: false
+        type: string
+      ci_workflow_name:
+        description: "Exact CI workflow name verified on the exact HEAD at admission"
+        required: false
+        type: string
+      gate_verified:
+        description: "Safe scalar attestation from the runner-local PR-Agent gate"
+        required: false
+        type: string
       review_json:
         description: "Canonical upstream review JSON for the exact HEAD"
         required: false
@@ -43,6 +55,14 @@ on:
         description: "Required workflow name when the gate label is present."
         required: false
         type: string
+      opencode_workflow:
+        description: "Dispatchable OpenCode caller for local conflict repair."
+        required: false
+        type: string
+      repair_workflow:
+        description: "Dispatchable PR-Agent repair caller for delegated conflicts."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -52,6 +72,7 @@ permissions:
 
 jobs:
   call:
+    if: (vars.CONTINUUM_REVIEW_PROVIDER || 'none') == 'pr-agent'
     uses: kodmial/continuum/.github/workflows/continuum-pr-agent-auto-merge.yml@main
     secrets: inherit
     with:
@@ -59,6 +80,9 @@ jobs:
       pr_number: "${{ inputs.pr_number }}"
       target_child_id: "${{ inputs.target_child_id }}"
       head_sha: "${{ inputs.head_sha }}"
+      ci_run_id: "${{ inputs.ci_run_id }}"
+      ci_workflow_name: "${{ inputs.ci_workflow_name }}"
+      gate_verified: "${{ inputs.gate_verified }}"
       review_json: "${{ inputs.review_json }}"
       improve_jsonl: "${{ inputs.improve_jsonl }}"
       persistent_state_json: "${{ inputs.persistent_state_json }}"
@@ -66,3 +90,5 @@ jobs:
       post_merge_wakeup_ref: "${{ inputs.post_merge_wakeup_ref }}"
       required_workflow_gate_label: "${{ inputs.required_workflow_gate_label }}"
       required_workflow_gate_name: "${{ inputs.required_workflow_gate_name }}"
+      opencode_workflow: "${{ inputs.opencode_workflow }}"
+      repair_workflow: "${{ inputs.repair_workflow }}"

@@ -20,7 +20,7 @@ on:
         required: false
         type: string
       max_tokens:
-        description: "Token/output limit forwarded as the custom-model cap"
+        description: "Canary max_tokens setting; resolved but not passed to the /review run, so it does not control review budgeting"
         required: false
         type: string
       api_base:
